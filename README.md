@@ -16,6 +16,12 @@ npm i @lloyal-labs/lloyal-agents
 
 **Backends:** [lloyal.node](https://github.com/lloyal-ai/lloyal.node) — prebuilt binaries for macOS (Metal, CPU), Linux (CPU, CUDA, Vulkan), and Windows (CPU, CUDA, Vulkan). GPU selection at runtime.
 
+<p align="center">
+  <img src="assets/demo.gif" alt="Deep Research: 3 agents analyzing DOJ v Apple complaint — plan, research with tool calls, verify, synthesize" width="720">
+  <br>
+  <em>Qwen3 4B + 0.6B reranker · 3 agents · 14 tool calls · 98s · fully offline on M2 MacBook Pro</em>
+</p>
+
 ## Generation as the Primitive
 
 The core architectural decision: generation is the primitive, not the API call. Agents are not processes that exchange messages. They are branches of a running inference process — forked from shared KV cache state, generating independently, their outputs comparable because they share a computational origin.

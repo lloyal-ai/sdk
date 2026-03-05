@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      skip_publish:
+        description: 'Skip npm publish (for testing)'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm install
+      - run: npm run build
+
+      - name: Verify dist outputs
+        run: |
+          test -f packages/sdk/dist/index.js
+          test -f packages/sdk/dist/index.d.ts
+          test -f packages/agents/dist/index.js
+          test -f packages/agents/dist/index.d.ts
+
+      - name: Typecheck
+        run: npx tsc -b packages/sdk packages/agents
+
+      - name: Publish @lloyal-labs/sdk
+        if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
+        run: npm publish --workspace packages/sdk --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @lloyal-labs/lloyal-agents
+        if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
+        run: npm publish --workspace packages/agents --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

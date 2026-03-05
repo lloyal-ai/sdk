@@ -1,12 +1,30 @@
 {
   "name": "@lloyal-labs/lloyal-agents",
   "version": "1.0.0",
-  "description": "Structured concurrency agent runtime for lloyal",
+  "description": "Multi-agent inference inside the decode loop — structured concurrency over shared KV state",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/sdk.git",
+    "directory": "packages/agents"
+  },
+  "homepage": "https://github.com/lloyal-ai/sdk/tree/main/packages/agents#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/sdk/issues"
+  },
+  "keywords": [
+    "llm",
+    "agents",
+    "multi-agent",
+    "inference",
+    "structured-concurrency",
+    "effection",
+    "llama.cpp"
+  ],
   "license": "Apache-2.0",
   "type": "commonjs",
   "scripts": {

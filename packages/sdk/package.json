@@ -7,6 +7,23 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/sdk.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/lloyal-ai/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/sdk/issues"
+  },
+  "keywords": [
+    "llm",
+    "inference",
+    "branch",
+    "kv-cache",
+    "tree-search",
+    "llama.cpp"
+  ],
   "license": "Apache-2.0",
   "type": "commonjs",
   "scripts": {

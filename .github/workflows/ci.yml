@@ -36,4 +36,4 @@ jobs:
           node-version: 24
 
       - run: npm install
-      - run: npx tsc -b packages/sdk packages/agents --noEmit
+      - run: npx tsc -b packages/sdk packages/agents

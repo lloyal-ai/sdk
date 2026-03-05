@@ -37,12 +37,12 @@ jobs:
 
       - name: Publish @lloyal-labs/sdk
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
-        run: npm publish --workspace packages/sdk --access public --provenance
+        run: npm publish --workspace packages/sdk --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @lloyal-labs/lloyal-agents
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
-        run: npm publish --workspace packages/agents --access public --provenance
+        run: npm publish --workspace packages/agents --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -15,9 +15,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
 
-      - run: npm ci
+      - run: npm install
       - run: npm run build
 
       - name: Verify dist outputs
@@ -35,7 +34,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
 
-      - run: npm ci
+      - run: npm install
       - run: npx tsc -b packages/sdk packages/agents --noEmit

@@ -1,14 +1,8 @@
-# lloyal-agents
+# @lloyal-labs/lloyal-agents
 
-**Multi-agent inference with shared frontier, recursive agents, hallucination detection, and structured concurrency — edge to cloud.**
-
----
+Structured concurrency agent runtime for the lloyal inference platform.
 
 `lloyal-agents` runs multi-agent inference inside the decode loop. Agents are branches of a single running process — forked from shared KV cache state, advancing through one GPU forward pass per tick, spawning sub-agents from their own live branches at arbitrary depth. Orchestration is not a layer above inference. It is inference.
-
-Conventional agent frameworks orchestrate _around_ a model — scaffolding on the outside, inference through a request-response boundary. Generate, interpret, call again. `lloyal-agents` removes the boundary. Agents share computational state through the attention mechanism, not serialized messages. Tool results are prefilled directly into the branch's KV cache. The framework and the forward pass are the same thing.
-
-This unlocks orchestration patterns that are impossible across an API boundary: forking a live agent's full reasoning state into sub-agents, comparing divergent branches from a shared computational ancestor for hallucination detection, and accumulating verified context across queries — where each promotion is an epistemic commitment that future agents build on.
 
 ```bash
 npm i @lloyal-labs/lloyal-agents
@@ -280,57 +274,6 @@ The runtime emits structured events for TUI, logging, or telemetry:
 | `agent:tool_progress` | `agentId`, `tool`, `filled`, `total`                      |
 | `agent:report`        | `agentId`, `findings`                                     |
 | `agent:done`          | `agentId`                                                 |
-
-## What Ships
-
-`lloyal-agents` is the framework. It ships with a working deep-research harness ([`examples/deep-research`](examples/deep-research)) that demonstrates the full pattern:
-
-1. **Plan** — grammar-constrained JSON generation decomposes a query into N sub-questions
-2. **Research** — N agents fork from a shared root, each with tools (search, grep, read_file, report), running concurrently through the tick loop
-3. **Verify** — `diverge()` synthesizes findings N ways from the same prompt
-4. **Evaluate** — grammar-constrained convergence check: did the verifiers agree?
-5. **Promote** — winning branch becomes the session trunk
-
-The harness also includes `reportPass` — agents that were hard-cut by context pressure without submitting findings get a second pass with only the report tool available, forked from the parent agent's branch. This forces closure without losing branch state.
-
-```bash
-npx tsx examples/deep-research/main.ts \
-  --corpus /path/to/docs \
-  --query "How does the KV cache eviction policy work?"
-```
-
-The deep-research harness running a 4B parameter model correctly identified a false premise in a question about a dense technical specification — three concurrent tool-using agents, verification, convergence evaluation, 10% context utilization, under three minutes on a single machine.
-
-The entire system runs in-process, on local weights, fully offline. Edge devices. Developer workstations. Air-gapped servers. No API calls. No network boundary.
-
-## Packages
-
-### [`@lloyal-labs/lloyal-agents`](packages/agents)
-
-The agent runtime. `initAgents`, `generate`, `diverge`, `useAgentPool`, `runAgents`, `withSharedRoot`, `createToolkit`, the `Tool` base class, `AgentEvent` observability, and the Effection contexts (`Ctx`, `Store`, `Events`).
-
-```bash
-npm i @lloyal-labs/lloyal-agents
-```
-
-### [`@lloyal-labs/sdk`](packages/sdk)
-
-The inference primitives that agents are built on. Backend-agnostic — the SDK defines the `SessionContext` contract; backend bindings ([lloyal.node](https://github.com/lloyal-ai/lloyal.node), [nitro-llama](https://github.com/lloyal-ai/nitro-llama)) provide `createContext()`.
-
-- **`Branch`** — forkable decode handle. Shares KV prefix on fork, keeps independent sampler chain, grammar, logits snapshot, perplexity tracker. Async iterable for single-branch generation.
-- **`BranchStore`** — continuous tree batching. Packs N branches into a single `llama_batch` — `commit()` for 1-token-per-branch lockstep, `prefill()` for variable-length scatter injection, `retainOnly()` for winner-takes-all promotion.
-- **`Session`** — conversation trunk management. Accumulates verified context across queries via `promote()`.
-- **`Rerank`** — backend-agnostic reranker over any `SessionContext`.
-
-```bash
-npm i @lloyal-labs/sdk
-```
-
-## API Reference
-
-**[lloyal-ai.github.io/lloyal-agents](https://lloyal-ai.github.io/lloyal-agents/)** — generated from source with TypeDoc.
-
-Built on [lloyal.node](https://github.com/lloyal-ai/lloyal.node) (forkable decode state + continuous tree batching over llama.cpp) and [liblloyal](https://github.com/lloyal-ai/liblloyal) (C++20 inference kernel).
 
 ## License
 

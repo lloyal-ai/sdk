@@ -1,0 +1,45 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "plugin": ["typedoc-rhineai-theme"],
+  "entryPoints": [
+    "packages/sdk/src/index.ts",
+    "packages/agents/src/index.ts"
+  ],
+  "entryPointStrategy": "expand",
+  "out": "docs/api",
+  "name": "lloyal-agents API Reference",
+  "includeVersion": true,
+  "readme": "README.md",
+  "exclude": [
+    "**/node_modules/**",
+    "**/dist/**"
+  ],
+  "navigation": {
+    "includeCategories": true,
+    "includeGroups": false
+  },
+  "categorizeByGroup": false,
+  "defaultCategory": "Core",
+  "categoryOrder": [
+    "Core",
+    "Branching",
+    "Agents",
+    "*"
+  ],
+  "sort": ["kind", "instance-first", "required-first", "alphabetical"],
+  "excludePrivate": true,
+  "excludeProtected": false,
+  "excludeExternals": false,
+  "hideGenerator": false,
+  "sidebarLinks": {
+    "GitHub": "https://github.com/lloyal-ai/lloyal-agents",
+    "npm": "https://www.npmjs.com/package/@lloyal-labs/lloyal-agents"
+  },
+  "gitRevision": "main",
+  "githubPages": true,
+  "skipErrorChecking": true,
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "skipDefaultLibCheck": true
+  }
+}

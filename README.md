@@ -4,6 +4,12 @@
 
 ---
 
+<p>
+  <img src="assets/demo.gif" alt="Deep Research: 3 agents analyzing DOJ v Apple complaint — plan, research with tool calls, verify, synthesize" width="100%">
+  <br>
+  <em>Qwen3 4B + 0.6B reranker · 3 agents · 14 tool calls · 98s · fully offline on M2 MacBook Pro</em>
+</p>
+
 `lloyal-agents` runs multi-agent inference inside the decode loop. Agents are branches of a single running process — forked from shared KV cache state, advancing through one GPU forward pass per tick, spawning sub-agents from their own live branches at arbitrary depth. Orchestration is not a layer above inference. It is inference.
 
 Conventional agent frameworks orchestrate _around_ a model — scaffolding on the outside, inference through a request-response boundary. Generate, interpret, call again. `lloyal-agents` removes the boundary. Agents share computational state through the attention mechanism, not serialized messages. Tool results are prefilled directly into the branch's KV cache. The framework and the forward pass are the same thing.
@@ -15,12 +21,6 @@ npm i @lloyal-labs/lloyal-agents
 ```
 
 **Backends:** [lloyal.node](https://github.com/lloyal-ai/lloyal.node) — prebuilt binaries for macOS (Metal, CPU), Linux (CPU, CUDA, Vulkan), and Windows (CPU, CUDA, Vulkan). GPU selection at runtime.
-
-<p align="center">
-  <img src="assets/demo.gif" alt="Deep Research: 3 agents analyzing DOJ v Apple complaint — plan, research with tool calls, verify, synthesize" width="720">
-  <br>
-  <em>Qwen3 4B + 0.6B reranker · 3 agents · 14 tool calls · 98s · fully offline on M2 MacBook Pro</em>
-</p>
 
 ## Generation as the Primitive
 

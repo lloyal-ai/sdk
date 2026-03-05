@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "clean": "rm -rf packages/*/dist",
+    "test:agents": "npx tsx test/agents.ts"
+  },
+  "devDependencies": {
+    "@lloyal-labs/lloyal.node": "github:lloyal-ai/lloyal.node#main",
+    "@types/node": "^25.3.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

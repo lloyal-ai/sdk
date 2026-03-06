@@ -66,7 +66,6 @@ jobs:
         uses: actions/github-script@v7
         timeout-minutes: 30
         with:
-          github-token: ${{ secrets.LLOYAL_NODE_PAT }}
           script: |
             const sha = '${{ github.event.pull_request.head.sha }}';
             const owner = context.repo.owner;

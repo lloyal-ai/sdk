@@ -1,6 +1,40 @@
 import { Tool } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
+import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Resource } from '../resources/types';
+
+/** Subtract covered ranges from [s, e), return uncovered sub-ranges */
+export function subtractRanges(
+  [s, e]: [number, number],
+  covered: [number, number][],
+): [number, number][] {
+  let ranges: [number, number][] = [[s, e]];
+  for (const [cs, ce] of covered) {
+    ranges = ranges.flatMap(([a, b]): [number, number][] => {
+      if (ce <= a || cs >= b) return [[a, b]];
+      const result: [number, number][] = [];
+      if (a < cs) result.push([a, cs]);
+      if (ce < b) result.push([ce, b]);
+      return result;
+    });
+  }
+  return ranges;
+}
+
+/** Merge overlapping/adjacent ranges */
+export function mergeRanges(ranges: [number, number][]): [number, number][] {
+  if (ranges.length === 0) return [];
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = merged[merged.length - 1];
+    if (sorted[i][0] <= last[1]) {
+      last[1] = Math.max(last[1], sorted[i][1]);
+    } else {
+      merged.push(sorted[i]);
+    }
+  }
+  return merged;
+}
 
 export class ReadFileTool extends Tool<{ filename: string; startLine?: number; endLine?: number }> {
   readonly name = 'read_file';
@@ -8,6 +42,7 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
   readonly parameters: JsonSchema;
 
   private _resources: Resource[];
+  private _readRanges = new Map<string, [number, number][]>();
 
   constructor(resources: Resource[]) {
     super();
@@ -27,15 +62,34 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
     };
   }
 
-  async execute(args: { filename: string; startLine?: number; endLine?: number } & Record<string, unknown>): Promise<unknown> {
+  async execute(
+    args: { filename: string; startLine?: number; endLine?: number } & Record<string, unknown>,
+    context?: ToolContext,
+  ): Promise<unknown> {
     const filename = args.filename || (args.path as string) || '';
     const file = this._resources.find(r => r.name === filename);
     if (!file) {
       return { error: `File not found: ${filename}. Available: ${this._resources.map(r => r.name).join(', ')}` };
     }
+
     const lines = file.content.split('\n');
     const s = Math.max(0, (args.startLine ?? 1) - 1);
     const e = Math.min(lines.length, args.endLine ?? Math.min(100, lines.length));
-    return { file: file.name, content: lines.slice(s, e).join('\n') };
+
+    const key = context ? `${context.agentId}:${filename}` : filename;
+    const prev = this._readRanges.get(key) ?? [];
+    const unread = subtractRanges([s, e], prev);
+
+    if (unread.length === 0) {
+      return { file: file.name, note: `Lines ${s + 1}-${e} already read` };
+    }
+
+    this._readRanges.set(key, mergeRanges([...prev, [s, e]]));
+
+    const content = unread
+      .map(([a, b]) => lines.slice(a, b).join('\n'))
+      .join('\n...\n');
+
+    return { file: file.name, content, lines: unread.map(([a, b]) => `${a + 1}-${b}`) };
   }
 }

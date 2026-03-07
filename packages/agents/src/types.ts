@@ -54,6 +54,8 @@ export interface ToolSchema {
  * @category Agents
  */
 export interface ToolContext {
+  /** Stable agent identifier — branch handle at creation time */
+  agentId: number;
   /** Progress callback for long-running operations */
   onProgress?: (p: { filled: number; total: number }) => void;
 }

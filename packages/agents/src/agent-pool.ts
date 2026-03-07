@@ -356,6 +356,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       scope.run(function*() {
         try {
           const toolContext = {
+            agentId: agent.id,
             onProgress: (p: { filled: number; total: number }) => {
               // Signal bridge — onProgress is an external callback, Signal.send() is correct here.
               progressBridge.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });

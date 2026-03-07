@@ -37,3 +37,59 @@ jobs:
 
       - run: npm install
       - run: npx tsc -b packages/sdk packages/agents
+
+  gpu-tests:
+    name: GPU Integration Tests
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Dispatch GPU tests to lloyal-node
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.LLOYAL_NODE_PAT }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: 'lloyal-ai',
+              repo: 'lloyal.node',
+              event_type: 'sdk-gpu-test',
+              client_payload: {
+                sdk_ref: '${{ github.head_ref }}',
+                sdk_sha: '${{ github.event.pull_request.head.sha }}',
+                sdk_repo: '${{ github.repository }}',
+                pr_number: '${{ github.event.pull_request.number }}'
+              }
+            });
+
+      - name: Wait for GPU test results
+        uses: actions/github-script@v7
+        timeout-minutes: 30
+        with:
+          script: |
+            const sha = '${{ github.event.pull_request.head.sha }}';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            while (true) {
+              const { data: { statuses } } = await github.rest.repos.getCombinedStatusForRef({
+                owner, repo, ref: sha
+              });
+
+              const gpu = statuses.find(s => s.context === 'gpu-tests/cuda');
+              if (gpu) {
+                if (gpu.state === 'success') {
+                  core.info(`GPU tests passed: ${gpu.target_url}`);
+                  return;
+                }
+                if (gpu.state === 'failure' || gpu.state === 'error') {
+                  core.setFailed(`GPU tests failed: ${gpu.target_url}`);
+                  return;
+                }
+                core.info(`GPU tests status: ${gpu.state} — waiting...`);
+              } else {
+                core.info('Waiting for gpu-tests/cuda status to appear...');
+              }
+
+              await new Promise(r => setTimeout(r, 30000));
+            }

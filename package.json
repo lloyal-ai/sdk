@@ -7,7 +7,7 @@
     "build": "npm run build --workspaces",
     "clean": "rm -rf packages/*/dist",
     "docs": "npx typedoc",
-    "test": "npm run build && cd ${LLOYAL_NODE:-../lloyal-node} && npm link $INIT_CWD/packages/sdk $INIT_CWD/packages/agents && npm run build:ts && npm run test:integration; npm install --ignore-scripts"
+    "test": "npm run build && npx tsx test/sdk.ts && npx tsx test/agents.ts"
   },
   "devDependencies": {
     "@lloyal-labs/lloyal.node": "^2.0.0",

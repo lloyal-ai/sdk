@@ -161,19 +161,13 @@ import {
 
 That is essentially the framework.
 
-# Example: Deep Research
+# Examples
 
-The repo ships a working deep-research harness in [`examples/deep-research`](examples/deep-research).
+The repo ships four examples demonstrating canonical agent patterns. All examples share corpus tools, resources, and a reranker via [`examples/shared/`](examples/shared/). Each defines its own `WorkflowEvent = AgentEvent | StepEvent` union — `AgentEvent` is the stable runtime contract, `StepEvent` is example-specific.
 
-It demonstrates one concrete workflow built on the API:
+## Deep Research (reference architecture)
 
-1. **Plan** — decompose a query into sub-questions
-2. **Research** — fork agents from a shared root and use tools concurrently
-3. **Verify** — synthesize findings multiple ways from the same frontier
-4. **Evaluate** — check whether those syntheses converge
-5. **Promote** — make the winning branch the new session trunk
-
-Run it with:
+[`examples/deep-research`](examples/deep-research) — 5-phase structured research: Plan, Research, Verify, Evaluate, Promote. Demonstrates shared-root parallelism, grammar-constrained planning, diverge-based verification, agreement analysis, and session accumulation.
 
 ```bash
 npx tsx examples/deep-research/main.ts \
@@ -181,7 +175,37 @@ npx tsx examples/deep-research/main.ts \
   --query "How does the KV cache eviction policy work?"
 ```
 
-The entire system runs in-process, on local weights, fully offline.
+## ReAct Agent
+
+[`examples/react-agent`](examples/react-agent) — Single agent with corpus tools answers a question. The simplest workflow, demonstrating `withSharedRoot` + `useAgentPool` with one agent.
+
+```bash
+npx tsx examples/react-agent/main.ts \
+  --corpus /path/to/docs \
+  --query "What is the main argument?"
+```
+
+## Reflection
+
+[`examples/reflection`](examples/reflection) — Research, Draft, Critique, Revise. The critic forks from the draft's live branch; the reviser forks from the critic's branch. Demonstrates manual branch lifecycle, `buildUserDelta` for injecting follow-up turns, and `diverge` with parent branch for perplexity selection. No re-prompting — KV continuity across phases.
+
+```bash
+npx tsx examples/reflection/main.ts \
+  --corpus /path/to/docs \
+  --query "Explain the key findings"
+```
+
+## Supervisor
+
+[`examples/supervisor`](examples/supervisor) — Classify, Route to specialist agents, Execute in parallel, Synthesize. Demonstrates grammar-constrained routing via `generate()`, dynamic agent count from classifier output, heterogeneous `useAgentPool` tasks, and warm trunk synthesis for multi-turn follow-ups.
+
+```bash
+npx tsx examples/supervisor/main.ts \
+  --corpus /path/to/docs \
+  --query "Compare the two approaches described in the document"
+```
+
+All examples run in-process, on local weights, fully offline.
 
 ## Shared-root parallelism
 

@@ -7,7 +7,11 @@
     "build": "npm run build --workspaces",
     "clean": "rm -rf packages/*/dist",
     "docs": "npx typedoc",
-    "test": "npm run build && npx tsx test/sdk.ts && npx tsx test/agents.ts"
+    "test": "npm run build && npx tsx test/sdk.ts && npx tsx test/agents.ts",
+    "examples:deep-research": "npx tsx examples/deep-research/main.ts",
+    "examples:react": "npx tsx examples/react-agent/main.ts",
+    "examples:reflect": "npx tsx examples/reflection/main.ts",
+    "examples:supervise": "npx tsx examples/supervisor/main.ts"
   },
   "devDependencies": {
     "@lloyal-labs/lloyal.node": "^2.0.0",

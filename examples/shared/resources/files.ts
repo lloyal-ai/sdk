@@ -38,7 +38,7 @@ function chunkByParagraph(res: Resource): Chunk[] {
       if (text) {
         chunks.push({
           resource: res.name,
-          heading: text.slice(0, 60).replace(/\n/g, ' ') + (text.length > 60 ? '…' : ''),
+          heading: text.slice(0, 60).replace(/\n/g, ' ') + (text.length > 60 ? '\u2026' : ''),
           text, tokens: [],
           startLine: start + 1,
           endLine: i,
@@ -54,7 +54,7 @@ export function chunkResources(resources: Resource[]): Chunk[] {
   const out: Chunk[] = [];
   for (const res of resources) {
     const sections = parseMarkdown(res.content);
-    // Single section covering the whole file = no headings found → paragraph split
+    // Single section covering the whole file = no headings found -> paragraph split
     if (sections.length <= 1 && res.content.split('\n').length > 10) {
       out.push(...chunkByParagraph(res));
       continue;

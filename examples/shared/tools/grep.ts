@@ -1,3 +1,4 @@
+import type { Operation } from 'effection';
 import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 import type { Resource } from '../resources/types';
@@ -21,7 +22,7 @@ export class GrepTool extends Tool<{ pattern: string; ignoreCase?: boolean }> {
     this._resources = resources;
   }
 
-  async execute(args: { pattern: string; ignoreCase?: boolean }): Promise<unknown> {
+  *execute(args: { pattern: string; ignoreCase?: boolean }): Operation<unknown> {
     const pattern = args.pattern?.trim();
     if (!pattern) return { error: 'pattern must not be empty' };
     const flags = (args.ignoreCase === false) ? 'g' : 'gi';

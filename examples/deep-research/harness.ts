@@ -11,7 +11,7 @@ import {
 import type { Tool, AgentPoolResult, DivergeResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent, OpTiming } from './tui';
 import { computeAgreement } from './agreement';
-import { reportTool } from './tools';
+import { reportTool } from '../shared/tools';
 
 /** Load a task prompt file. Convention: system prompt above `---`, user content below. */
 function loadTask(name: string): { system: string; user: string } {

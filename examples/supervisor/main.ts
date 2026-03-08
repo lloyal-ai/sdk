@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * Deep Research — CLI entry point
+ * Supervisor — CLI entry point
  *
- * Wiring only: setup, TUI subscriber, REPL.
- * Orchestration lives in harness.ts. Presentation lives in tui.ts.
+ * Classify -> Route to specialist agents -> Execute in parallel -> Synthesize.
+ * Demonstrates grammar-constrained routing, heterogeneous agent pools, and
+ * warm trunk synthesis.
  *
  * Usage:
- *   npx tsx examples/deep-research/main.ts [model-path] --corpus <path> [--query <text>] [options]
+ *   npx tsx examples/supervisor/main.ts [model-path] --corpus <path> [--query <text>] [options]
  */
 
 import * as fs from "node:fs";
@@ -30,7 +31,7 @@ import { loadResources, chunkResources } from "../shared/resources/files";
 import { createReranker } from "../shared/reranker";
 import { createTools } from "../shared/tools";
 import { handleQuery } from "./harness";
-import type { WorkflowOpts } from "./harness";
+import type { HarnessOpts } from "./harness";
 
 // ── CLI args ─────────────────────────────────────────────────────
 
@@ -68,7 +69,7 @@ const modelPath =
 
 if (!corpusDir) {
   process.stdout.write(
-    `Usage: npx tsx examples/deep-research/main.ts [model-path] --corpus <path> [--query <text>] [--reranker <path>]\nMissing: --corpus\n`,
+    `Usage: npx tsx examples/supervisor/main.ts [model-path] --corpus <path> [--query <text>] [--reranker <path>]\nMissing: --corpus\n`,
   );
   process.exit(1);
 }
@@ -84,8 +85,6 @@ if (!verbose && !jsonlMode && !trace) {
   }
 }
 
-const AGENT_COUNT = 3;
-const VERIFY_COUNT = 3;
 const MAX_TOOL_TURNS = 20;
 
 // ── Main ─────────────────────────────────────────────────────────
@@ -101,7 +100,7 @@ main(function* () {
 
   log();
   log(
-    `${c.bold}  Deep Research${c.reset} ${c.dim}\u2014 Structured Concurrency Runtime${c.reset}`,
+    `${c.bold}  Supervisor${c.reset} ${c.dim}\u2014 Classify \u2192 Route \u2192 Specialists \u2192 Synthesize${c.reset}`,
   );
   log();
   log(
@@ -113,7 +112,7 @@ main(function* () {
     createContext({
       modelPath,
       nCtx,
-      nSeqMax: Math.max(AGENT_COUNT, VERIFY_COUNT) * 2 + 1,
+      nSeqMax: 16,
       typeK: "q4_0",
       typeV: "q4_0",
     }),
@@ -143,25 +142,20 @@ main(function* () {
   const { toolMap, toolsJson } = createTools({ resources, chunks, reranker });
   const { session, events } = yield* initAgents<WorkflowEvent>(ctx);
 
-  // View subscriber — all presentation lives here
   const view = createView({
     model: path.basename(modelPath),
     reranker: path.basename(rerankModelPath),
-    agentCount: AGENT_COUNT,
-    verifyCount: VERIFY_COUNT,
     chunkCount: chunks.length,
   });
   yield* spawn(function* () {
     yield* view.subscribe(events);
   });
 
-  const harnessOpts: WorkflowOpts = {
+  const harnessOpts: HarnessOpts = {
     session,
     toolMap,
     toolsJson,
     events,
-    agentCount: AGENT_COUNT,
-    verifyCount: VERIFY_COUNT,
     maxTurns: MAX_TOOL_TURNS,
     trace,
   };
@@ -172,9 +166,9 @@ main(function* () {
     if (jsonlMode) return;
   }
 
-  // REPL — Signal bridges readline into Effection scope
+  // REPL
   log(
-    `  ${c.dim}${session.trunk ? "Ask a follow-up question" : "Enter your research question"} or /quit to exit${c.reset}`,
+    `  ${c.dim}Enter your question or /quit to exit${c.reset}`,
   );
   log();
 

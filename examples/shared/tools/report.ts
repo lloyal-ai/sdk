@@ -1,3 +1,4 @@
+import type { Operation } from 'effection';
 import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 
@@ -10,5 +11,5 @@ export class ReportTool extends Tool<{ findings: string }> {
     required: ['findings'],
   };
 
-  async execute(): Promise<unknown> { return {}; }
+  *execute(): Operation<unknown> { return {}; }
 }

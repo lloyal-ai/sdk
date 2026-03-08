@@ -1,3 +1,4 @@
+import type { Operation } from 'effection';
 import type { JsonSchema, ToolSchema, ToolContext } from './types';
 
 /**
@@ -11,6 +12,11 @@ import type { JsonSchema, ToolSchema, ToolContext } from './types';
  * Pass tool instances to {@link createToolkit} to build the `toolMap`
  * and `toolsJson` pair consumed by {@link useAgentPool} and
  * {@link runAgents}.
+ *
+ * `execute()` returns an Effection `Operation`, enabling tools to
+ * spawn sub-agents via {@link runAgents} or {@link withSharedRoot}.
+ * For async work, wrap in `call()`. For synchronous tools, return
+ * directly from the generator body.
  *
  * @example Search tool
  * ```typescript
@@ -26,8 +32,8 @@ import type { JsonSchema, ToolSchema, ToolContext } from './types';
  *     required: ['query'],
  *   };
  *
- *   async execute(args: { query: string; topK?: number }, ctx?: ToolContext) {
- *     const results = await this.reranker.rank(args.query, args.topK ?? 5);
+ *   *execute(args: { query: string; topK?: number }, ctx?: ToolContext): Operation<unknown> {
+ *     const results = yield* call(() => this.reranker.rank(args.query, args.topK ?? 5));
  *     return { results };
  *   }
  * }
@@ -50,11 +56,15 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
    * this tool's name. The return value is JSON-serialized and prefilled
    * back into the agent's context as a tool result.
    *
+   * Returns an Effection Operation — implement as a generator method.
+   * The operation runs inside the agent pool's scope, so it has access
+   * to Ctx, Store, and Events contexts for nested agent spawning.
+   *
    * @param args - Parsed arguments from the model's tool call
    * @param context - Execution context with progress reporting callback
    * @returns Tool result (will be JSON-serialized)
    */
-  abstract execute(args: TArgs, context?: ToolContext): Promise<unknown>;
+  abstract execute(args: TArgs, context?: ToolContext): Operation<unknown>;
 
   /**
    * OpenAI-compatible function tool schema

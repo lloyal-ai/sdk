@@ -1,3 +1,5 @@
+import { call } from 'effection';
+import type { Operation } from 'effection';
 import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Chunk } from '../resources/types';
@@ -21,14 +23,18 @@ export class SearchTool extends Tool<{ query: string }> {
     this._reranker = reranker;
   }
 
-  async execute(args: { query: string }, context?: ToolContext): Promise<unknown> {
+  *execute(args: { query: string }, context?: ToolContext): Operation<unknown> {
     const query = args.query?.trim();
     if (!query) return { error: 'query must not be empty' };
-    let last;
-    for await (const { results, filled, total } of this._reranker.score(query, this._chunks)) {
-      if (context?.onProgress) context.onProgress({ filled, total });
-      last = results;
-    }
-    return last;
+    const reranker = this._reranker;
+    const chunks = this._chunks;
+    return yield* call(async () => {
+      let last;
+      for await (const { results, filled, total } of reranker.score(query, chunks)) {
+        if (context?.onProgress) context.onProgress({ filled, total });
+        last = results;
+      }
+      return last;
+    });
   }
 }

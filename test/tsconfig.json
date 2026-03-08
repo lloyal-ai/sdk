@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "rootDir": "..",
+    "paths": {
+      "@lloyal-labs/lloyal-agents": ["../packages/agents/dist"],
+      "@lloyal-labs/sdk": ["../packages/sdk/dist"]
+    }
+  },
+  "include": ["**/*.ts"],
+  "references": [
+    { "path": "../packages/agents" },
+    { "path": "../packages/sdk" }
+  ]
+}

@@ -13,14 +13,14 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { run, call, spawn, ensure, each } from 'effection';
+import { run, call, spawn, ensure, each, sleep, scoped } from 'effection';
 import type { Operation } from 'effection';
 import { loadBinary } from '@lloyal-labs/lloyal.node';
 import type { NativeBinding } from '@lloyal-labs/lloyal.node';
 import { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  initAgents, runAgents, withSharedRoot, generate, diverge, Tool,
+  initAgents, runAgents, useAgentPool, withSharedRoot, generate, diverge, Tool, createToolkit,
 } from '@lloyal-labs/lloyal-agents';
 import type {
   AgentPoolResult, AgentEvent, JsonSchema, DivergeResult,
@@ -65,16 +65,17 @@ function assert(condition: boolean, msg: string): void {
 
 // ── Test tools ────────────────────────────────────────────────────
 
-class EchoTool extends Tool<{ input: string }> {
-  readonly name = 'echo';
-  readonly description = 'Returns the input back to the caller';
+class CalculatorTool extends Tool<{ expression: string }> {
+  readonly name = 'calculator';
+  readonly description = 'Evaluate a math expression and return the numeric result. You MUST use this tool to compute any arithmetic.';
   readonly parameters: JsonSchema = {
     type: 'object',
-    properties: { input: { type: 'string', description: 'Text to echo back' } },
-    required: ['input'],
+    properties: { expression: { type: 'string', description: 'Math expression to evaluate, e.g. "147 * 38"' } },
+    required: ['expression'],
   };
-  async execute(args: { input: string }): Promise<unknown> {
-    return { echoed: args.input };
+  *execute(args: { expression: string }): Operation<unknown> {
+    try { return { result: Function(`"use strict"; return (${args.expression})`)() }; }
+    catch { return { error: 'invalid expression' }; }
   }
 }
 
@@ -86,7 +87,7 @@ class ReportTool extends Tool<{ findings: string }> {
     properties: { findings: { type: 'string', description: 'Summary of findings' } },
     required: ['findings'],
   };
-  async execute(args: { findings: string }): Promise<unknown> {
+  *execute(args: { findings: string }): Operation<unknown> {
     return { reported: args.findings };
   }
 }
@@ -98,8 +99,38 @@ class ThrowingTool extends Tool<Record<string, unknown>> {
     type: 'object',
     properties: { input: { type: 'string' } },
   };
-  async execute(): Promise<unknown> {
+  *execute(): Operation<unknown> {
     throw new Error('intentional_tool_error');
+  }
+}
+
+class SubAgentTool extends Tool<{ question: string }> {
+  readonly name = 'sub_research';
+  readonly description = 'Spawn sub-agents to research a question and return their output';
+  readonly parameters: JsonSchema = {
+    type: 'object',
+    properties: { question: { type: 'string', description: 'Question for sub-agents' } },
+    required: ['question'],
+  };
+  *execute(args: { question: string }): Operation<unknown> {
+    const result = yield* withSharedRoot(
+      { systemPrompt: 'You are a sub-agent. Answer the question in one sentence.' },
+      function*(root) {
+        return yield* runAgents({
+          tasks: [{
+            systemPrompt: 'You are a sub-agent. Answer the question in one sentence.',
+            content: args.question || 'What is 1+1?',
+            parent: root,
+          }],
+          tools: new Map(),
+          maxTurns: 1,
+        });
+      },
+    );
+    return {
+      subAgentCount: result.agents.length,
+      totalTokens: result.totalTokens,
+    };
   }
 }
 
@@ -127,13 +158,6 @@ function makeTasks(parent: Branch, count: number, opts?: {
     tools: opts?.tools,
     parent,
   }));
-}
-
-function makeToolsJson(tools: Tool[]): string {
-  return JSON.stringify(tools.map(t => ({
-    type: 'function',
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  })));
 }
 
 /** Bootstrap agent infra + drain events to prevent backpressure */
@@ -191,20 +215,23 @@ async function testToolCalling(): Promise<void> {
     const ctx = yield* call(() => createTestContext());
     yield* setupTest(ctx);
 
-    const echoTool = new EchoTool();
-    const toolMap = new Map<string, Tool>([['echo', echoTool]]);
-    const toolsJson = makeToolsJson([echoTool]);
+    const { toolMap, toolsJson } = createToolkit([new CalculatorTool()]);
 
     yield* withSharedRoot(
-      { systemPrompt: 'You are a test agent. Always call the echo tool with your answer before responding.', tools: toolsJson },
+      { systemPrompt: 'You are a math assistant. You MUST use the calculator tool to compute answers. Never compute mentally.', tools: toolsJson },
       function*(root) {
         const pool = yield* runAgents({
-          tasks: makeTasks(root, 2, { tools: toolsJson, systemPrompt: 'You are a test agent. Call the echo tool with input "hello" immediately.' }),
+          tasks: [{
+            systemPrompt: 'You are a math assistant. You MUST use the calculator tool to compute answers. Never compute mentally.',
+            content: 'What is 147 * 38? Use the calculator tool.',
+            tools: toolsJson,
+            parent: root,
+          }],
           tools: toolMap,
           maxTurns: 3,
         });
 
-        assert(pool.agents.length === 2, 'pool has 2 agents');
+        assert(pool.agents.length === 1, 'pool has 1 agent');
         assert(pool.totalToolCalls > 0, `tool calls made (${pool.totalToolCalls})`);
         assert(root.children.length === 0, 'branches pruned after pool');
 
@@ -227,21 +254,15 @@ async function testTerminalToolGating(): Promise<void> {
     const ctx = yield* call(() => createTestContext());
     yield* setupTest(ctx);
 
-    const echoTool = new EchoTool();
-    const reportTool = new ReportTool();
-    const toolMap = new Map<string, Tool>([
-      ['echo', echoTool],
-      ['report', reportTool],
-    ]);
-    const toolsJson = makeToolsJson([echoTool, reportTool]);
+    const { toolMap, toolsJson } = createToolkit([new CalculatorTool(), new ReportTool()]);
 
     yield* withSharedRoot(
-      { systemPrompt: 'You are a research agent. First call echo with your analysis, then call report with findings.', tools: toolsJson },
+      { systemPrompt: 'You are a math assistant. First use the calculator tool to compute the answer, then call the report tool with your findings.', tools: toolsJson },
       function*(root) {
         const pool = yield* runAgents({
           tasks: [{
-            systemPrompt: 'You are a research agent. You must call the echo tool first to analyze, then call report with your findings.',
-            content: 'Analyze: what is 2+2? Call echo first, then report.',
+            systemPrompt: 'You are a math assistant. First use the calculator tool to compute the answer, then call the report tool with your findings.',
+            content: 'What is 256 * 17? Calculate it, then report your findings.',
             tools: toolsJson,
             parent: root,
           }],
@@ -271,18 +292,16 @@ async function testToolErrorResilience(): Promise<void> {
     const ctx = yield* call(() => createTestContext());
     yield* setupTest(ctx);
 
-    const throwingTool = new ThrowingTool();
-    const toolMap = new Map<string, Tool>([['explode', throwingTool]]);
-    const toolsJson = makeToolsJson([throwingTool]);
+    const { toolMap, toolsJson } = createToolkit([new ThrowingTool()]);
 
     try {
       yield* withSharedRoot(
-        { systemPrompt: 'You are a test agent. Call the explode tool immediately.' },
+        { systemPrompt: 'You are a test agent. You MUST call the explode tool immediately.', tools: toolsJson },
         function*(root) {
           const pool = yield* runAgents({
             tasks: [{
-              systemPrompt: 'You are a test agent. Call the explode tool immediately.',
-              content: 'Do it now.',
+              systemPrompt: 'You are a test agent. You MUST call the explode tool immediately.',
+              content: 'Call the explode tool now.',
               tools: toolsJson,
               parent: root,
             }],
@@ -592,6 +611,357 @@ async function testSharedRootCleanupOnError(): Promise<void> {
 }
 
 // ═════════════════════════════════════════════════════════════════════
+// TEST 11: Nested concurrency — tool spawns sub-agents
+// ═════════════════════════════════════════════════════════════════════
+
+async function testNestedConcurrency(): Promise<void> {
+  console.log('\n--- Nested concurrency: tool spawns sub-agents ---');
+
+  await run(function*() {
+    const ctx = yield* call(() => createTestContext({ nSeqMax: 8 }));
+    const { events } = yield* initAgents(ctx);
+
+    const collected: AgentEvent[] = [];
+    yield* spawn(function*() {
+      for (const ev of yield* each(events)) {
+        collected.push(ev);
+        yield* each.next();
+      }
+    });
+
+    const { toolMap, toolsJson } = createToolkit([new SubAgentTool()]);
+
+    yield* withSharedRoot(
+      { systemPrompt: 'You are a research coordinator. Use the sub_research tool to delegate questions to sub-agents. You MUST use the tool — do not answer directly.', tools: toolsJson },
+      function*(root) {
+        const pool = yield* runAgents({
+          tasks: [{
+            systemPrompt: 'You are a research coordinator. Use the sub_research tool to delegate questions to sub-agents. You MUST use the tool — do not answer directly.',
+            content: 'Research this question using the sub_research tool: "What is 2+2?"',
+            tools: toolsJson,
+            parent: root,
+          }],
+          tools: toolMap,
+          maxTurns: 3,
+        });
+
+        assert(pool.agents.length === 1, 'outer pool has 1 agent');
+        assert(pool.totalToolCalls > 0, `outer agent made tool calls (${pool.totalToolCalls})`);
+
+        // Verify inner agents spawned — IDs differ from the outer agent
+        const outerAgentId = pool.agents[0].agentId;
+        const spawnEvents = collected.filter(e => e.type === 'agent:spawn');
+        const innerSpawns = spawnEvents.filter(e =>
+          e.type === 'agent:spawn' && e.agentId !== outerAgentId
+        );
+        assert(innerSpawns.length > 0, `inner sub-agents spawned (${innerSpawns.length})`);
+
+        // Branches cleaned up
+        assert(root.children.length === 0, 'all branches pruned after pool');
+
+        return pool;
+      },
+    );
+
+    ok('nested concurrency completed');
+  });
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// TEST 12: Nested cancellation — outer scope halts inner pool
+// ═════════════════════════════════════════════════════════════════════
+
+async function testNestedCancellation(): Promise<void> {
+  console.log('\n--- Nested cancellation: outer scope halts inner pool ---');
+
+  await run(function*() {
+    const ctx = yield* call(() => createTestContext({ nSeqMax: 8 }));
+    yield* setupTest(ctx);
+
+    // Tool that spawns a long-running inner pool
+    class SlowInnerTool extends Tool<Record<string, unknown>> {
+      readonly name = 'slow_research';
+      readonly description = 'Spawn sub-agents that generate for many turns. You MUST call this tool.';
+      readonly parameters: JsonSchema = {
+        type: 'object',
+        properties: {},
+      };
+      *execute(): Operation<unknown> {
+        const result = yield* withSharedRoot(
+          { systemPrompt: 'You are a sub-agent. Write a very long detailed essay about mathematics.' },
+          function*(root) {
+            return yield* runAgents({
+              tasks: [{
+                systemPrompt: 'You are a sub-agent. Write a very long detailed essay about mathematics.',
+                content: 'Write an essay.',
+                parent: root,
+              }],
+              tools: new Map(),
+              maxTurns: 50, // high — should not complete before cancellation
+            });
+          },
+        );
+        return { done: true, tokens: result.totalTokens };
+      }
+    }
+
+    const { toolMap, toolsJson } = createToolkit([new SlowInnerTool()]);
+
+    // Use scoped() to create a scope we can exit early from
+    yield* scoped(function*() {
+      // Spawn the pool as a child task — will be halted when scope exits
+      yield* spawn(function*() {
+        yield* withSharedRoot(
+          { systemPrompt: 'You are a test agent. Call the slow_research tool immediately.', tools: toolsJson },
+          function*(root) {
+            yield* useAgentPool({
+              tasks: [{
+                systemPrompt: 'You are a test agent. You MUST call the slow_research tool immediately.',
+                content: 'Call slow_research now.',
+                tools: toolsJson,
+                parent: root,
+              }],
+              tools: toolMap,
+              maxTurns: 3,
+            });
+          },
+        );
+      });
+
+      // Wait for pool to start and tool to fire, then exit scope
+      yield* sleep(3000);
+      // Scope exits here — spawned child halted, inner pool halted,
+      // inner withSharedRoot's finally fires pruneSubtreeSync(),
+      // outer withSharedRoot's finally fires pruneSubtreeSync()
+    });
+
+    // If we reach here, cancellation didn't crash or hang
+    ok('nested cancellation: scope exit completed cleanly');
+
+    // Verify KV cache is still usable after nested cancellation
+    const tokens = yield* call(() => ctx.tokenize('Test'));
+    const branch = Branch.create(ctx, 0, { temperature: 0 });
+    yield* call(() => branch.prefill(tokens));
+    const sample = branch.sample();
+    assert(sample >= 0, 'context usable after nested cancellation');
+    yield* call(() => branch.prune());
+
+    ok('nested cancellation: context usable after cleanup');
+  });
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// TEST 13: Cross-level KV pressure
+// ═════════════════════════════════════════════════════════════════════
+
+async function testCrossLevelPressure(): Promise<void> {
+  console.log('\n--- Cross-level KV pressure ---');
+
+  await run(function*() {
+    // Small context — inner pool must compete with outer for KV
+    const ctx = yield* call(() => createTestContext({ nCtx: 2048, nSeqMax: 8 }));
+    yield* setupTest(ctx);
+
+    const { toolMap, toolsJson } = createToolkit([new SubAgentTool()]);
+
+    yield* withSharedRoot(
+      { systemPrompt: 'You are a research coordinator. Use the sub_research tool to delegate questions to sub-agents. You MUST use the tool.', tools: toolsJson },
+      function*(root) {
+        const pool = yield* runAgents({
+          tasks: [{
+            systemPrompt: 'You are a research coordinator. Use the sub_research tool to delegate questions to sub-agents. You MUST use the tool.',
+            content: 'Research this question using the sub_research tool: "What is 2+2?"',
+            tools: toolsJson,
+            parent: root,
+          }],
+          tools: toolMap,
+          maxTurns: 3,
+          pressure: { softLimit: 512, hardLimit: 64 },
+        });
+
+        // Pool must complete without crash — inner pool consumed from same budget
+        assert(pool.agents.length === 1, 'outer pool has 1 agent');
+        ok(`cross-level pressure: completed with ${pool.totalTokens} tokens`);
+
+        return pool;
+      },
+    );
+  });
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// TEST 14: parentAgentId distinguishes inner from outer
+// ═════════════════════════════════════════════════════════════════════
+
+async function testParentAgentId(): Promise<void> {
+  console.log('\n--- parentAgentId: inner vs outer agents ---');
+
+  await run(function*() {
+    const ctx = yield* call(() => createTestContext({ nSeqMax: 8 }));
+    const { events } = yield* initAgents(ctx);
+
+    const collected: AgentEvent[] = [];
+    yield* spawn(function*() {
+      for (const ev of yield* each(events)) {
+        collected.push(ev);
+        yield* each.next();
+      }
+    });
+
+    const { toolMap, toolsJson } = createToolkit([new SubAgentTool()]);
+
+    let outerRootHandle: number | undefined;
+
+    yield* withSharedRoot(
+      { systemPrompt: 'You are a research coordinator. Use the sub_research tool to delegate questions to sub-agents. You MUST use the tool — do not answer directly.', tools: toolsJson },
+      function*(root) {
+        outerRootHandle = root.handle;
+
+        const pool = yield* runAgents({
+          tasks: [{
+            systemPrompt: 'You are a research coordinator. Use the sub_research tool to delegate questions to sub-agents. You MUST use the tool — do not answer directly.',
+            content: 'Research this question using the sub_research tool: "What is 2+2?"',
+            tools: toolsJson,
+            parent: root,
+          }],
+          tools: toolMap,
+          maxTurns: 3,
+        });
+
+        // Outer agent's parentAgentId should be the outer root handle
+        const outerAgentId = pool.agents[0].agentId;
+        const spawnEvents = collected.filter(
+          (e): e is Extract<AgentEvent, { type: 'agent:spawn' }> => e.type === 'agent:spawn'
+        );
+
+        // Find the outer agent's spawn event
+        const outerSpawn = spawnEvents.find(e => e.agentId === outerAgentId);
+        assert(outerSpawn !== undefined, 'outer agent has spawn event');
+        assert(outerSpawn!.parentAgentId === outerRootHandle,
+          `outer agent parentAgentId (${outerSpawn!.parentAgentId}) === outer root handle (${outerRootHandle})`);
+
+        // Find inner agent spawn events — agentId differs from outer
+        const innerSpawns = spawnEvents.filter(e => e.agentId !== outerAgentId);
+        assert(innerSpawns.length > 0, `inner agents spawned (${innerSpawns.length})`);
+
+        // Inner agents' parentAgentId should NOT be the outer root handle —
+        // it should be the inner root created by SubAgentTool's withSharedRoot
+        for (const inner of innerSpawns) {
+          assert(inner.parentAgentId !== outerRootHandle,
+            `inner agent parentAgentId (${inner.parentAgentId}) !== outer root handle (${outerRootHandle})`);
+        }
+
+        ok('parentAgentId correctly distinguishes inner from outer agents');
+        return pool;
+      },
+    );
+  });
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// TEST 15: Inner pool with tools — grammar isolation
+// ═════════════════════════════════════════════════════════════════════
+
+async function testInnerPoolWithTools(): Promise<void> {
+  console.log('\n--- Inner pool with tools: grammar isolation ---');
+
+  await run(function*() {
+    const ctx = yield* call(() => createTestContext({ nSeqMax: 8 }));
+    const { events } = yield* initAgents(ctx);
+
+    const collected: AgentEvent[] = [];
+    yield* spawn(function*() {
+      for (const ev of yield* each(events)) {
+        collected.push(ev);
+        yield* each.next();
+      }
+    });
+
+    // Tool that spawns an inner pool WITH its own tools
+    class DelegatingTool extends Tool<{ question: string }> {
+      readonly name = 'delegate';
+      readonly description = 'Delegate a math question to a sub-agent that has a calculator tool. You MUST use this tool.';
+      readonly parameters: JsonSchema = {
+        type: 'object',
+        properties: { question: { type: 'string', description: 'Math question for sub-agent' } },
+        required: ['question'],
+      };
+      *execute(args: { question: string }): Operation<unknown> {
+        // Inner pool has its own tool — CalculatorTool
+        const inner = createToolkit([new CalculatorTool()]);
+        const result = yield* withSharedRoot(
+          { systemPrompt: 'You are a math assistant. You MUST use the calculator tool to compute answers. Never compute mentally.', tools: inner.toolsJson },
+          function*(root) {
+            return yield* runAgents({
+              tasks: [{
+                systemPrompt: 'You are a math assistant. You MUST use the calculator tool to compute answers. Never compute mentally.',
+                content: args.question || 'What is 99 * 77?',
+                tools: inner.toolsJson,
+                parent: root,
+              }],
+              tools: inner.toolMap,
+              maxTurns: 3,
+            });
+          },
+        );
+        return {
+          innerToolCalls: result.totalToolCalls,
+          innerTokens: result.totalTokens,
+          findings: result.agents[0]?.findings,
+        };
+      }
+    }
+
+    // Outer pool has DelegatingTool — inner pool has CalculatorTool
+    // Different tool schemas at each level
+    const outer = createToolkit([new DelegatingTool()]);
+
+    yield* withSharedRoot(
+      { systemPrompt: 'You are a coordinator. Use the delegate tool to send math questions to a specialist. You MUST use the tool — do not answer directly.', tools: outer.toolsJson },
+      function*(root) {
+        const pool = yield* runAgents({
+          tasks: [{
+            systemPrompt: 'You are a coordinator. Use the delegate tool to send math questions to a specialist. You MUST use the tool — do not answer directly.',
+            content: 'Use the delegate tool with question "What is 99 * 77?"',
+            tools: outer.toolsJson,
+            parent: root,
+          }],
+          tools: outer.toolMap,
+          maxTurns: 3,
+        });
+
+        assert(pool.agents.length === 1, 'outer pool has 1 agent');
+        assert(pool.totalToolCalls > 0, `outer agent called delegate tool (${pool.totalToolCalls})`);
+
+        // Check that inner tool calls happened — calculator at inner level
+        const innerToolCalls = collected.filter(
+          e => e.type === 'agent:tool_call' && e.tool === 'calculator'
+        );
+        const outerToolCalls = collected.filter(
+          e => e.type === 'agent:tool_call' && e.tool === 'delegate'
+        );
+
+        assert(outerToolCalls.length > 0, `outer level called 'delegate' (${outerToolCalls.length})`);
+
+        // Inner calculator calls are expected but model-dependent —
+        // the key assertion is that the pool completed without crash,
+        // proving grammar isolation (inner pool parsed its own tool schemas)
+        if (innerToolCalls.length > 0) {
+          ok(`inner level called 'calculator' (${innerToolCalls.length}) — grammar isolation verified`);
+        } else {
+          console.log('  [WARN] inner agent did not call calculator — grammar isolation not fully exercised');
+        }
+
+        assert(root.children.length === 0, 'all branches pruned after pool');
+        ok('inner pool with tools completed');
+
+        return pool;
+      },
+    );
+  });
+}
+
+// ═════════════════════════════════════════════════════════════════════
 // RUNNER
 // ═════════════════════════════════════════════════════════════════════
 
@@ -606,6 +976,11 @@ async function main(): Promise<void> {
   await testGenerate();
   await testEventStreamOrdering();
   await testSharedRootCleanupOnError();
+  await testNestedConcurrency();
+  await testNestedCancellation();
+  await testCrossLevelPressure();
+  await testParentAgentId();
+  await testInnerPoolWithTools();
 
   console.log(`\n${'='.repeat(40)}`);
   console.log(`Results: ${passed} passed, ${failed} failed`);

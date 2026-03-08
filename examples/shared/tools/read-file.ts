@@ -1,3 +1,4 @@
+import type { Operation } from 'effection';
 import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Resource } from '../resources/types';
@@ -62,10 +63,10 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
     };
   }
 
-  async execute(
+  *execute(
     args: { filename: string; startLine?: number; endLine?: number } & Record<string, unknown>,
     context?: ToolContext,
-  ): Promise<unknown> {
+  ): Operation<unknown> {
     const filename = args.filename || (args.path as string) || '';
     const file = this._resources.find(r => r.name === filename);
     if (!file) {

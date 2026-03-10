@@ -1,0 +1,239 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <style>
+    .title { font-size: 22px; font-weight: 700; fill: #404040; }
+    .label { font-size: 13px; font-weight: 600; fill: #404040; }
+    .label-light { font-size: 13px; font-weight: 600; fill: #fff; }
+    .note { font-size: 12px; fill: #999; font-style: italic; }
+    .note-red { font-size: 11px; fill: #cb2028; font-weight: 600; }
+
+    /* API side — muted boxes */
+    .api-box { fill: #f0f0f0; stroke: #404040; stroke-width: 2.5; rx: 5; }
+    .api-box-text { font-size: 12px; fill: #404040; font-weight: 500; }
+    .api-line { stroke: #404040; stroke-width: 1.5; stroke-linecap: round; }
+    .api-gap { stroke: #cb2028; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 6 4; }
+
+    /* CC side — bold colored */
+    .cc-trunk { stroke: #404040; stroke-width: 3; stroke-linecap: round; }
+    .cc-branch { stroke: #404040; stroke-width: 3; stroke-linecap: round; }
+    .cc-sub { stroke: #404040; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 8 4; }
+    .cc-prefix { fill: #B3E3FF; stroke: #404040; stroke-width: 3; rx: 6; }
+    .cc-prefix-text { font-size: 14px; font-weight: 700; fill: #404040; }
+    .node-tool { fill: #B18BE8; stroke: #404040; stroke-width: 2.5; }
+    .node-prefill { fill: #4ED1A1; stroke: #404040; stroke-width: 2.5; }
+    .node-spawn { fill: #3babc8; stroke: #404040; stroke-width: 2.5; }
+    .node-return { fill: #4ED1A1; stroke: #404040; stroke-width: 2.5; }
+    .agent-tag { fill: #404040; stroke: #404040; stroke-width: 2; rx: 4; }
+    .agent-tag-text { font-size: 11px; font-weight: 700; fill: #fff; }
+
+    .divider { stroke: #ddd; stroke-width: 1.5; }
+
+    /* Arrow markers */
+    .arrow-dark { fill: #404040; }
+    .arrow-teal { fill: #4ED1A1; }
+  </style>
+
+  <defs>
+    <marker id="arr" markerWidth="5" markerHeight="4" refX="4" refY="2" orient="auto">
+      <path d="M0,0.5 L4,2 L0,3.5" fill="none" stroke="#404040" stroke-width="1" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arr-branch" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+      <path d="M0,0.5 L6,3 L0,5.5" fill="none" stroke="#404040" stroke-width="1.5" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- Divider -->
+  <line x1="560" y1="20" x2="560" y2="480" class="divider"/>
+
+  <!-- ==================== LEFT: API Agents ==================== -->
+  <text x="265" y="42" class="title" text-anchor="middle">API Agents</text>
+
+  <!-- === Agent A === -->
+  <rect x="28" y="80" width="52" height="16" class="agent-tag"/>
+  <text x="54" y="92" class="agent-tag-text" text-anchor="middle">Agent A</text>
+
+  <!-- Cycle 1 -->
+  <rect x="28" y="110" width="76" height="32" class="api-box"/>
+  <text x="66" y="131" class="api-box-text" text-anchor="middle">prompt</text>
+  <line x1="104" y1="126" x2="120" y2="126" class="api-line" marker-end="url(#arr)"/>
+  <rect x="120" y="110" width="68" height="32" class="api-box"/>
+  <text x="154" y="131" class="api-box-text" text-anchor="middle">model</text>
+  <line x1="188" y1="126" x2="204" y2="126" class="api-line" marker-end="url(#arr)"/>
+  <rect x="204" y="110" width="80" height="32" class="api-box"/>
+  <text x="244" y="131" class="api-box-text" text-anchor="middle">response</text>
+
+  <!-- Gap -->
+  <line x1="288" y1="126" x2="316" y2="126" class="api-gap"/>
+  <text x="302" y="158" class="note-red" text-anchor="middle">rebuild</text>
+
+  <!-- Cycle 2 -->
+  <rect x="320" y="110" width="76" height="32" class="api-box"/>
+  <text x="358" y="131" class="api-box-text" text-anchor="middle">prompt</text>
+  <line x1="396" y1="126" x2="412" y2="126" class="api-line" marker-end="url(#arr)"/>
+  <rect x="412" y="110" width="68" height="32" class="api-box"/>
+  <text x="446" y="131" class="api-box-text" text-anchor="middle">model</text>
+  <line x1="480" y1="126" x2="496" y2="126" class="api-line" marker-end="url(#arr)"/>
+  <rect x="496" y="110" width="44" height="32" class="api-box"/>
+  <text x="518" y="131" class="api-box-text" text-anchor="middle">...</text>
+
+  <!-- === Agent B === -->
+  <rect x="28" y="195" width="52" height="16" class="agent-tag"/>
+  <text x="54" y="207" class="agent-tag-text" text-anchor="middle">Agent B</text>
+
+  <rect x="28" y="225" width="76" height="32" class="api-box"/>
+  <text x="66" y="246" class="api-box-text" text-anchor="middle">prompt</text>
+  <line x1="104" y1="241" x2="120" y2="241" class="api-line" marker-end="url(#arr)"/>
+  <rect x="120" y="225" width="68" height="32" class="api-box"/>
+  <text x="154" y="246" class="api-box-text" text-anchor="middle">model</text>
+  <line x1="188" y1="241" x2="204" y2="241" class="api-line" marker-end="url(#arr)"/>
+  <rect x="204" y="225" width="80" height="32" class="api-box"/>
+  <text x="244" y="246" class="api-box-text" text-anchor="middle">response</text>
+
+  <line x1="288" y1="241" x2="316" y2="241" class="api-gap"/>
+  <text x="302" y="273" class="note-red" text-anchor="middle">rebuild</text>
+
+  <rect x="320" y="225" width="76" height="32" class="api-box"/>
+  <text x="358" y="246" class="api-box-text" text-anchor="middle">prompt</text>
+  <line x1="396" y1="241" x2="412" y2="241" class="api-line" marker-end="url(#arr)"/>
+  <rect x="412" y="225" width="68" height="32" class="api-box"/>
+  <text x="446" y="246" class="api-box-text" text-anchor="middle">model</text>
+  <line x1="480" y1="241" x2="496" y2="241" class="api-line" marker-end="url(#arr)"/>
+  <rect x="496" y="225" width="44" height="32" class="api-box"/>
+  <text x="518" y="246" class="api-box-text" text-anchor="middle">...</text>
+
+  <!-- === Agent C === -->
+  <rect x="28" y="310" width="52" height="16" class="agent-tag"/>
+  <text x="54" y="322" class="agent-tag-text" text-anchor="middle">Agent C</text>
+
+  <rect x="28" y="340" width="76" height="32" class="api-box"/>
+  <text x="66" y="361" class="api-box-text" text-anchor="middle">prompt</text>
+  <line x1="104" y1="356" x2="120" y2="356" class="api-line" marker-end="url(#arr)"/>
+  <rect x="120" y="340" width="68" height="32" class="api-box"/>
+  <text x="154" y="361" class="api-box-text" text-anchor="middle">model</text>
+  <line x1="188" y1="356" x2="204" y2="356" class="api-line" marker-end="url(#arr)"/>
+  <rect x="204" y="340" width="80" height="32" class="api-box"/>
+  <text x="244" y="361" class="api-box-text" text-anchor="middle">response</text>
+
+  <line x1="288" y1="356" x2="316" y2="356" class="api-gap"/>
+  <text x="302" y="388" class="note-red" text-anchor="middle">rebuild</text>
+
+  <rect x="320" y="340" width="76" height="32" class="api-box"/>
+  <text x="358" y="361" class="api-box-text" text-anchor="middle">prompt</text>
+  <line x1="396" y1="356" x2="412" y2="356" class="api-line" marker-end="url(#arr)"/>
+  <rect x="412" y="340" width="68" height="32" class="api-box"/>
+  <text x="446" y="361" class="api-box-text" text-anchor="middle">model</text>
+  <line x1="480" y1="356" x2="496" y2="356" class="api-line" marker-end="url(#arr)"/>
+  <rect x="496" y="340" width="44" height="32" class="api-box"/>
+  <text x="518" y="361" class="api-box-text" text-anchor="middle">...</text>
+
+  <!-- Bottom note left -->
+  <text x="270" y="440" class="note" text-anchor="middle">context reconstructed from scratch on every call</text>
+
+  <!-- ==================== RIGHT: Continuous Context ==================== -->
+  <text x="885" y="42" class="title" text-anchor="middle">Continuous Context</text>
+
+  <!-- Shared KV Prefix -->
+  <rect x="600" y="68" width="170" height="40" class="cc-prefix"/>
+  <text x="685" y="94" class="cc-prefix-text" text-anchor="middle">shared KV prefix</text>
+
+  <!-- Vertical trunk -->
+  <line x1="685" y1="108" x2="685" y2="380" class="cc-trunk"/>
+
+  <!-- === Agent A branch === -->
+  <!-- Fork point -->
+  <circle cx="685" cy="135" r="6" fill="#404040"/>
+  <!-- Branch line -->
+  <line x1="691" y1="135" x2="730" y2="135" class="cc-branch"/>
+
+  <rect x="730" y="125" width="52" height="16" class="agent-tag"/>
+  <text x="756" y="137" class="agent-tag-text" text-anchor="middle">Agent A</text>
+
+  <line x1="782" y1="135" x2="850" y2="135" class="cc-branch"/>
+  <circle cx="850" cy="135" r="10" class="node-tool"/>
+  <text x="850" y="120" class="label" text-anchor="middle">tool</text>
+
+  <line x1="860" y1="135" x2="940" y2="135" class="cc-branch"/>
+  <circle cx="940" cy="135" r="10" class="node-prefill"/>
+  <text x="940" y="120" class="label" text-anchor="middle">prefill</text>
+
+  <line x1="950" y1="135" x2="1030" y2="135" class="cc-branch"/>
+  <circle cx="1030" cy="135" r="10" class="node-tool"/>
+  <text x="1030" y="120" class="label" text-anchor="middle">tool</text>
+
+  <line x1="1040" y1="135" x2="1120" y2="135" class="cc-branch"/>
+  <circle cx="1120" cy="135" r="10" class="node-prefill"/>
+  <text x="1120" y="120" class="label" text-anchor="middle">prefill</text>
+
+  <line x1="1130" y1="135" x2="1170" y2="135" class="cc-branch" marker-end="url(#arr-branch)"/>
+
+  <!-- === Agent B branch === -->
+  <circle cx="685" cy="260" r="6" fill="#404040"/>
+  <line x1="691" y1="260" x2="730" y2="260" class="cc-branch"/>
+
+  <rect x="730" y="250" width="52" height="16" class="agent-tag"/>
+  <text x="756" y="262" class="agent-tag-text" text-anchor="middle">Agent B</text>
+
+  <line x1="782" y1="260" x2="850" y2="260" class="cc-branch"/>
+  <circle cx="850" cy="260" r="10" class="node-tool"/>
+  <text x="850" y="245" class="label" text-anchor="middle">tool</text>
+
+  <line x1="860" y1="260" x2="940" y2="260" class="cc-branch"/>
+  <circle cx="940" cy="260" r="10" class="node-prefill"/>
+  <text x="940" y="245" class="label" text-anchor="middle">prefill</text>
+
+  <!-- Sub-agent spawn -->
+  <line x1="950" y1="260" x2="990" y2="260" class="cc-branch"/>
+  <circle cx="990" cy="260" r="10" class="node-spawn"/>
+  <text x="990" y="245" class="label" text-anchor="middle">spawn</text>
+
+  <!-- Sub-agent dashed path down and across -->
+  <path d="M990,270 C990,300 990,310 1010,320" class="cc-sub" fill="none"/>
+  <line x1="1010" y1="320" x2="1080" y2="320" class="cc-sub"/>
+  <circle cx="1045" cy="320" r="8" fill="#3babc8" stroke="#404040" stroke-width="2"/>
+  <text x="1045" y="342" class="label" text-anchor="middle" font-size="11">sub-agent</text>
+
+  <!-- Return path -->
+  <path d="M1080,320 C1100,320 1100,290 1100,260" class="cc-sub" fill="none"/>
+  <circle cx="1100" cy="260" r="10" class="node-return"/>
+  <text x="1100" y="245" class="label" text-anchor="middle" font-size="11">findings</text>
+
+  <!-- Faded line behind sub-agent showing continuity -->
+  <line x1="990" y1="260" x2="1100" y2="260" stroke="#404040" stroke-width="2" stroke-opacity="0.15"/>
+
+  <line x1="1110" y1="260" x2="1170" y2="260" class="cc-branch" marker-end="url(#arr-branch)"/>
+
+  <!-- === Agent C branch === -->
+  <circle cx="685" cy="380" r="6" fill="#404040"/>
+  <line x1="691" y1="380" x2="730" y2="380" class="cc-branch"/>
+
+  <rect x="730" y="370" width="52" height="16" class="agent-tag"/>
+  <text x="756" y="382" class="agent-tag-text" text-anchor="middle">Agent C</text>
+
+  <line x1="782" y1="380" x2="850" y2="380" class="cc-branch"/>
+  <circle cx="850" cy="380" r="10" class="node-tool"/>
+  <text x="850" y="365" class="label" text-anchor="middle">tool</text>
+
+  <line x1="860" y1="380" x2="940" y2="380" class="cc-branch"/>
+  <circle cx="940" cy="380" r="10" class="node-prefill"/>
+  <text x="940" y="365" class="label" text-anchor="middle">prefill</text>
+
+  <line x1="950" y1="380" x2="1030" y2="380" class="cc-branch"/>
+  <circle cx="1030" cy="380" r="10" class="node-tool"/>
+  <text x="1030" y="365" class="label" text-anchor="middle">tool</text>
+
+  <line x1="1040" y1="380" x2="1120" y2="380" class="cc-branch"/>
+  <circle cx="1120" cy="380" r="10" class="node-prefill"/>
+  <text x="1120" y="365" class="label" text-anchor="middle">prefill</text>
+
+  <line x1="1130" y1="380" x2="1170" y2="380" class="cc-branch" marker-end="url(#arr-branch)"/>
+
+  <!-- Legend -->
+  <circle cx="620" cy="440" r="8" class="node-tool"/>
+  <text x="636" y="444" class="label">tool call</text>
+  <circle cx="730" cy="440" r="8" class="node-prefill"/>
+  <text x="746" y="444" class="label">prefill result</text>
+  <circle cx="870" cy="440" r="8" class="node-spawn"/>
+  <text x="886" y="444" class="label">spawn sub-agent</text>
+
+  <!-- Bottom note right -->
+  <text x="900" y="472" class="note" text-anchor="middle">context never breaks — one continuous state from prefix to output</text>
+</svg>

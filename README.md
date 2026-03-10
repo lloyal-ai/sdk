@@ -6,18 +6,15 @@
 [![npm sdk](https://img.shields.io/npm/v/@lloyal-labs/sdk.svg?label=sdk)](https://www.npmjs.com/package/@lloyal-labs/sdk)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**TypeScript framework for local recursive agents, parallel tool calling, and branching inference.**
+**[Continuous Context](https://lloyal.ai/blog/continuous-context) agent runtime for multi-agent inference.**
 
-Run tool-calling agents and sub-agents locally, in parallel, on a shared model runtime.
-No API boundary. No serialized message passing between agents. No network required.
+Agents are branches of a single inference process — forked from shared KV cache state, prefilling tool results into the attention mechanism, spawning sub-agents from live branches. Context is never serialized, summarized, or reconstructed.
 
 <p>
   <img src="assets/demo.gif" alt="Deep Research: 3 agents analyzing DOJ v Apple complaint — plan, research with tool calls, verify, synthesize" width="100%">
   <br>
   <em>Qwen3 4B + 0.6B reranker · 3 agents · 14 tool calls · 98s · fully offline on M2 MacBook Pro</em>
 </p>
-
-`lloyal-agents` is for building agent workflows where agents are not separate model calls. They are branches of one live inference process, sharing context and compute, calling tools in parallel, and spawning sub-agents from their own live state.
 
 * **Parallel agents, one GPU** — N branches advance in a single forward pass
 * **Recursive sub-agents** — agents spawn agents from live state, not summaries

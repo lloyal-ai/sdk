@@ -1,20 +1,16 @@
 # @lloyal-labs/lloyal-agents
 
-Structured concurrency agent runtime for the lloyal inference platform.
+Continuous Context agent runtime.
 
-`lloyal-agents` runs multi-agent inference inside the decode loop. Agents are branches of a single running process — forked from shared KV cache state, advancing through one GPU forward pass per tick, spawning sub-agents from their own live branches at arbitrary depth. Orchestration is not a layer above inference. It is inference.
+`lloyal-agents` runs multi-agent inference inside the decode loop. Instead of N independent model calls rebuilding the prompt each step, all agents advance inside one continuous decode process — forked from shared KV cache state, driven through a single GPU forward pass per tick, spawning sub-agents from their own live branches at arbitrary depth.
+
+Built on [lloyal.node](https://github.com/lloyal-ai/lloyal.node), which provides forkable decode state and continuous tree batching over llama.cpp. `lloyal-agents` adds structured concurrency, tool dispatch, and a four-phase tick loop. Orchestration is not a layer above inference. It is inference.
 
 ```bash
 npm i @lloyal-labs/lloyal-agents
 ```
 
 **Backends:** [lloyal.node](https://github.com/lloyal-ai/lloyal.node) — prebuilt binaries for macOS (Metal, CPU), Linux (CPU, CUDA, Vulkan), and Windows (CPU, CUDA, Vulkan). GPU selection at runtime.
-
-## Generation as the Primitive
-
-The core architectural decision: generation is the primitive, not the API call. Agents are not processes that exchange messages. They are branches of a running inference process — forked from shared KV cache state, generating independently, their outputs comparable because they share a computational origin.
-
-This is built on [lloyal.node](https://github.com/lloyal-ai/lloyal.node), which provides forkable decode state and continuous tree batching over llama.cpp. `lloyal-agents` adds structured concurrency, tool dispatch, and a three-phase tick loop that drives N branches through a single GPU forward pass per step.
 
 The public API surface:
 
@@ -91,13 +87,15 @@ yield *
 
 ## In-Loop Orchestration
 
-All active agents advance together in a three-phase tick loop:
+All active agents advance together in a four-phase tick loop:
 
 **PRODUCE.** Every generating agent calls `produceSync()` — synchronous sampling with no async gap between agents. This matters because it means the entire produce phase is a single uninterrupted pass over the active set.
 
 **COMMIT.** One `store.commit()` call packs all produced tokens into a single `llama_batch` and dispatches once. N branches, one GPU call. No per-agent decode overhead.
 
 **SETTLE.** Tool results that resolved during COMMIT are drained from a buffer. Each result is tokenized into a delta, budget-checked against a fresh `ContextPressure` snapshot, and batch-prefilled into the agent's branch. Grammar state resets. The agent transitions back to `generating`.
+
+**DISPATCH.** Tool calls collected during PRODUCE are executed sequentially via `scoped()` + `call()`. Each tool runs to completion before the next begins — no concurrent `llama_decode` during dispatch. Tools return `Operation<unknown>`, so they can `yield*` into framework primitives like `useAgentPool` or `runAgents`, spawning recursive sub-agents within the calling agent's scope.
 
 ```typescript
 // From the tick loop — Phase 1
@@ -122,7 +120,7 @@ if (entries.length > 0) {
 }
 ```
 
-When no agent is generating and tools are still pending, the loop parks itself via `action()` — an Effection primitive that suspends the generator until a tool resolves and calls `wakeIdle()`. No polling. No sleep loops.
+When no agent is generating and tools are still pending, the loop yields control until the next tool resolves. No polling. No sleep loops.
 
 ## Structured Concurrency DAG
 
@@ -140,11 +138,13 @@ function* setupAgent(parent, task, ctx) {
 }
 ```
 
-If the scope exits — error, cancellation, normal completion — the branch is pruned. Orphaned branches are structurally impossible. Tool dispatch uses `scope.run()` for eager start inside the agent pool scope; if the scope tears down, pending tools are cancelled. The DAG is not imposed on the orchestration. It is intrinsic to the Effection task tree.
+If the scope exits — error, cancellation, normal completion — the branch is pruned. Orphaned branches are structurally impossible. Tool dispatch uses `scoped()` + `call()` — each tool executes inside a scoped error boundary within the agent pool scope. If the scope tears down, pending tools are cancelled. The DAG is not imposed on the orchestration. It is intrinsic to the Effection task tree.
 
 `useAgentPool` is an Effection `resource()` — it suspends via `provide()` after all agents complete, but keeps their branches alive. The caller can fork sub-agents from any completed agent's branch. Those sub-agents inherit the parent agent's full KV state — everything it generated, every tool result it consumed, every reasoning step it took. No summarization. No context window management. The sub-agent continues from the parent's frontier.
 
-The deep-research harness ships a concrete example: `reportPass`. Research agents run through the tick loop with tools — search, grep, read_file, report. Some agents get hard-cut by context pressure before they can submit findings. Rather than losing their work, the harness forks a sub-agent from each hard-cut agent's branch with a constrained tool set (report only):
+Recursive agents work at two levels. At the **harness level**, a completed pool's branches can be forked into follow-up pools — the deep-research example does this with `reportPass`, forking sub-agents from hard-cut agents to extract findings they couldn't submit before context pressure terminated them. At the **model level**, a tool's `execute()` method returns `Operation<unknown>`, so it can `yield*` directly into `useAgentPool` or `runAgents`. An agent that calls such a tool spawns sub-agents mid-generation — inside its own scope, inheriting its KV state, with cleanup guaranteed by structured concurrency.
+
+The deep-research harness ships a concrete example of harness-level recursion: `reportPass`. Research agents run through the tick loop with tools — search, grep, read_file, report. Some agents get hard-cut by context pressure before they can submit findings. Rather than losing their work, the harness forks a sub-agent from each hard-cut agent's branch with a constrained tool set (report only):
 
 ```typescript
 function* reportPass(pool: AgentPoolResult, opts: WorkflowOpts) {
@@ -198,19 +198,19 @@ const result =
 // Losers already pruned. Winner's branch is caller's responsibility.
 ```
 
-The harness decides how to compare. The deep-research example measures semantic equivalence across diverge outputs using bigram Jaccard similarity — where branches agree, the model is confident; where they diverge, hallucination risk is high. No model call required for the comparison itself. Other harnesses can use different equivalence measures over the same `diverge()` primitive.
+The harness decides how to compare. `diverge()` returns all outputs with their perplexity scores — the harness can apply any equivalence measure: bigram overlap, embedding similarity, or model-based evaluation. Where branches agree, the model is confident; where they diverge, hallucination risk is high.
 
 This directly operationalizes the semantic entropy work from Farquhar et al. ([Nature, 2024](https://www.nature.com/articles/s41586-024-07421-0)) — but as a runtime primitive, not a post-hoc metric. The key constraint: divergence from a common computational ancestor is signal. Divergence from independently-constructed contexts is sampling variance. This measurement is only meaningful because agents share a frontier.
 
 ## Session Accumulation
 
-When agents converge — when the entropy gate passes — the winning branch is not returned as output. It is promoted. It becomes the new trunk of the session. The next query starts from ground that was computationally earned by the previous convergence check.
+After synthesis and verification, the harness promotes a branch to the session trunk. `Session.promote(branch)` retains only that branch and makes it the basis for future queries. The next query forks from this trunk — its KV cache already contains the prior verified answer.
 
-This is the cold/warm session distinction. A cold query runs the full pipeline: plan the decomposition, dispatch research agents, synthesize via `diverge`, evaluate convergence, promote. A warm query — one where a trusted trunk already exists — skips verification entirely. The frontier is already established. Agents fork from it, research, and the session responds directly from findings.
+This is the cold/warm session distinction. A cold query starts from position 0 — plan, research, synthesize, verify, promote. A warm query starts from an existing trunk — agents fork from it directly, research further, and the session responds from new findings appended to the existing state.
 
-Each promote is an epistemic commitment: this branch survived N-way comparison and convergence evaluation, so it becomes the basis for future reasoning. The session doesn't just carry forward text — it carries forward the KV state of a branch that survived verification. Future agents fork from this state. Their shared frontier is not an empty system prompt. It is the accumulated, verified reasoning of every previous cycle.
+Each promote is an epistemic commitment. The promoted branch becomes the basis for future reasoning. The session carries forward not just text but the full KV state of a branch that survived the verification pipeline. Future agents fork from this state. Their shared frontier is the accumulated, verified reasoning of every previous cycle.
 
-Over multiple queries, the session compounds. Early queries establish the foundation. Later queries branch from it, research further, verify further, promote further. The trunk grows. The frontier advances. The model's effective context is not what you put in the prompt — it is what was earned by convergence.
+Over multiple queries, the session compounds. Early queries establish the foundation. Later queries branch from it, research further, verify further, promote further. The trunk grows. The frontier advances.
 
 ## Context Pressure
 
@@ -237,6 +237,8 @@ Tools are class-based with OpenAI-compatible function schemas:
 
 ```typescript
 import { Tool } from "@lloyal-labs/lloyal-agents";
+import { call } from "effection";
+import type { Operation } from "effection";
 import type { ToolContext } from "@lloyal-labs/lloyal-agents";
 
 class SearchTool extends Tool<{ query: string }> {
@@ -248,8 +250,8 @@ class SearchTool extends Tool<{ query: string }> {
     required: ["query"],
   };
 
-  async execute(args: { query: string }, context?: ToolContext) {
-    const results = await this.reranker.rank(args.query, this.chunks);
+  *execute(args: { query: string }, context?: ToolContext): Operation<unknown> {
+    const results = yield* call(() => this.reranker.rank(args.query, this.chunks));
     context?.onProgress?.({
       filled: results.length,
       total: this.chunks.length,

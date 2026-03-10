@@ -6,9 +6,9 @@
 [![npm sdk](https://img.shields.io/npm/v/@lloyal-labs/sdk.svg?label=sdk)](https://www.npmjs.com/package/@lloyal-labs/sdk)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**[Continuous Context](https://lloyal.ai/blog/continuous-context) agent runtime for multi-agent inference.**
+**Continuous Context agent runtime for multi-agent inference.**
 
-Agents are branches of a single inference process — forked from shared KV cache state, prefilling tool results into the attention mechanism, spawning sub-agents from live branches. Context is never serialized, summarized, or reconstructed.
+Instead of N independent model calls rebuilding the prompt each step, all agents advance inside one continuous decode process. They fork from shared KV cache state, prefill tool results directly into the attention mechanism, and spawn sub-agents from their own live branches. Context is never serialized, summarized, or reconstructed.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/continuous-context-dark.svg">

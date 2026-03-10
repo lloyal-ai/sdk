@@ -8,14 +8,14 @@ Built on [lloyal.node](https://github.com/lloyal-ai/lloyal.node), which provides
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lloyal-ai/sdk/main/assets/continuous-context-dark.svg">
-  <img src="https://raw.githubusercontent.com/lloyal-ai/sdk/main/assets/continuous-context.svg" alt="API Agents vs Continuous Context — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
+  <img src="https://raw.githubusercontent.com/lloyal-ai/sdk/main/assets/continuous-context.svg" alt="Traditional Agents vs Continuous Context Agents — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
 </picture>
 
 ```bash
-npm i @lloyal-labs/lloyal-agents
+npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node
 ```
 
-**Backends:** [lloyal.node](https://github.com/lloyal-ai/lloyal.node) — prebuilt binaries for macOS (Metal, CPU), Linux (CPU, CUDA, Vulkan), and Windows (CPU, CUDA, Vulkan). GPU selection at runtime.
+`lloyal-agents` provides the agent runtime. [`lloyal.node`](https://github.com/lloyal-ai/lloyal.node) provides the native inference backend — prebuilt binaries for macOS (Metal, CPU), Linux (CPU, CUDA, Vulkan), and Windows (CPU, CUDA, Vulkan). Both are required. GPU selection at runtime.
 
 The public API surface:
 
@@ -147,38 +147,11 @@ If the scope exits — error, cancellation, normal completion — the branch is 
 
 `useAgentPool` is an Effection `resource()` — it suspends via `provide()` after all agents complete, but keeps their branches alive. The caller can fork sub-agents from any completed agent's branch. Those sub-agents inherit the parent agent's full KV state — everything it generated, every tool result it consumed, every reasoning step it took. No summarization. No context window management. The sub-agent continues from the parent's frontier.
 
-Recursive agents work at two levels. At the **harness level**, a completed pool's branches can be forked into follow-up pools — the deep-research example does this with `reportPass`, forking sub-agents from hard-cut agents to extract findings they couldn't submit before context pressure terminated them. At the **model level**, a tool's `execute()` method returns `Operation<unknown>`, so it can `yield*` directly into `useAgentPool` or `runAgents`. An agent that calls such a tool spawns sub-agents mid-generation — inside its own scope, inheriting its KV state, with cleanup guaranteed by structured concurrency.
+Recursive agents work at two levels. At the **harness level**, a completed pool's branches can be forked into follow-up pools — sub-agents inherit the parent's full KV state and continue from the fork point. At the **model level**, a tool's `execute()` method returns `Operation<unknown>`, so it can `yield*` directly into `useAgentPool` or `runAgents`. An agent that calls such a tool spawns sub-agents mid-generation — inside its own scope, inheriting its KV state, with cleanup guaranteed by structured concurrency.
 
-The deep-research harness ships a concrete example of harness-level recursion: `reportPass`. Research agents run through the tick loop with tools — search, grep, read_file, report. Some agents get hard-cut by context pressure before they can submit findings. Rather than losing their work, the harness forks a sub-agent from each hard-cut agent's branch with a constrained tool set (report only):
+In both cases, the sub-agent sees everything the parent saw — system prompt, tool calls, partial reasoning — because that state is already in the KV cache at the fork point. No summarization. No context reconstruction. The sub-agent just continues from the parent's frontier.
 
-```typescript
-function* reportPass(pool: AgentPoolResult, opts: WorkflowOpts) {
-  const hardCut = pool.agents.filter((a) => !a.findings && !a.branch.disposed);
-  if (hardCut.length === 0) return;
-
-  const reporters = yield* runAgents({
-    tasks: hardCut.map((a) => ({
-      systemPrompt: REPORT_PROMPT,
-      content: "Report your findings.",
-      tools: reportOnlyTools,
-      parent: a.branch, // fork from the parent agent's branch
-    })),
-    tools: new Map([["report", reportTool]]),
-    terminalTool: "report",
-  });
-
-  hardCut.forEach((a, i) => {
-    if (reporters.agents[i]?.findings)
-      a.findings = reporters.agents[i].findings;
-  });
-}
-```
-
-The sub-agent sees everything the parent saw — its system prompt, its tool calls, its partial reasoning — because that state is already in the KV cache at the fork point. The sub-agent just continues from where the parent was cut off, with a tighter mandate.
-
-This is the DAG in practice: parent agents form the first level, reporter sub-agents form the second. `runAgents` wraps `useAgentPool` in `scoped()`, so the reporter branches are pruned when it returns. The parent branches are still alive in the outer scope. When that outer scope exits, every `ensure()` callback fires and prunes the parents. Teardown propagates top-down. Cleanup is guaranteed bottom-up.
-
-There is nothing in the framework that limits this to two levels. Agents can spawn sub-agents that spawn sub-agents. An agent pool can run inside another agent pool's scope. The structured concurrency guarantees compose at every depth.
+There is nothing in the framework that limits depth. Agents can spawn sub-agents that spawn sub-agents. An agent pool can run inside another agent pool's scope. The structured concurrency guarantees compose at every level.
 
 ## Hallucination Detection
 
@@ -209,13 +182,9 @@ This directly operationalizes the semantic entropy work from Farquhar et al. ([N
 
 ## Session Accumulation
 
-After synthesis and verification, the harness promotes a branch to the session trunk. `Session.promote(branch)` retains only that branch and makes it the basis for future queries. The next query forks from this trunk — its KV cache already contains the prior verified answer.
+`Session.promote(branch)` retains only that branch and makes it the session trunk. Future queries fork from this trunk — its KV cache already contains everything the promoted branch generated, every tool result it consumed, every verification it passed.
 
-This is the cold/warm session distinction. A cold query starts from position 0 — plan, research, synthesize, verify, promote. A warm query starts from an existing trunk — agents fork from it directly, research further, and the session responds from new findings appended to the existing state.
-
-Each promote is an epistemic commitment. The promoted branch becomes the basis for future reasoning. The session carries forward not just text but the full KV state of a branch that survived the verification pipeline. Future agents fork from this state. Their shared frontier is the accumulated, verified reasoning of every previous cycle.
-
-Over multiple queries, the session compounds. Early queries establish the foundation. Later queries branch from it, research further, verify further, promote further. The trunk grows. The frontier advances.
+A cold query starts from position 0. A warm query starts from an existing trunk. Over multiple queries, the session compounds — each promote advances the frontier, and future agents inherit the accumulated state.
 
 ## Context Pressure
 

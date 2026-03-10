@@ -12,7 +12,7 @@ Instead of N independent model calls rebuilding the prompt each step, all agents
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/continuous-context-dark.svg">
-  <img src="assets/continuous-context.svg" alt="API Agents vs Continuous Context — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
+  <img src="assets/continuous-context.svg" alt="Traditional Agents vs Continuous Context Agents — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
 </picture>
 
 ## What you get
@@ -34,10 +34,10 @@ Instead of N independent model calls rebuilding the prompt each step, all agents
 ## Install
 
 ```bash
-npm i @lloyal-labs/lloyal-agents
+npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node
 ```
 
-**Backends:** [lloyal.node](https://github.com/lloyal-ai/lloyal.node) — prebuilt binaries for macOS, Linux, and Windows with CPU/GPU support.
+`lloyal-agents` provides the agent runtime. [`lloyal.node`](https://github.com/lloyal-ai/lloyal.node) provides the native inference backend — prebuilt binaries for macOS, Linux, and Windows with CPU/GPU support. Both are required.
 
 ## Use this if
 

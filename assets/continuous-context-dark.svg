@@ -39,8 +39,8 @@
     </marker>
   </defs>
 
-  <!-- ==================== TOP: API Agents ==================== -->
-  <text x="450" y="32" class="title" text-anchor="middle">API Agents</text>
+  <!-- ==================== TOP: Traditional Agents ==================== -->
+  <text x="450" y="32" class="title" text-anchor="middle">Traditional Agents (LLM Wrappers)</text>
 
   <!-- === Agent A === -->
   <rect x="30" y="55" width="56" height="16" class="agent-tag"/>
@@ -55,6 +55,12 @@
   <rect x="240" y="82" width="100" height="34" class="api-box"/>
   <text x="290" y="104" class="api-box-text" text-anchor="middle">response</text>
 
+  <!-- API call bracket under first cycle -->
+  <line x1="30" y1="122" x2="30" y2="128" stroke="#6e7681" stroke-width="0.75"/>
+  <line x1="30" y1="128" x2="340" y2="128" stroke="#6e7681" stroke-width="0.75"/>
+  <line x1="340" y1="122" x2="340" y2="128" stroke="#6e7681" stroke-width="0.75"/>
+  <text x="185" y="141" font-size="10" fill="#8b949e" text-anchor="middle" font-style="italic">API call</text>
+
   <line x1="344" y1="99" x2="380" y2="99" class="api-gap"/>
   <text x="362" y="132" class="note-red" text-anchor="middle">rebuild</text>
 
@@ -66,6 +72,12 @@
   <line x1="574" y1="99" x2="594" y2="99" class="api-line" marker-end="url(#arr)"/>
   <rect x="594" y="82" width="100" height="34" class="api-box"/>
   <text x="644" y="104" class="api-box-text" text-anchor="middle">response</text>
+
+  <!-- API call bracket under second cycle -->
+  <line x1="384" y1="122" x2="384" y2="128" stroke="#6e7681" stroke-width="0.75"/>
+  <line x1="384" y1="128" x2="694" y2="128" stroke="#6e7681" stroke-width="0.75"/>
+  <line x1="694" y1="122" x2="694" y2="128" stroke="#6e7681" stroke-width="0.75"/>
+  <text x="539" y="141" font-size="10" fill="#8b949e" text-anchor="middle" font-style="italic">API call</text>
 
   <line x1="698" y1="99" x2="734" y2="99" class="api-gap"/>
   <text x="716" y="132" class="note-red" text-anchor="middle">rebuild</text>
@@ -89,6 +101,12 @@
   <rect x="240" y="182" width="100" height="34" class="api-box"/>
   <text x="290" y="204" class="api-box-text" text-anchor="middle">response</text>
 
+  <!-- API call bracket under Agent B first cycle -->
+  <line x1="30" y1="222" x2="30" y2="228" stroke="#6e7681" stroke-width="0.75"/>
+  <line x1="30" y1="228" x2="340" y2="228" stroke="#6e7681" stroke-width="0.75"/>
+  <line x1="340" y1="222" x2="340" y2="228" stroke="#6e7681" stroke-width="0.75"/>
+  <text x="185" y="241" font-size="10" fill="#8b949e" text-anchor="middle" font-style="italic">API call</text>
+
   <line x1="344" y1="199" x2="380" y2="199" class="api-gap"/>
   <text x="362" y="232" class="note-red" text-anchor="middle">rebuild</text>
 
@@ -100,6 +118,12 @@
   <line x1="574" y1="199" x2="594" y2="199" class="api-line" marker-end="url(#arr)"/>
   <rect x="594" y="182" width="100" height="34" class="api-box"/>
   <text x="644" y="204" class="api-box-text" text-anchor="middle">response</text>
+
+  <!-- API call bracket under Agent B second cycle -->
+  <line x1="384" y1="222" x2="384" y2="228" stroke="#6e7681" stroke-width="0.75"/>
+  <line x1="384" y1="228" x2="694" y2="228" stroke="#6e7681" stroke-width="0.75"/>
+  <line x1="694" y1="222" x2="694" y2="228" stroke="#6e7681" stroke-width="0.75"/>
+  <text x="539" y="241" font-size="10" fill="#8b949e" text-anchor="middle" font-style="italic">API call</text>
 
   <line x1="698" y1="199" x2="734" y2="199" class="api-gap"/>
   <text x="716" y="232" class="note-red" text-anchor="middle">rebuild</text>
@@ -116,8 +140,8 @@
   <!-- Horizontal divider -->
   <line x1="30" y1="285" x2="870" y2="285" class="divider"/>
 
-  <!-- ==================== BOTTOM: Continuous Context ==================== -->
-  <text x="450" y="320" class="title" text-anchor="middle">Continuous Context</text>
+  <!-- ==================== BOTTOM: Continuous Context Agents ==================== -->
+  <text x="450" y="320" class="title" text-anchor="middle">Continuous Context Agents</text>
 
   <!-- Shared KV Prefix -->
   <rect x="30" y="340" width="160" height="38" class="cc-prefix"/>

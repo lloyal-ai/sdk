@@ -257,12 +257,6 @@ export interface AgentPoolResult {
     warmPrefillCalls: number;
     /** Total branches across all warm prefill batches */
     warmPrefillBranches: number;
-    /** Ticks where no agent was generating (all awaiting tools) */
-    stalledTicks: number;
-    /** Peak concurrent tool executions */
-    maxConcurrentTools: number;
-    /** Ticks spent idle-waiting via action() */
-    idleTicks: number;
   };
 }
 

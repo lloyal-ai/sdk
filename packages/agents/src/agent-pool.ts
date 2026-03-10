@@ -1,5 +1,5 @@
-import { resource, call, action, ensure, useScope, createSignal, spawn, each } from 'effection';
-import type { Operation, Scope, Channel } from 'effection';
+import { resource, call, ensure, createSignal, spawn, scoped, each } from 'effection';
+import type { Operation, Channel } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
@@ -189,8 +189,9 @@ function* setupAgent(
  * 2. **COMMIT** — single GPU call via `store.commit()` for all produced tokens
  * 3. **SETTLE** — drain settled tool results, batch prefill, reset grammars
  *
- * Tool dispatch uses `scope.run()` for eager start — tool executions run as
- * children of the agent pool scope and are cancelled if the scope exits.
+ * Tool dispatch uses `spawn()` + `yield* task` — tool executions run as
+ * children of the agent pool scope. Each tool awaits completion before the
+ * next tick, ensuring exclusive `llama_context` access (no concurrent decode).
  *
  * **Resource semantics:** `provide()` suspends after all agents complete,
  * keeping branches alive so the caller can fork from them (e.g. for
@@ -228,7 +229,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     const ctx: SessionContext = yield* Ctx.expect();
     const store: BranchStore = yield* Store.expect();
     const events: Channel<AgentEvent, void> = yield* Events.expect();
-    const scope: Scope = yield* useScope();
 
     // Bridge for onProgress callbacks — Signal is correct here (external callback).
     // A spawned forwarder drains the bridge into the Channel with proper scope context.
@@ -312,78 +312,22 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     for (const a of agents) applyLazyGrammar(a);
 
     // ── Tool dispatch coordination ───────────────────────────
-    // Plain JS buffer: spawned tool tasks push synchronously on completion.
-    // SETTLE drains with splice(0). Safe because generators are synchronous
-    // between yields — spawns can only push at yield points (during COMMIT's
-    // yield* call()), and SETTLE runs after COMMIT in the same tick.
+    // Tool results land in settledBuffer during DISPATCH, drained by SETTLE
+    // in the next tick. DISPATCH awaits each tool to completion via
+    // spawn() + yield* task — no concurrent llama_decode possible.
     const settledBuffer: SettledTool[] = [];
     const agentById = new Map(agents.map(a => [a.id, a]));
-
-    // Track pending tool count for idle detection
-    let pendingToolCount = 0;
-
-    // Resolve function for idle wake — set when all agents stall
-    let wakeIdle: (() => void) | null = null;
 
     let steps = 0;
     let totalToolCalls = 0;
     const counters = {
       warmPrefillCalls: 0,
       warmPrefillBranches: 0,
-      stalledTicks: 0,
-      maxConcurrentTools: 0,
-      idleTicks: 0,
     };
 
-    function* dispatchTool(agent: AgentInternal, tc: ParsedToolCall): Operation<void> {
-      let toolArgs: Record<string, unknown>;
-      try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
-      const callId = tc.id || `call_${agent.toolCallCount}`;
-
-      agent.toolCallCount++;
-      totalToolCalls++;
-      agent.turns++;
-      agent.state = 'awaiting_tool';
-
-      yield* events.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
-
-      const tool = tools.get(tc.name);
-      pendingToolCount++;
-      counters.maxConcurrentTools = Math.max(counters.maxConcurrentTools, pendingToolCount);
-
-      // scope.run() — eager start, child of agent pool scope, cancelled if scope exits.
-      // spawn() is lazy (Operation), but we're in a generator — scope.run() is eager.
-      scope.run(function*() {
-        try {
-          const toolContext = {
-            agentId: agent.id,
-            onProgress: (p: { filled: number; total: number }) => {
-              // Signal bridge — onProgress is an external callback, Signal.send() is correct here.
-              progressBridge.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });
-            },
-          };
-
-          const result: unknown = yield* call(() =>
-            tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({ error: `Unknown tool: ${tc.name}` })
-          );
-          const resultStr = JSON.stringify(result);
-          yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr });
-
-          const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
-          settledBuffer.push({ agentId: agent.id, prefillTokens, toolName: tc.name });
-        } catch (err) {
-          agent.state = 'done';
-          agent.findings = `Tool error: ${(err as Error).message}`;
-        } finally {
-          pendingToolCount--;
-          if (wakeIdle) { wakeIdle(); wakeIdle = null; }
-        }
-      });
-    }
-
-    // ── Three-phase tick loop ────────────────────────────────
+    // ── Four-phase tick loop ─────────────────────────────────
     for (;;) {
-      // -- Phase 1: PRODUCE -- sample from active agents
+      // -- Phase 1: PRODUCE -- sample from active agents, collect tool calls
       const pressure = new ContextPressure(ctx, pressureOpts);
 
       if (trace && (pressure.critical || pressure.headroom < 0)) {
@@ -392,6 +336,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       }
 
       const entries: [Branch, number][] = [];
+      const toolCalls: { agent: AgentInternal; tc: ParsedToolCall }[] = [];
+
       for (const a of agents) {
         if (a.state !== 'generating') continue;
 
@@ -441,16 +387,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
               const errorMsg = 'You must perform research before reporting. Call at least one tool first.';
               a.turns++;
               a.state = 'awaiting_tool';
-              pendingToolCount++;
-              scope.run(function*() {
-                try {
-                  const prefillTokens = buildToolResultDelta(ctx, JSON.stringify({ error: errorMsg }), callId);
-                  settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc.name });
-                } finally {
-                  pendingToolCount--;
-                  if (wakeIdle) { wakeIdle(); wakeIdle = null; }
-                }
-              });
+              const prefillTokens = buildToolResultDelta(ctx, JSON.stringify({ error: errorMsg }), callId);
+              settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc.name });
               a.rawOutput = '';
               continue;
             }
@@ -464,8 +402,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             continue;
           }
 
-          // Fire-and-forget — dispatch tool without blocking the decode loop
-          yield* dispatchTool(a, tc);
+          // Collect tool call — dispatched in Phase 4 after decode phases
+          a.state = 'awaiting_tool';
+          toolCalls.push({ agent: a, tc });
           a.rawOutput = '';
           continue;
         }
@@ -544,21 +483,49 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         }
       }
 
-      // -- Termination + idle yield
-      const allDone = agents.every(a => a.state === 'done') && pendingToolCount === 0;
-      if (allDone) break;
+      // -- Phase 4: DISPATCH -- execute collected tool calls sequentially
+      // scoped() creates an error boundary — inner pool errors are caught
+      // here instead of crashing the outer pool. call() yields the Operation
+      // directly, ensuring exclusive llama_context access (no concurrent
+      // AsyncWorkers). See docs/internal/recursion-bug.md.
+      for (const { agent, tc } of toolCalls) {
+        let toolArgs: Record<string, unknown>;
+        try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
+        const callId = tc.id || `call_${agent.toolCallCount}`;
 
-      if (entries.length === 0 && pendingToolCount > 0) {
-        counters.stalledTicks++;
-        if (settled.length === 0) {
-          // Nothing produced, nothing settled — yield until a tool resolves
-          yield* action<void>((resolve) => {
-            wakeIdle = resolve;
-            return () => { wakeIdle = null; };
+        agent.toolCallCount++;
+        totalToolCalls++;
+        agent.turns++;
+
+        yield* events.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
+
+        const tool = tools.get(tc.name);
+        const toolContext = {
+          agentId: agent.id,
+          onProgress: (p: { filled: number; total: number }) => {
+            progressBridge.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });
+          },
+        };
+
+        try {
+          const result: unknown = yield* scoped(function*() {
+            return yield* call(() =>
+              tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({ error: `Unknown tool: ${tc.name}` })
+            );
           });
-          counters.idleTicks++;
+          const resultStr = JSON.stringify(result);
+          yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr });
+
+          const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
+          settledBuffer.push({ agentId: agent.id, prefillTokens, toolName: tc.name });
+        } catch (err) {
+          agent.state = 'done';
+          agent.findings = `Tool error: ${(err as Error).message}`;
         }
       }
+
+      // -- Termination
+      if (agents.every(a => a.state === 'done')) break;
     }
 
     // ── Provide result — suspends, branches stay alive ───────

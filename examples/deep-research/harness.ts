@@ -231,7 +231,7 @@ function* synthesize(
   opts: WorkflowOpts,
 ): Operation<{
   pool: AgentPoolResult;
-  eval: { converged: boolean | null; tokenCount: number; timeMs: number };
+  eval: { converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number };
   timeMs: number;
 }> {
   const findingsText = pool.agents
@@ -298,7 +298,7 @@ function* synthesize(
 function* evaluate(
   responses: string[],
   opts: WorkflowOpts,
-): Operation<{ converged: boolean | null; tokenCount: number; timeMs: number }> {
+): Operation<{ converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }> {
   const ctx: SessionContext = yield* Ctx.expect();
 
   const responsesText = responses

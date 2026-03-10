@@ -180,18 +180,18 @@ function* setupAgent(
 /**
  * Concurrent agent generation loop as an Effection resource
  *
- * Runs N agents in parallel using a three-phase tick loop over shared
+ * Runs N agents in parallel using a four-phase tick loop over shared
  * {@link BranchStore} infrastructure. Each agent forks from a parent
  * branch, generates tokens, invokes tools, and reports findings.
  *
- * **Three-phase tick loop:**
+ * **Four-phase tick loop:**
  * 1. **PRODUCE** — sample all active agents via `produceSync()` (no async gap)
  * 2. **COMMIT** — single GPU call via `store.commit()` for all produced tokens
  * 3. **SETTLE** — drain settled tool results, batch prefill, reset grammars
+ * 4. **DISPATCH** — execute collected tool calls sequentially via `scoped()` + `call()`
  *
- * Tool dispatch uses `spawn()` + `yield* task` — tool executions run as
- * children of the agent pool scope. Each tool awaits completion before the
- * next tick, ensuring exclusive `llama_context` access (no concurrent decode).
+ * Tool dispatch uses `scoped()` + `call()` — each tool executes to completion
+ * before the next tick, ensuring exclusive `llama_context` access (no concurrent decode).
  *
  * **Resource semantics:** `provide()` suspends after all agents complete,
  * keeping branches alive so the caller can fork from them (e.g. for
@@ -314,7 +314,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     // ── Tool dispatch coordination ───────────────────────────
     // Tool results land in settledBuffer during DISPATCH, drained by SETTLE
     // in the next tick. DISPATCH awaits each tool to completion via
-    // spawn() + yield* task — no concurrent llama_decode possible.
+    // scoped() + call() — no concurrent llama_decode possible.
     const settledBuffer: SettledTool[] = [];
     const agentById = new Map(agents.map(a => [a.id, a]));
 
@@ -487,7 +487,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       // scoped() creates an error boundary — inner pool errors are caught
       // here instead of crashing the outer pool. call() yields the Operation
       // directly, ensuring exclusive llama_context access (no concurrent
-      // AsyncWorkers). See docs/internal/recursion-bug.md.
+      // AsyncWorkers). See docs/agents/concurrency.md.
       for (const { agent, tc } of toolCalls) {
         let toolArgs: Record<string, unknown>;
         try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }

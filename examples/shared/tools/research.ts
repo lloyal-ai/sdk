@@ -51,7 +51,8 @@ export class ResearchTool extends Tool<{ questions: string[] }> {
       return { error: 'questions must be a non-empty array of strings', example: '{"questions": ["q1", "q2"]}' };
     }
 
-    const toolkit = this._toolkit!;
+    if (!this._toolkit) throw new Error('ResearchTool: setToolkit() must be called before execute');
+    const toolkit = this._toolkit;
     const systemPrompt = this._systemPrompt;
     const reporterPrompt = this._reporterPrompt;
     const maxTurns = this._maxTurns;

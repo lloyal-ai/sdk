@@ -113,7 +113,8 @@ main(function* () {
     createContext({
       modelPath,
       nCtx,
-      nSeqMax: Math.max(AGENT_COUNT, VERIFY_COUNT) * 2 + 1,
+      // Outer pool (2: root + entry agent) + inner research pool (1 root + agents + reporters) + margin
+      nSeqMax: Math.max(AGENT_COUNT, VERIFY_COUNT) * 4 + 3,
       typeK: "q4_0",
       typeV: "q4_0",
     }),

@@ -7,6 +7,9 @@ import { ReadFileTool } from './read-file';
 import { GrepTool } from './grep';
 import { ReportTool } from './report';
 
+export { ResearchTool } from './research';
+export type { ResearchToolOpts } from './research';
+
 export const reportTool = new ReportTool();
 
 export function createTools(opts: {

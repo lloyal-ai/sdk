@@ -149,7 +149,7 @@ export class Branch {
    */
   async prefill(tokens: number[]): Promise<void> {
     this._ensureNotDisposed();
-    await this._ctx._branchPrefill(this._handle, tokens);
+    await this._ctx._storePrefill([this._handle], [tokens]);
   }
 
   /**

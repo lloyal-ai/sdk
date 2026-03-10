@@ -6,12 +6,12 @@ import { Branch, Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
   Ctx,
-  generate, useAgentPool, runAgents, diverge, withSharedRoot,
+  generate, diverge, useAgentPool, runAgents, withSharedRoot, createToolkit,
 } from '@lloyal-labs/lloyal-agents';
-import type { Tool, AgentPoolResult, DivergeResult } from '@lloyal-labs/lloyal-agents';
+import type { Tool, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent, OpTiming } from './tui';
-import { computeAgreement } from './agreement';
 import { reportTool } from '../shared/tools';
+import { ResearchTool } from '../shared/tools/research';
 
 /** Load a task prompt file. Convention: system prompt above `---`, user content below. */
 function loadTask(name: string): { system: string; user: string } {
@@ -23,6 +23,7 @@ function loadTask(name: string): { system: string; user: string } {
 
 const PLAN = loadTask('plan');
 const RESEARCH = loadTask('research');
+const SYNTHESIZE = loadTask('synthesize');
 const VERIFY = loadTask('verify');
 const EVAL = loadTask('eval');
 const REPORT = loadTask('report');
@@ -158,15 +159,24 @@ function* research(
   questions: string[],
   opts: WorkflowOpts,
 ): Operation<{ pool: AgentPoolResult; sharedPrefixLength: number; timeMs: number }> {
+  const researchTool = new ResearchTool({
+    systemPrompt: RESEARCH.system,
+    reporterPrompt: REPORT,
+    maxTurns: opts.maxTurns,
+    trace: opts.trace,
+  });
+  const fullToolkit = createToolkit([...opts.toolMap.values(), researchTool]);
+  researchTool.setToolkit(fullToolkit);
+
   yield* opts.events.send({ type: 'research:start', agentCount: questions.length });
   const t = performance.now();
 
   const { result: pool, prefixLen: sharedPrefixLength } = yield* withSharedRoot(
-    { systemPrompt: RESEARCH.system, tools: opts.toolsJson },
+    { systemPrompt: RESEARCH.system, tools: fullToolkit.toolsJson },
     function*(root, prefixLen) {
       const pool = yield* useAgentPool({
-        tasks: agentTasks(questions, opts.toolsJson, root),
-        tools: opts.toolMap, maxTurns: opts.maxTurns, trace: opts.trace,
+        tasks: agentTasks(questions, fullToolkit.toolsJson, root),
+        tools: fullToolkit.toolMap, maxTurns: opts.maxTurns, trace: opts.trace,
         terminalTool: 'report',
         pressure: { softLimit: 2048 },
       });
@@ -185,13 +195,22 @@ function* warmResearch(
   questions: string[],
   opts: WorkflowOpts,
 ): Operation<{ pool: AgentPoolResult; timeMs: number }> {
+  const researchTool = new ResearchTool({
+    systemPrompt: RESEARCH.system,
+    reporterPrompt: REPORT,
+    maxTurns: opts.maxTurns,
+    trace: opts.trace,
+  });
+  const fullToolkit = createToolkit([...opts.toolMap.values(), researchTool]);
+  researchTool.setToolkit(fullToolkit);
+
   yield* opts.events.send({ type: 'research:start', agentCount: questions.length });
   const t = performance.now();
 
   const pool = yield* scoped(function*() {
     const pool = yield* useAgentPool({
-      tasks: agentTasks(questions, opts.toolsJson, opts.session.trunk!, Date.now()),
-      tools: opts.toolMap, maxTurns: opts.maxTurns, trace: opts.trace,
+      tasks: agentTasks(questions, fullToolkit.toolsJson, opts.session.trunk!, Date.now()),
+      tools: fullToolkit.toolMap, maxTurns: opts.maxTurns, trace: opts.trace,
       terminalTool: 'report',
       pressure: { softLimit: 1024 },
     });
@@ -205,49 +224,85 @@ function* warmResearch(
   return { pool, timeMs };
 }
 
-function* verify(
+function* synthesize(
   pool: AgentPoolResult,
   questions: string[],
   query: string,
   opts: WorkflowOpts,
-): Operation<{ result: DivergeResult; timeMs: number }> {
-  const ctx: SessionContext = yield* Ctx.expect();
+): Operation<{
+  pool: AgentPoolResult;
+  eval: { converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number };
+  timeMs: number;
+}> {
   const findingsText = pool.agents
     .map((a, i) => `Q: ${questions[i]}\nA: ${(a.findings || '').trim()}`)
     .join('\n\n');
 
-  const userContent = VERIFY.user
+  const content = SYNTHESIZE.user
     .replace('{{findings}}', findingsText)
     .replace('{{query}}', query);
 
-  const messages = [
-    { role: 'system', content: VERIFY.system },
-    { role: 'user', content: userContent },
-  ];
-  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
-
-  yield* opts.events.send({ type: 'verify:start', count: opts.verifyCount });
+  yield* opts.events.send({ type: 'synthesize:start' });
   const t = performance.now();
-  const result = yield* diverge({
-    prompt,
-    attempts: opts.verifyCount,
-    params: { temperature: 0.7 },
-  });
-  const timeMs = performance.now() - t;
-  const agreement = computeAgreement(result.attempts.map(a => a.output));
-  yield* opts.events.send({ type: 'verify:agreement', result: agreement });
-  yield* opts.events.send({ type: 'verify:done', result, timeMs });
-  return { result, timeMs };
+
+  const inner = yield* withSharedRoot(
+    { systemPrompt: SYNTHESIZE.system, tools: opts.toolsJson },
+    function*(root) {
+      // 1. ONE synthesis agent with tools — grounded answer
+      const synthPool = yield* useAgentPool({
+        tasks: [{ systemPrompt: SYNTHESIZE.system, content, tools: opts.toolsJson, parent: root }],
+        tools: opts.toolMap,
+        terminalTool: 'report',
+        maxTurns: opts.maxTurns,
+        trace: opts.trace,
+        pressure: { softLimit: 1024 },
+      });
+
+      yield* reportPass(synthPool, opts);
+
+      const synthTimeMs = performance.now() - t;
+      yield* opts.events.send({ type: 'synthesize:done', pool: synthPool, timeMs: synthTimeMs });
+
+      // 2. N cheap text-only samples for entropy check
+      //    Uses VERIFY prompt (no tool instructions) with same findings input
+      const ctx: SessionContext = yield* Ctx.expect();
+      const verifyContent = VERIFY.user
+        .replace('{{findings}}', findingsText)
+        .replace('{{query}}', query);
+      const messages = [
+        { role: 'system', content: VERIFY.system },
+        { role: 'user', content: verifyContent },
+      ];
+      const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+
+      const samples = yield* diverge({
+        prompt,
+        attempts: opts.verifyCount,
+        params: { temperature: 0.7 },
+      });
+
+      // 3. Eval — semantic entropy on cheap samples
+      const e = yield* evaluate(samples.attempts.map(a => a.output), opts);
+
+      // 4. Answer — synthesis agent's grounded findings directly (no ppl selection)
+      const agent = synthPool.agents[0];
+      yield* opts.events.send({ type: 'answer', text: agent?.findings || '' });
+
+      return { synthPool, e, synthTimeMs };
+    },
+  );
+
+  return { pool: inner.synthPool, eval: inner.e, timeMs: inner.synthTimeMs };
 }
 
 function* evaluate(
-  verifyResult: DivergeResult,
+  responses: string[],
   opts: WorkflowOpts,
-): Operation<{ converged: boolean | null; tokenCount: number; timeMs: number }> {
+): Operation<{ converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }> {
   const ctx: SessionContext = yield* Ctx.expect();
 
-  const responsesText = verifyResult.attempts
-    .map((a, i) => `Response ${i + 1}: ${a.output.trim()}`)
+  const responsesText = responses
+    .map((r, i) => `Response ${i + 1}: ${r.trim()}`)
     .join('\n\n');
 
   const userContent = EVAL.user.replace('{{responses}}', responsesText);
@@ -276,16 +331,9 @@ function* evaluate(
     },
   });
   const timeMs = performance.now() - t;
-  yield* opts.events.send({ type: 'eval:done', converged: result.parsed as boolean | null, tokenCount: result.tokenCount, timeMs });
-  return { converged: result.parsed as boolean | null, tokenCount: result.tokenCount, timeMs };
-}
-
-function* answer(verifyResult: DivergeResult, opts: WorkflowOpts): Operation<void> {
-  yield* opts.events.send({ type: 'answer', text: verifyResult.bestOutput });
-}
-
-function* promote(verifyResult: DivergeResult, opts: WorkflowOpts): Operation<void> {
-  yield* call(() => opts.session.promote(verifyResult.best));
+  const sampleCount = responses.length;
+  yield* opts.events.send({ type: 'eval:done', converged: result.parsed as boolean | null, tokenCount: result.tokenCount, sampleCount, timeMs });
+  return { converged: result.parsed as boolean | null, tokenCount: result.tokenCount, sampleCount, timeMs };
 }
 
 function* respond(
@@ -343,10 +391,22 @@ function* coldQuery(query: string, opts: WorkflowOpts): Operation<void> {
 
   const p = yield* plan(query, opts);
   const r = yield* research(p.questions, opts);
-  const v = yield* verify(r.pool, p.questions, query, opts);
-  const e = yield* evaluate(v.result, opts);
-  yield* answer(v.result, opts);
-  yield* promote(v.result, opts);
+  const s = yield* synthesize(r.pool, p.questions, query, opts);
+
+  // Lightweight trunk — findings only, no tool-call bloat from grounding
+  const findings = s.pool.agents[0]?.findings || '';
+  if (findings) {
+    const ctx: SessionContext = yield* Ctx.expect();
+    const messages = [
+      { role: 'user', content: query },
+      { role: 'assistant', content: findings },
+    ];
+    const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+    const tokens: number[] = yield* call(() => ctx.tokenize(prompt, false));
+    const trunk = Branch.create(ctx, 0, {});
+    yield* call(() => trunk.prefill(tokens));
+    yield* call(() => opts.session.promote(trunk));
+  }
 
   const timings: OpTiming[] = [
     { label: 'Plan', tokens: p.tokenCount, detail: '', timeMs: p.timeMs },
@@ -356,16 +416,15 @@ function* coldQuery(query: string, opts: WorkflowOpts): Operation<void> {
       timeMs: r.timeMs,
     },
     {
-      label: 'Verify', tokens: v.result.totalTokens,
-      detail: `(${v.result.attempts.map(a => a.tokenCount).join(' + ')})`,
-      timeMs: v.timeMs,
+      label: 'Synthesize', tokens: s.pool.totalTokens,
+      detail: `(${s.pool.agents.map(a => a.tokenCount).join(' + ')})  ${s.pool.totalToolCalls} tools`,
+      timeMs: s.timeMs,
     },
-    { label: 'Eval', tokens: e.tokenCount, detail: `converged: ${e.converged ? 'yes' : 'no'}`, timeMs: e.timeMs },
+    { label: 'Eval', tokens: s.eval.tokenCount, detail: `converged: ${s.eval.converged ? 'yes' : 'no'}`, timeMs: s.eval.timeMs },
   ];
 
-  const kvSaved = r.sharedPrefixLength * (p.questions.length - 1)
-    + v.result.prefixLength * (v.result.attempts.length - 1);
-  const kvLine = `KV shared    ${r.sharedPrefixLength} \u00d7 ${p.questions.length - 1} + ${v.result.prefixLength} \u00d7 ${v.result.attempts.length - 1} = ${kvSaved.toLocaleString()} tok saved`;
+  const kvSaved = r.sharedPrefixLength * (p.questions.length - 1);
+  const kvLine = `KV shared    ${r.sharedPrefixLength} \u00d7 ${p.questions.length - 1} = ${kvSaved.toLocaleString()} tok saved`;
 
   yield* summarize(timings, opts, { kvLine });
 
@@ -375,15 +434,14 @@ function* coldQuery(query: string, opts: WorkflowOpts): Operation<void> {
       planTokens: p.tokenCount,
       agentTokens: r.pool.totalTokens, researchSteps: r.pool.steps,
       agentPpl: r.pool.agents.map(a => a.ppl),
-      verifyTokens: v.result.totalTokens, verifySteps: v.result.steps,
-      evalTokens: e.tokenCount, converged: e.converged,
-      totalToolCalls: r.pool.totalToolCalls,
-      prefixTokens: v.result.prefixLength,
+      synthTokens: s.pool.totalTokens, synthToolCalls: s.pool.totalToolCalls,
+      evalTokens: s.eval.tokenCount, converged: s.eval.converged,
+      totalToolCalls: r.pool.totalToolCalls + s.pool.totalToolCalls,
       sharedPrefixTokens: r.sharedPrefixLength,
-      agentCount: p.questions.length, attemptCount: v.result.attempts.length,
+      agentCount: p.questions.length, synthCount: s.pool.agents.length,
       wallTimeMs: Math.round(performance.now() - t0),
       planMs: Math.round(p.timeMs), researchMs: Math.round(r.timeMs),
-      verifyMs: Math.round(v.timeMs), evalMs: Math.round(e.timeMs),
+      synthMs: Math.round(s.timeMs), evalMs: Math.round(s.eval.timeMs),
       ...r.pool.counters,
     },
   });

@@ -74,21 +74,23 @@ export function agentHandler(state: ViewState): ViewHandler {
         state.agentText.set(ev.agentId, (state.agentText.get(ev.agentId) ?? '') + ev.text);
         state.agentStatus.set(ev.agentId, { state: 'gen', tokenCount: ev.tokenCount, detail: '' });
         if (sub) break;  // sub-agents: skip verbose/status output
-        if (isVerboseMode()) {
-          const lbl = label(state, ev.agentId);
-          if (ev.tokenCount === 1) {
-            statusClear();
-            process.stdout.write(`\n    ${c.dim}\u2500\u2500\u2500${c.reset} ${c.yellow}${lbl}${c.reset} ${c.dim}tokens${c.reset} ${c.dim}\u2500\u2500\u2500${c.reset}\n    `);
-          }
-          process.stdout.write(ev.text);
-        } else {
-          renderStatus(state);
-        }
+        if (!isVerboseMode()) renderStatus(state);
+        // verbose: accumulate only — flushed as a block on tool_call/done
         break;
       }
       case 'agent:tool_call': {
         const sub = isSubAgent(state, ev.agentId);
-        if (isVerboseMode() && !sub) process.stdout.write('\n');
+        if (isVerboseMode() && !sub) {
+          const raw = (state.agentText.get(ev.agentId) ?? '').trim();
+          if (raw) {
+            statusClear();
+            const lbl = label(state, ev.agentId);
+            log(`    ${c.dim}\u2500\u2500\u2500 ${c.yellow}${lbl}${c.reset} ${c.dim}tokens \u2500\u2500\u2500${c.reset}`);
+            for (const line of raw.split('\n')) {
+              log(`    ${c.dim}${line}${c.reset}`);
+            }
+          }
+        }
         state.agentText.delete(ev.agentId);
         state.agentStatus.set(ev.agentId, { state: ev.tool, tokenCount: 0, detail: '' });
         emit('tool_call', { agentId: ev.agentId, toolName: ev.tool, arguments: ev.args });
@@ -99,12 +101,21 @@ export function agentHandler(state: ViewState): ViewHandler {
           : ev.tool === 'grep'
           ? `/${toolArgs.pattern || ''}/`
           : ev.tool === 'report' ? ''
+          : ev.tool === 'research'
+          ? `${(toolArgs.questions as string[] | undefined)?.length ?? 0} questions`
           : `${toolArgs.filename}` + (toolArgs.startLine ? ` L${toolArgs.startLine}-${toolArgs.endLine}` : '');
         if (sub) {
           const plbl = `${c.yellow}${parentLabel(state, ev.agentId)}${c.reset}`;
           log(`    ${c.dim}\u2502${c.reset}  ${c.dim}\u2514${c.reset} ${plbl} ${c.cyan}${ev.tool}${c.reset}${argSummary ? `(${argSummary})` : ''}`);
         } else {
           log(`    ${c.dim}\u251c${c.reset} ${c.yellow}${label(state, ev.agentId)}${c.reset} ${c.cyan}${ev.tool}${c.reset}${argSummary ? `(${argSummary})` : ''}`);
+        }
+        if (ev.tool === 'research') {
+          const qs = (toolArgs as Record<string, unknown>).questions as string[] | undefined;
+          const indent = sub ? `    ${c.dim}\u2502${c.reset}  ` : '    ';
+          qs?.forEach((q, i) => {
+            log(`${indent}${c.dim}\u2502${c.reset}   ${c.dim}${i + 1}. ${q}${c.reset}`);
+          });
         }
         break;
       }
@@ -173,9 +184,20 @@ export function agentHandler(state: ViewState): ViewHandler {
         log(`${indent}${c.dim}\u2502${c.reset}`);
         break;
       }
-      case 'agent:done':
-        if (isVerboseMode() && !isSubAgent(state, ev.agentId)) process.stdout.write('\n');
+      case 'agent:done': {
+        if (isVerboseMode() && !isSubAgent(state, ev.agentId)) {
+          const raw = (state.agentText.get(ev.agentId) ?? '').trim();
+          if (raw) {
+            statusClear();
+            const lbl = label(state, ev.agentId);
+            log(`    ${c.dim}\u2500\u2500\u2500 ${c.yellow}${lbl}${c.reset} ${c.dim}tokens \u2500\u2500\u2500${c.reset}`);
+            for (const line of raw.split('\n')) {
+              log(`    ${c.dim}${line}${c.reset}`);
+            }
+          }
+        }
         break;
+      }
     }
   };
 }

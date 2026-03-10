@@ -19,13 +19,13 @@ No API boundary. No serialized message passing between agents. No network requir
 
 `lloyal-agents` is for building agent workflows where agents are not separate model calls. They are branches of one live inference process, sharing context and compute, calling tools in parallel, and spawning sub-agents from their own live state.
 
-That gives you a different execution model from conventional agent frameworks:
-
-* **Parallel agents on one running model**
-* **Recursive sub-agents** that continue from a parent's live state
-* **Shared context and compute** instead of repeated request/response cycles
-* **Branch comparison** from a shared computational ancestor
-* **Fully local execution** on edge devices, workstations, and air-gapped servers
+* **Parallel agents, one GPU** — N branches advance in a single forward pass
+* **Recursive sub-agents** — agents spawn agents from live state, not summaries
+* **Shared KV prefix** — tokenize once, every agent inherits it
+* **Multi-hop tool use** — results land fully before the next action
+* **Tools that spawn agents** — the model decides when to go deeper
+* **Branch comparison** — N attempts from one origin, measure agreement
+* **Fully offline** — no API key, no network
 
 ## Install
 
@@ -87,23 +87,13 @@ From there, you can fork branches, run agents in parallel, attach tools, and pro
 
 ## Why it's different
 
-Most agent frameworks orchestrate **around** a model:
+Most agent frameworks orchestrate **around** a model — prompt, read response, call a tool, prompt again. Each agent is a separate API call with its own context window.
 
-1. prompt the model
-2. read the response
-3. maybe call a tool
-4. prompt again
+`lloyal-agents` orchestrates **inside** the running inference process. Agents are branches of one live model runtime. They share KV cache state up to a fork point, advance together through batched decode steps, and consume tool results by prefilling tokens directly into their own branches.
 
-`lloyal-agents` orchestrates **inside** the running inference process.
+When an agent calls a tool, the result is fully prefilled into its KV cache before it generates another token. The model sees the complete result and makes a clean decision — call another tool, refine the query, or report. This produces multi-hop reasoning: later tool calls reference discoveries from earlier ones, because the full chain is physically present in the branch's attention state.
 
-Agents are branches of one live model runtime. They share KV cache state up to a fork point, advance together through batched decode steps, and consume tool results by pre-filling tokens directly into their own branches.
-
-That means:
-
-* agents share computational state, not summaries
-* sub-agents can continue from a parent's live frontier
-* multiple branches can advance in one GPU dispatch
-* branch comparison is meaningful because branches share a real ancestor
+When an agent needs to go deeper, it calls a tool that spawns sub-agents. The sub-agents fork from a shared root within the same inference process — same GPU, same KV cache, same event stream. The calling agent's branch stays alive; when the sub-agents report back, their findings return as a tool result into the caller's live context.
 
 ## What ships
 
@@ -167,7 +157,7 @@ The repo ships four examples demonstrating canonical agent patterns. All example
 
 ## Deep Research (reference architecture)
 
-[`examples/deep-research`](examples/deep-research) — 5-phase structured research: Plan, Research, Verify, Evaluate, Promote. Demonstrates shared-root parallelism, grammar-constrained planning, diverge-based verification, agreement analysis, and session accumulation.
+[`examples/deep-research`](examples/deep-research) — Plan, Research, Synthesize, Evaluate, Promote. Grounded synthesis (1 tool-using agent) separated from entropy sampling (N cheap text-only diverge attempts). Demonstrates shared-root parallelism, grammar-constrained planning, recursive sub-agents via `ResearchTool`, agreement analysis, and session accumulation.
 
 ```bash
 npx tsx examples/deep-research/main.ts \
@@ -230,35 +220,25 @@ Every task forks from the same prefilled root. Everything before the fork is sha
 
 ## Recursive agents
 
-Sub-agents can fork from an existing agent's live branch and continue from where it left off.
+Recursion happens at two levels:
 
-The deep-research example includes a `reportPass`: if a research agent gets cut off before producing findings, the harness forks a reporter sub-agent from that agent's branch and gives it a narrower mandate.
+**Harness-level** — the developer writes the pipeline. The deep-research example includes a `reportPass`: if a research agent gets cut off, a reporter sub-agent forks from its live branch with a narrower mandate.
 
 ```typescript
-function* reportPass(pool: AgentPoolResult, opts: WorkflowOpts) {
-  const hardCut = pool.agents.filter((a) => !a.findings && !a.branch.disposed);
-  if (hardCut.length === 0) return;
-
-  const reporters = yield* runAgents({
-    tasks: hardCut.map((a) => ({
-      systemPrompt: REPORT_PROMPT,
-      content: "Report your findings.",
-      tools: reportOnlyTools,
-      parent: a.branch,
-    })),
-    tools: new Map([["report", reportTool]]),
-    terminalTool: "report",
-  });
-
-  hardCut.forEach((a, i) => {
-    if (reporters.agents[i]?.findings) {
-      a.findings = reporters.agents[i].findings;
-    }
-  });
-}
+const reporters = yield* runAgents({
+  tasks: hardCut.map((a) => ({
+    systemPrompt: REPORT_PROMPT,
+    content: "Report your findings.",
+    parent: a.branch, // continues from the agent's live KV state
+  })),
+  tools: new Map([["report", reportTool]]),
+  terminalTool: "report",
+});
 ```
 
-This is the key difference: the sub-agent continues from the parent's actual live state, not from a summary pasted back into a prompt.
+**Model-level** — the model decides when to recurse. A `Tool` subclass whose `execute()` returns an `Operation` can `yield*` into any framework primitive. The deep-research example includes a `ResearchTool` — when an agent calls `research(questions)`, the tool spawns parallel sub-agents via `withSharedRoot` + `useAgentPool`, waits for their findings, and returns them as the tool result. The calling agent's branch stays alive; findings flow back into its live context.
+
+In both cases, the sub-agent continues from live state, not from a summary pasted into a prompt.
 
 ## Branch comparison
 
@@ -285,6 +265,7 @@ That means future work starts from accumulated branch state, not from an empty p
 Tools are class-based and expose OpenAI-compatible function schemas:
 
 ```typescript
+import type { Operation } from "effection";
 import { Tool } from "@lloyal-labs/lloyal-agents";
 
 class SearchTool extends Tool<{ query: string }> {
@@ -296,7 +277,7 @@ class SearchTool extends Tool<{ query: string }> {
     required: ["query"],
   };
 
-  async execute(args: { query: string }) {
+  *execute(args: { query: string }): Operation<unknown> {
     return this.search(args.query);
   }
 }

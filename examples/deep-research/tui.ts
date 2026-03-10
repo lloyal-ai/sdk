@@ -11,11 +11,10 @@
 import * as fs from 'node:fs';
 import { each } from 'effection';
 import type { Channel, Operation } from 'effection';
-import type { AgentEvent, AgentPoolResult, DivergeResult } from '@lloyal-labs/lloyal-agents';
-import type { AgreementResult } from './agreement';
+import type { AgentEvent, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { OpTiming, ViewState, ViewHandler } from '../shared/tui/types';
 import {
-  c, log, emit, pad, statusClear,
+  c, log, emit, statusClear,
 } from '../shared/tui/primitives';
 import { createViewState, agentHandler, label, resetLabels } from '../shared/tui/agent-view';
 import { statsHandler, completeHandler } from '../shared/tui/stats-view';
@@ -31,10 +30,9 @@ export type StepEvent =
   | { type: 'plan'; questions: string[]; tokenCount: number; timeMs: number }
   | { type: 'research:start'; agentCount: number }
   | { type: 'research:done'; pool: AgentPoolResult; timeMs: number }
-  | { type: 'verify:start'; count: number }
-  | { type: 'verify:done'; result: DivergeResult; timeMs: number }
-  | { type: 'verify:agreement'; result: AgreementResult }
-  | { type: 'eval:done'; converged: boolean | null; tokenCount: number; timeMs: number }
+  | { type: 'synthesize:start' }
+  | { type: 'synthesize:done'; pool: AgentPoolResult; timeMs: number }
+  | { type: 'eval:done'; converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }
   | { type: 'answer'; text: string }
   | { type: 'response:start' }
   | { type: 'response:text'; text: string }
@@ -117,52 +115,21 @@ function researchSummaryHandler(state: ViewState): ViewHandler {
   };
 }
 
-function verifyHandler(): ViewHandler {
-  let pendingAgreement: AgreementResult | null = null;
-
+function synthesizeHandler(state: ViewState): ViewHandler {
   return (ev) => {
     switch (ev.type) {
-      case 'verify:start': {
-        log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Verify${c.reset} ${c.dim}${ev.count} attempts${c.reset}`);
-        pendingAgreement = null;
+      case 'synthesize:start':
+        log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Synthesize${c.reset}`);
+        resetLabels(state);
         break;
-      }
-      case 'verify:agreement': {
-        pendingAgreement = ev.result;
-        emit('verify_agreement', {
-          overall: ev.result.overall,
-          sections: ev.result.sections.map((s: AgreementResult['sections'][number]) => ({ label: s.label, score: s.score })),
+      case 'synthesize:done': {
+        statusClear();
+        ev.pool.agents.forEach((a: AgentPoolResult['agents'][number], i: number) => {
+          const tree = i === ev.pool.agents.length - 1 ? '\u2514' : '\u251c';
+          const pplStr = Number.isFinite(a.ppl) ? ` \u00b7 ppl ${a.ppl.toFixed(2)}` : '';
+          log(`    ${c.dim}${tree}${c.reset} ${c.yellow}${label(state, a.agentId)}${c.reset} ${c.green}done${c.reset} ${c.dim}${a.tokenCount} tok \u00b7 ${a.toolCallCount} tools${pplStr}${c.reset}`);
         });
-        break;
-      }
-      case 'verify:done': {
-        ev.result.attempts.forEach((a: DivergeResult['attempts'][number], i: number) => {
-          const tree = i === ev.result.attempts.length - 1
-            ? (pendingAgreement ? '\u251c' : '\u2514')
-            : '\u251c';
-          emit('attempt_done', { index: i, output: a.output.trim().slice(0, 500), tokenCount: a.tokenCount, ppl: a.ppl });
-          log(`    ${c.dim}${tree} ${a.tokenCount} tok \u00b7 ppl ${a.ppl.toFixed(2)}${c.reset}`);
-        });
-        if (pendingAgreement && pendingAgreement.sections.length > 0) {
-          const pct = Math.round(pendingAgreement.overall * 100);
-          log(`    ${c.dim}\u251c${c.reset} Agreement: ${c.bold}${pct}%${c.reset}`);
-          const sorted = [...pendingAgreement.sections].sort((a, b) => b.score - a.score);
-          const show = sorted.slice(0, 5);
-          const maxLabelLen = Math.max(...show.map(s => s.label.length));
-          show.forEach((s, i) => {
-            const tree = i === show.length - 1 && sorted.length <= 5 ? '\u2514' : '\u251c';
-            const filled = Math.round(s.score * 10);
-            const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(10 - filled);
-            const sPct = pad(Math.round(s.score * 100), 3);
-            const lbl = `"${s.label}"`.padEnd(maxLabelLen + 2);
-            log(`    ${c.dim}${tree}${c.reset} ${c.dim}${lbl}${c.reset} ${sPct}%  ${bar}`);
-          });
-          if (sorted.length > 5) {
-            log(`    ${c.dim}\u2514 \u2026 ${sorted.length - 5} more${c.reset}`);
-          }
-        }
-        log(`    ${c.dim}${ev.result.totalTokens} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
-        pendingAgreement = null;
+        log(`    ${c.dim}${ev.pool.totalTokens} tok \u00b7 ${ev.pool.totalToolCalls} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
         break;
       }
     }
@@ -176,7 +143,7 @@ function evalHandler(): ViewHandler {
     const verdict = ev.converged === true ? `${c.green}yes${c.reset}`
       : ev.converged === false ? `${c.red}no${c.reset}`
       : `${c.yellow}unknown${c.reset}`;
-    log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Eval${c.reset} ${c.dim}${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+    log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Eval${c.reset} ${c.dim}${ev.sampleCount} samples \u00b7 ${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
     log(`    Converged: ${verdict}`);
   };
 }
@@ -226,7 +193,7 @@ export function createView(opts: ViewOpts) {
     planHandler(),
     agentHandler(state),
     researchSummaryHandler(state),
-    verifyHandler(),
+    synthesizeHandler(state),
     evalHandler(),
     answerHandler(),
     responseHandler(),

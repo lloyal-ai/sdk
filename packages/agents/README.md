@@ -256,7 +256,9 @@ class SearchTool extends Tool<{ query: string }> {
   };
 
   *execute(args: { query: string }, context?: ToolContext): Operation<unknown> {
-    const results = yield* call(() => this.reranker.rank(args.query, this.chunks));
+    const results = yield* call(() =>
+      this.reranker.rank(args.query, this.chunks),
+    );
     context?.onProgress?.({
       filled: results.length,
       total: this.chunks.length,

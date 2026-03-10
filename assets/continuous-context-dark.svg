@@ -1,36 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 720" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
   <style>
-    .title { font-size: 20px; font-weight: 700; fill: #e0e0e0; }
-    .label { font-size: 13px; font-weight: 600; fill: #d0d0d0; }
-    .note { font-size: 12px; fill: #777; font-style: italic; }
-    .note-red { font-size: 11px; fill: #ff6b6b; font-weight: 600; }
+    /* WCAG AA contrast ratios against GitHub dark bg #0d1117 (luminance 0.012)
+       Text (4.5:1 min): #f0f6fc=17.4, #e6edf3=15.6, #8b949e=5.2
+       UI elements (3:1 min): #6e7681=3.4, #d0d7de=11.5, #8b949e=5.2
+       Agent tag text #fff on #6e7681 fill = 5.0:1 ✓ */
 
-    .api-box { fill: #2a2d30; stroke: #888; stroke-width: 2; rx: 5; }
-    .api-box-text { font-size: 13px; fill: #d0d0d0; font-weight: 500; }
-    .api-line { stroke: #888; stroke-width: 1.5; stroke-linecap: round; }
-    .api-gap { stroke: #ff6b6b; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 6 4; }
+    .title { font-size: 20px; font-weight: 700; fill: #f0f6fc; }
+    .label { font-size: 13px; font-weight: 600; fill: #e6edf3; }
+    .note { font-size: 12px; fill: #8b949e; font-style: italic; }
+    .note-red { font-size: 11px; fill: #ff7b72; font-weight: 600; }
 
-    .cc-trunk { stroke: #c0c0c0; stroke-width: 3; stroke-linecap: round; }
-    .cc-branch { stroke: #c0c0c0; stroke-width: 3; stroke-linecap: round; }
-    .cc-sub { stroke: #999; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 8 4; }
-    .cc-prefix { fill: #1a3d5c; stroke: #6ba3d6; stroke-width: 3; rx: 6; }
-    .cc-prefix-text { font-size: 14px; font-weight: 700; fill: #d0e8ff; }
-    .node-tool { fill: #B18BE8; stroke: #ccc; stroke-width: 2.5; }
-    .node-prefill { fill: #4ED1A1; stroke: #ccc; stroke-width: 2.5; }
-    .node-spawn { fill: #3babc8; stroke: #ccc; stroke-width: 2.5; }
-    .node-return { fill: #4ED1A1; stroke: #ccc; stroke-width: 2.5; }
-    .agent-tag { fill: #666; stroke: none; rx: 4; }
-    .agent-tag-text { font-size: 11px; font-weight: 700; fill: #fff; }
+    .api-box { fill: #161b22; stroke: #6e7681; stroke-width: 2; rx: 5; }
+    .api-box-text { font-size: 13px; fill: #e6edf3; font-weight: 500; }
+    .api-line { stroke: #8b949e; stroke-width: 1.5; stroke-linecap: round; }
+    .api-gap { stroke: #ff7b72; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 6 4; }
 
-    .divider { stroke: #444; stroke-width: 1; }
+    .cc-trunk { stroke: #d0d7de; stroke-width: 3; stroke-linecap: round; }
+    .cc-branch { stroke: #d0d7de; stroke-width: 3; stroke-linecap: round; }
+    .cc-sub { stroke: #8b949e; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 8 4; }
+    .cc-prefix { fill: #0d2137; stroke: #58a6ff; stroke-width: 3; rx: 6; }
+    .cc-prefix-text { font-size: 14px; font-weight: 700; fill: #a5d6ff; }
+    .node-tool { fill: #B18BE8; stroke: #444c56; stroke-width: 2; }
+    .node-prefill { fill: #4ED1A1; stroke: #444c56; stroke-width: 2; }
+    .node-spawn { fill: #3babc8; stroke: #444c56; stroke-width: 2; }
+    .node-return { fill: #4ED1A1; stroke: #444c56; stroke-width: 2; }
+    .agent-tag { fill: #6e7681; stroke: none; rx: 4; }
+    .agent-tag-text { font-size: 11px; font-weight: 700; fill: #ffffff; }
+
+    .divider { stroke: #30363d; stroke-width: 1; }
   </style>
 
   <defs>
     <marker id="arr" markerWidth="5" markerHeight="4" refX="4" refY="2" orient="auto">
-      <path d="M0,0.5 L4,2 L0,3.5" fill="none" stroke="#888" stroke-width="1" stroke-linejoin="round"/>
+      <path d="M0,0.5 L4,2 L0,3.5" fill="none" stroke="#8b949e" stroke-width="1" stroke-linejoin="round"/>
     </marker>
     <marker id="arr-branch" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
-      <path d="M0,0.5 L6,3 L0,5.5" fill="none" stroke="#c0c0c0" stroke-width="1.5" stroke-linejoin="round"/>
+      <path d="M0,0.5 L6,3 L0,5.5" fill="none" stroke="#d0d7de" stroke-width="1.5" stroke-linejoin="round"/>
     </marker>
   </defs>
 
@@ -122,7 +127,7 @@
   <line x1="110" y1="378" x2="110" y2="650" class="cc-trunk"/>
 
   <!-- === Agent A branch === -->
-  <circle cx="110" cy="410" r="6" fill="#c0c0c0"/>
+  <circle cx="110" cy="410" r="6" fill="#d0d7de"/>
   <line x1="116" y1="410" x2="150" y2="410" class="cc-branch"/>
 
   <rect x="150" y="400" width="56" height="16" class="agent-tag"/>
@@ -155,7 +160,7 @@
   <line x1="840" y1="410" x2="875" y2="410" class="cc-branch" marker-end="url(#arr-branch)"/>
 
   <!-- === Agent B branch === -->
-  <circle cx="110" cy="490" r="6" fill="#c0c0c0"/>
+  <circle cx="110" cy="490" r="6" fill="#d0d7de"/>
   <line x1="116" y1="490" x2="150" y2="490" class="cc-branch"/>
 
   <rect x="150" y="480" width="56" height="16" class="agent-tag"/>
@@ -176,7 +181,7 @@
 
   <path d="M480,500 C480,530 480,540 510,550" class="cc-sub" fill="none"/>
   <line x1="510" y1="550" x2="620" y2="550" class="cc-sub"/>
-  <circle cx="565" cy="550" r="8" fill="#3babc8" stroke="#ccc" stroke-width="2"/>
+  <circle cx="565" cy="550" r="8" fill="#3babc8" stroke="#444c56" stroke-width="2"/>
   <text x="565" y="572" class="label" text-anchor="middle" font-size="11">sub-agent</text>
 
   <path d="M620,550 C650,550 650,520 650,490" class="cc-sub" fill="none"/>
@@ -184,7 +189,7 @@
   <text x="650" y="475" class="label" text-anchor="middle" font-size="11">findings</text>
 
   <!-- Faded continuity line behind sub-agent -->
-  <line x1="480" y1="490" x2="650" y2="490" stroke="#c0c0c0" stroke-width="2" stroke-opacity="0.15"/>
+  <line x1="480" y1="490" x2="650" y2="490" stroke="#d0d7de" stroke-width="2" stroke-opacity="0.15"/>
 
   <line x1="660" y1="490" x2="720" y2="490" class="cc-branch"/>
   <circle cx="720" cy="490" r="10" class="node-tool"/>
@@ -197,7 +202,7 @@
   <line x1="840" y1="490" x2="875" y2="490" class="cc-branch" marker-end="url(#arr-branch)"/>
 
   <!-- === Agent C branch === -->
-  <circle cx="110" cy="650" r="6" fill="#c0c0c0"/>
+  <circle cx="110" cy="650" r="6" fill="#d0d7de"/>
   <line x1="116" y1="650" x2="150" y2="650" class="cc-branch"/>
 
   <rect x="150" y="640" width="56" height="16" class="agent-tag"/>

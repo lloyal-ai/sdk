@@ -15,11 +15,7 @@ Agents are branches of a single inference process — forked from shared KV cach
   <img src="assets/continuous-context.svg" alt="API Agents vs Continuous Context — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
 </picture>
 
-<p>
-  <img src="assets/demo.gif" alt="Deep Research: 3 agents analyzing DOJ v Apple complaint — plan, research with tool calls, verify, synthesize" width="100%">
-  <br>
-  <em>Qwen3 4B + 0.6B reranker · 3 agents · 14 tool calls · 98s · fully offline on M2 MacBook Pro</em>
-</p>
+## What you get
 
 * **Parallel agents, one GPU** — N branches advance in a single forward pass
 * **Recursive sub-agents** — agents spawn agents from live state, not summaries
@@ -28,6 +24,12 @@ Agents are branches of a single inference process — forked from shared KV cach
 * **Tools that spawn agents** — the model decides when to go deeper
 * **Branch comparison** — N attempts from one origin, measure agreement
 * **Fully offline** — no API key, no network
+
+<p>
+  <img src="assets/demo.gif" alt="Deep Research: 3 agents analyzing DOJ v Apple complaint — plan, research with tool calls, verify, synthesize" width="100%">
+  <br>
+  <em>Qwen3 4B + 0.6B reranker · 3 agents · 14 tool calls · 98s · fully offline on M2 MacBook Pro</em>
+</p>
 
 ## Install
 

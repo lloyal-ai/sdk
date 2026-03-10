@@ -10,9 +10,10 @@
 
 Agents are branches of a single inference process — forked from shared KV cache state, prefilling tool results into the attention mechanism, spawning sub-agents from live branches. Context is never serialized, summarized, or reconstructed.
 
-<p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/continuous-context-dark.svg">
   <img src="assets/continuous-context.svg" alt="API Agents vs Continuous Context — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
-</p>
+</picture>
 
 <p>
   <img src="assets/demo.gif" alt="Deep Research: 3 agents analyzing DOJ v Apple complaint — plan, research with tool calls, verify, synthesize" width="100%">

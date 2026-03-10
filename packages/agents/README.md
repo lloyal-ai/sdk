@@ -6,9 +6,10 @@ Continuous Context agent runtime.
 
 Built on [lloyal.node](https://github.com/lloyal-ai/lloyal.node), which provides forkable decode state and continuous tree batching over llama.cpp. `lloyal-agents` adds structured concurrency, tool dispatch, and a four-phase tick loop. Orchestration is not a layer above inference. It is inference.
 
-<p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lloyal-ai/sdk/main/assets/continuous-context-dark.svg">
   <img src="https://raw.githubusercontent.com/lloyal-ai/sdk/main/assets/continuous-context.svg" alt="API Agents vs Continuous Context — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
-</p>
+</picture>
 
 ```bash
 npm i @lloyal-labs/lloyal-agents

@@ -20,5 +20,6 @@
     "typedoc": "^0.28.0",
     "typedoc-rhineai-theme": "^1.0.0",
     "typescript": "^5.9.3"
-  }
+  },
+  "version": "1.1.0"
 }

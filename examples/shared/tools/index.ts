@@ -9,6 +9,8 @@ import { ReportTool } from './report';
 
 export { ResearchTool } from './research';
 export type { ResearchToolOpts } from './research';
+export { WebSearchTool } from './web-search';
+export { FetchPageTool } from './fetch-page';
 
 export const reportTool = new ReportTool();
 

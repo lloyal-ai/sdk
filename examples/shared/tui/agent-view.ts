@@ -96,13 +96,15 @@ export function agentHandler(state: ViewState): ViewHandler {
         emit('tool_call', { agentId: ev.agentId, toolName: ev.tool, arguments: ev.args });
         let toolArgs: Record<string, string>;
         try { toolArgs = JSON.parse(ev.args); } catch { toolArgs = {}; }
-        const argSummary = ev.tool === 'search'
+        const argSummary = ev.tool === 'search' || ev.tool === 'web_search'
           ? `"${toolArgs.query || ''}"`
           : ev.tool === 'grep'
           ? `/${toolArgs.pattern || ''}/`
           : ev.tool === 'report' ? ''
           : ev.tool === 'research'
           ? `${(toolArgs.questions as string[] | undefined)?.length ?? 0} questions`
+          : ev.tool === 'fetch_page'
+          ? `${toolArgs.url || ''}`
           : `${toolArgs.filename}` + (toolArgs.startLine ? ` L${toolArgs.startLine}-${toolArgs.endLine}` : '');
         if (sub) {
           const plbl = `${c.yellow}${parentLabel(state, ev.agentId)}${c.reset}`;
@@ -139,6 +141,17 @@ export function agentHandler(state: ViewState): ViewHandler {
           try {
             const r = JSON.parse(ev.result) as { totalMatches: number; matchingLines: number };
             preview = ` \u00b7 ${r.totalMatches} matches in ${r.matchingLines} lines`;
+          } catch { /* non-fatal */ }
+        } else if (ev.tool === 'web_search') {
+          try {
+            const results = JSON.parse(ev.result) as { title: string }[];
+            if (results.length) preview = ` \u00b7 ${results.length} results \u00b7 ${results[0].title}`;
+          } catch { /* non-fatal */ }
+        } else if (ev.tool === 'fetch_page') {
+          try {
+            const r = JSON.parse(ev.result) as { title?: string; content?: string; error?: string };
+            if (r.error) preview = ` \u00b7 ${r.error}`;
+            else if (r.title) preview = ` \u00b7 ${r.title.slice(0, 60)}${r.title.length > 60 ? '\u2026' : ''}`;
           } catch { /* non-fatal */ }
         }
         if (isSubAgent(state, ev.agentId)) {

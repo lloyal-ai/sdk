@@ -1,5 +1,19 @@
 import type { Chunk } from '../resources/types';
 
+// ── Web search adapter ──────────────────────────────────
+
+export interface SearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface SearchProvider {
+  search(query: string, maxResults: number): Promise<SearchResult[]>;
+}
+
+// ── Corpus search ───────────────────────────────────────
+
 export interface ScoredChunk {
   file: string;
   heading: string;

@@ -6,7 +6,7 @@
  * Orchestration lives in harness.ts. Presentation lives in tui.ts.
  *
  * Usage:
- *   npx tsx examples/deep-research/main.ts [model-path] --corpus <path> [--query <text>] [options]
+ *   npx tsx examples/deep-research/main.ts [model-path] [--corpus <path>] [--query <text>] [options]
  */
 
 import * as fs from "node:fs";
@@ -23,12 +23,12 @@ import {
 } from "effection";
 import { createContext } from "@lloyal-labs/lloyal.node";
 import type { SessionContext } from "@lloyal-labs/sdk";
-import { initAgents } from "@lloyal-labs/lloyal-agents";
+import { initAgents, createToolkit } from "@lloyal-labs/lloyal-agents";
 import { c, log, setJsonlMode, setVerboseMode, fmtSize, createView } from "./tui";
 import type { WorkflowEvent } from "./tui";
 import { loadResources, chunkResources } from "../shared/resources/files";
 import { createReranker } from "../shared/reranker";
-import { createTools } from "../shared/tools";
+import { createTools, reportTool } from "../shared/tools";
 import { handleQuery } from "./harness";
 import type { WorkflowOpts } from "./harness";
 
@@ -66,12 +66,7 @@ const modelPath =
   args.find((a, i) => !a.startsWith("--") && !flagIndices.has(i)) ||
   DEFAULT_MODEL;
 
-if (!corpusDir) {
-  process.stdout.write(
-    `Usage: npx tsx examples/deep-research/main.ts [model-path] --corpus <path> [--query <text>] [--reranker <path>]\nMissing: --corpus\n`,
-  );
-  process.exit(1);
-}
+const hasCorpus = !!corpusDir;
 
 if (jsonlMode) setJsonlMode(true);
 if (verbose) setVerboseMode(true);
@@ -91,8 +86,8 @@ const MAX_TOOL_TURNS = 20;
 // ── Main ─────────────────────────────────────────────────────────
 
 main(function* () {
-  const resources = loadResources(corpusDir!);
-  const chunks = chunkResources(resources);
+  const resources = hasCorpus ? loadResources(corpusDir!) : [];
+  const chunks = hasCorpus ? chunkResources(resources) : [];
 
   const modelName = path.basename(modelPath).replace(/-Q\w+\.gguf$/, "");
   const rerankName = path
@@ -120,37 +115,57 @@ main(function* () {
     }),
   );
 
-  log(
-    `  ${c.green}\u25cf${c.reset} Loading ${c.bold}${rerankName}${c.reset} ${c.dim}(${fmtSize(fs.statSync(rerankModelPath).size)}, reranker)${c.reset}`,
-  );
+  let toolMap: Map<string, import("@lloyal-labs/lloyal-agents").Tool> = new Map();
+  let toolsJson = '[]';
+  let chunkCount = 0;
 
-  const reranker = yield* call(() =>
-    createReranker(rerankModelPath, { nSeqMax: 8, nCtx: 4096 }),
-  );
-  yield* ensure(() => {
-    reranker.dispose();
-  });
-  yield* call(() => reranker.tokenizeChunks(chunks));
+  if (hasCorpus) {
+    log(
+      `  ${c.green}\u25cf${c.reset} Loading ${c.bold}${rerankName}${c.reset} ${c.dim}(${fmtSize(fs.statSync(rerankModelPath).size)}, reranker)${c.reset}`,
+    );
 
-  const corpusIsFile =
-    resources.length === 1 && fs.statSync(corpusDir!).isFile();
-  const corpusLabel = corpusIsFile
-    ? path.basename(corpusDir!)
-    : `${path.basename(corpusDir!)}/ \u2014 ${resources.length} files`;
-  log(
-    `  ${c.dim}  Corpus: ${corpusLabel} \u2192 ${chunks.length} chunks${c.reset}`,
-  );
+    const reranker = yield* call(() =>
+      createReranker(rerankModelPath, { nSeqMax: 8, nCtx: 4096 }),
+    );
+    yield* ensure(() => {
+      reranker.dispose();
+    });
+    yield* call(() => reranker.tokenizeChunks(chunks));
 
-  const { toolMap, toolsJson } = createTools({ resources, chunks, reranker });
+    const corpusIsFile =
+      resources.length === 1 && fs.statSync(corpusDir!).isFile();
+    const corpusLabel = corpusIsFile
+      ? path.basename(corpusDir!)
+      : `${path.basename(corpusDir!)}/ \u2014 ${resources.length} files`;
+    log(
+      `  ${c.dim}  Corpus: ${corpusLabel} \u2192 ${chunks.length} chunks${c.reset}`,
+    );
+
+    const toolkit = createTools({ resources, chunks, reranker });
+    toolMap = toolkit.toolMap;
+    toolsJson = toolkit.toolsJson;
+    chunkCount = chunks.length;
+  } else {
+    if (!process.env.TAVILY_API_KEY) {
+      log(`  ${c.red}\u25cf${c.reset} TAVILY_API_KEY not set — required for web research without a corpus`);
+      log(`  ${c.dim}  Get a free key at https://tavily.com and set: export TAVILY_API_KEY=tvly-...${c.reset}`);
+      process.exit(1);
+    }
+    log(`  ${c.dim}  No corpus — web research only${c.reset}`);
+    const toolkit = createToolkit([reportTool]);
+    toolMap = toolkit.toolMap;
+    toolsJson = toolkit.toolsJson;
+  }
+
   const { session, events } = yield* initAgents<WorkflowEvent>(ctx);
 
   // View subscriber — all presentation lives here
   const view = createView({
     model: path.basename(modelPath),
-    reranker: path.basename(rerankModelPath),
+    reranker: hasCorpus ? path.basename(rerankModelPath) : 'none',
     agentCount: AGENT_COUNT,
     verifyCount: VERIFY_COUNT,
-    chunkCount: chunks.length,
+    chunkCount,
   });
   yield* spawn(function* () {
     yield* view.subscribe(events);
@@ -165,6 +180,7 @@ main(function* () {
     verifyCount: VERIFY_COUNT,
     maxTurns: MAX_TOOL_TURNS,
     trace,
+    hasCorpus,
   };
 
   // Initial query

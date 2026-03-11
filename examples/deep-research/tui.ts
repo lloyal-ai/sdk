@@ -33,6 +33,9 @@ export type StepEvent =
   | { type: 'synthesize:start' }
   | { type: 'synthesize:done'; pool: AgentPoolResult; timeMs: number }
   | { type: 'eval:done'; converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }
+  | { type: 'entailment:done'; entailed: boolean | null; tokenCount: number; timeMs: number }
+  | { type: 'webresearch:start'; agentCount: number }
+  | { type: 'webresearch:done'; pool: AgentPoolResult; timeMs: number }
   | { type: 'answer'; text: string }
   | { type: 'response:start' }
   | { type: 'response:text'; text: string }
@@ -148,6 +151,38 @@ function evalHandler(): ViewHandler {
   };
 }
 
+function entailmentHandler(): ViewHandler {
+  return (ev) => {
+    if (ev.type !== 'entailment:done') return;
+    const verdict = ev.entailed === true ? `${c.green}yes${c.reset}`
+      : ev.entailed === false ? `${c.red}no${c.reset}`
+      : `${c.yellow}unknown${c.reset}`;
+    log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Entailment${c.reset} ${c.dim}${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+    log(`    Entailed: ${verdict}`);
+  };
+}
+
+function webResearchHandler(state: ViewState): ViewHandler {
+  return (ev) => {
+    switch (ev.type) {
+      case 'webresearch:start':
+        log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Web Research${c.reset} ${c.dim}${ev.agentCount} agents${c.reset}`);
+        resetLabels(state);
+        break;
+      case 'webresearch:done': {
+        statusClear();
+        ev.pool.agents.forEach((a: AgentPoolResult['agents'][number], i: number) => {
+          const tree = i === ev.pool.agents.length - 1 ? '\u2514' : '\u251c';
+          const pplStr = Number.isFinite(a.ppl) ? ` \u00b7 ppl ${a.ppl.toFixed(2)}` : '';
+          log(`    ${c.dim}${tree}${c.reset} ${c.yellow}${label(state, a.agentId)}${c.reset} ${c.green}done${c.reset} ${c.dim}${a.tokenCount} tok \u00b7 ${a.toolCallCount} tools${pplStr}${c.reset}`);
+        });
+        log(`    ${c.dim}${ev.pool.totalTokens} tok \u00b7 ${ev.pool.totalToolCalls} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+        break;
+      }
+    }
+  };
+}
+
 function answerHandler(): ViewHandler {
   return (ev) => {
     if (ev.type !== 'answer') return;
@@ -195,6 +230,8 @@ export function createView(opts: ViewOpts) {
     researchSummaryHandler(state),
     synthesizeHandler(state),
     evalHandler(),
+    entailmentHandler(),
+    webResearchHandler(state),
     answerHandler(),
     responseHandler(),
     statsHandler(),

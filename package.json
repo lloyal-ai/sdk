@@ -15,7 +15,9 @@
   },
   "devDependencies": {
     "@lloyal-labs/lloyal.node": "^2.0.0",
+    "@mozilla/readability": "^0.6.0",
     "@types/node": "^25.3.0",
+    "linkedom": "^0.18.12",
     "tsx": "^4.21.0",
     "typedoc": "^0.28.0",
     "typedoc-rhineai-theme": "^1.0.0",

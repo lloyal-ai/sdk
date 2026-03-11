@@ -4,3 +4,4 @@ package-lock.json
 *.tsbuildinfo
 .DS_Store
 docs/internal
+tmp/

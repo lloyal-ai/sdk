@@ -1,5 +1,6 @@
+import { call } from 'effection';
 import type { Operation } from 'effection';
-import { Tool, useAgentPool, runAgents, withSharedRoot } from '@lloyal-labs/lloyal-agents';
+import { Tool, Ctx, generate, useAgentPool, withSharedRoot } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, Toolkit, PressureThresholds } from '@lloyal-labs/lloyal-agents';
 
 export interface WebResearchToolOpts {
@@ -76,28 +77,38 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
           pressure,
         });
 
-        // Force hard-cut agents to report — same pattern as ResearchTool
+        // Scratchpad extraction for hard-cut agents — works under pressure
         const hardCut = pool.agents.filter(a => !a.findings && !a.branch.disposed);
         if (hardCut.length > 0) {
           for (const a of pool.agents) {
             if (a.findings && !a.branch.disposed) a.branch.pruneSync();
           }
-          const reportTool = toolkit.toolMap.get('report')!;
-          const reporters = yield* runAgents({
-            tasks: hardCut.map(a => ({
-              systemPrompt: reporterPrompt.system,
-              content: reporterPrompt.user,
-              tools: JSON.stringify([reportTool.schema]),
-              parent: a.branch,
-            })),
-            tools: new Map([['report', reportTool]]),
-            terminalTool: 'report',
-            trace,
-            pressure: { softLimit: 1024, hardLimit: 256 },
-          });
-          hardCut.forEach((a, i) => {
-            if (reporters.agents[i]?.findings) a.findings = reporters.agents[i].findings;
-          });
+
+          const ctx = yield* Ctx.expect();
+          const schema = {
+            type: 'object',
+            properties: { findings: { type: 'string' } },
+            required: ['findings'],
+          };
+          const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(schema)));
+          const msgs = [
+            { role: 'system', content: reporterPrompt.system },
+            { role: 'user', content: reporterPrompt.user },
+          ];
+          const { prompt } = ctx.formatChatSync(JSON.stringify(msgs));
+
+          for (const a of hardCut) {
+            try {
+              const result = yield* generate<{ findings: string }>({
+                prompt,
+                grammar,
+                parse: (o: string) => JSON.parse(o),
+                parent: a.branch,
+              });
+              if (result.parsed?.findings) a.findings = result.parsed.findings;
+            } catch { /* extraction failure non-fatal */ }
+            if (!a.branch.disposed) a.branch.pruneSync();
+          }
         }
 
         return {

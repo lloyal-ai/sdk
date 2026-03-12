@@ -1,7 +1,13 @@
-Answer the research question based on the findings below.
+Answer the research question based on the inputs below.
 ---
-Research findings:
+Research notes:
 
-{{findings}}
+{{agentFindings}}
+
+---
+
+Source passages:
+
+{{sourcePassages}}
 
 Answer: "{{query}}"

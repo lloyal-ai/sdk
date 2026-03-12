@@ -5,11 +5,9 @@ import type { Operation, Channel } from 'effection';
 import { Branch, Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  Ctx, Tool,
-  generate, diverge, useAgentPool, runAgents, withSharedRoot, createToolkit,
+  Ctx, Tool, generate, diverge, useAgentPool, withSharedRoot, createToolkit,
 } from '@lloyal-labs/lloyal-agents';
-import type { AgentPoolResult } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
+import type { AgentPoolResult, JsonSchema } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent, OpTiming } from './tui';
 import { reportTool } from '../shared/tools';
 import { PlanTool } from '../shared/tools/plan';
@@ -222,8 +220,6 @@ function agentTasks(questions: string[], toolsJson: string, parent: Branch, seed
   }));
 }
 
-const reportOnlyTools = JSON.stringify([reportTool.schema]);
-
 function* reportPass(
   pool: AgentPoolResult,
   opts: WorkflowOpts,
@@ -231,26 +227,48 @@ function* reportPass(
   const hardCut = pool.agents.filter(a => !a.findings && !a.branch.disposed);
   if (hardCut.length === 0) return;
 
+  // Free KV from agents that already reported
   for (const a of pool.agents) {
     if (a.findings && !a.branch.disposed) a.branch.pruneSync();
   }
 
-  const reporters = yield* runAgents({
-    tasks: hardCut.map(a => ({
-      systemPrompt: REPORT.system,
-      content: REPORT.user,
-      tools: reportOnlyTools,
-      parent: a.branch,
-    })),
-    tools: new Map([['report', reportTool]]),
-    terminalTool: 'report',
-    trace: opts.trace,
-    pressure: { softLimit: 1024, hardLimit: 256 },
-  });
+  // Scratchpad extraction: fork, grammar-extract findings, prune — works under pressure
+  const ctx: SessionContext = yield* Ctx.expect();
+  const schema = {
+    type: 'object',
+    properties: { findings: { type: 'string' } },
+    required: ['findings'],
+  };
+  const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(schema)));
+  const messages = [
+    { role: 'system', content: REPORT.system },
+    { role: 'user', content: REPORT.user },
+  ];
+  const { prompt } = ctx.formatChatSync(JSON.stringify(messages));
 
-  hardCut.forEach((a, i) => {
-    if (reporters.agents[i]?.findings) a.findings = reporters.agents[i].findings;
-  });
+  for (const a of hardCut) {
+    try {
+      const result = yield* generate<{ findings: string }>({
+        prompt,
+        grammar,
+        parse: (o: string) => JSON.parse(o),
+        parent: a.branch,
+      });
+      if (result.parsed?.findings) a.findings = result.parsed.findings;
+    } catch { /* extraction failure non-fatal */ }
+    if (!a.branch.disposed) a.branch.pruneSync();
+  }
+}
+
+function collectAgentFindings(pool: AgentPoolResult, questions: string[]): string {
+  const sections: string[] = [];
+  for (let i = 0; i < pool.agents.length; i++) {
+    const a = pool.agents[i];
+    if (!a.findings) continue;
+    const q = questions[i] || `Agent ${i + 1}`;
+    sections.push(`### ${q}\n${a.findings}`);
+  }
+  return sections.join('\n\n');
 }
 
 // ── Web toolkit factory ──────────────────────────────────────────
@@ -279,7 +297,7 @@ function* research(
   query: string,
   opts: WorkflowOpts,
   maxTurns?: number,
-): Operation<{ pool: AgentPoolResult; findings: string; sharedPrefixLength: number; timeMs: number }> {
+): Operation<{ pool: AgentPoolResult; agentFindings: string; sourcePassages: string; sharedPrefixLength: number; timeMs: number }> {
   const effectiveMaxTurns = maxTurns ?? opts.maxTurns;
   const buffer: FetchedPage[] = [];
 
@@ -305,17 +323,17 @@ function* research(
   const timeMs = performance.now() - t;
   yield* opts.events.send({ type: 'research:done', pool, timeMs });
 
-  // Rerank buffered pages — top passages go to synthesis verbatim
-  const findings = yield* rerankFindings(buffer, query, opts.reranker, 10, opts.findingsMaxChars);
+  const agentFindings = collectAgentFindings(pool, questions);
+  const sourcePassages = yield* rerankFindings(buffer, query, opts.reranker, 10, opts.findingsMaxChars);
 
-  return { pool, findings, sharedPrefixLength, timeMs };
+  return { pool, agentFindings, sourcePassages, sharedPrefixLength, timeMs };
 }
 
 function* warmResearch(
   questions: string[],
   query: string,
   opts: WorkflowOpts,
-): Operation<{ pool: AgentPoolResult; findings: string; timeMs: number }> {
+): Operation<{ pool: AgentPoolResult; agentFindings: string; sourcePassages: string; timeMs: number }> {
   const buffer: FetchedPage[] = [];
   const fullToolkit = buildWebToolkit(opts, buffer, opts.session.trunk!);
 
@@ -337,13 +355,15 @@ function* warmResearch(
   const timeMs = performance.now() - t;
   yield* opts.events.send({ type: 'research:done', pool, timeMs });
 
-  const findings = yield* rerankFindings(buffer, query, opts.reranker, 10, opts.findingsMaxChars);
+  const agentFindings = collectAgentFindings(pool, questions);
+  const sourcePassages = yield* rerankFindings(buffer, query, opts.reranker, 10, opts.findingsMaxChars);
 
-  return { pool, findings, timeMs };
+  return { pool, agentFindings, sourcePassages, timeMs };
 }
 
 function* synthesize(
-  findings: string,
+  agentFindings: string,
+  sourcePassages: string,
   query: string,
   opts: WorkflowOpts,
 ): Operation<{
@@ -352,7 +372,8 @@ function* synthesize(
   timeMs: number;
 }> {
   const content = SYNTHESIZE.user
-    .replace('{{findings}}', findings)
+    .replace('{{agentFindings}}', agentFindings || '(none)')
+    .replace('{{sourcePassages}}', sourcePassages || '(none)')
     .replace('{{query}}', query);
 
   yield* opts.events.send({ type: 'synthesize:start' });
@@ -389,7 +410,8 @@ function* synthesize(
   // N cheap text-only samples for entropy check — runs with freed KV
   const ctx: SessionContext = yield* Ctx.expect();
   const verifyContent = VERIFY.user
-    .replace('{{findings}}', findings)
+    .replace('{{agentFindings}}', agentFindings || '(none)')
+    .replace('{{sourcePassages}}', sourcePassages || '(none)')
     .replace('{{query}}', query);
   const messages = [
     { role: 'system', content: VERIFY.system },
@@ -452,11 +474,12 @@ function* evaluate(
 function* respond(
   query: string,
   opts: WorkflowOpts,
-  findings?: string,
+  context?: { agentFindings: string; sourcePassages: string },
 ): Operation<{ tokenCount: number; timeMs: number }> {
-  yield* call(() => opts.session.prefillUser(findings
-    ? `Research findings:\n${findings}\n\nUser question: ${query}\n\nAnswer based on the research findings above.`
-    : query));
+  const prefillContent = context
+    ? `Research notes:\n${context.agentFindings}\n\nSource passages:\n${context.sourcePassages}\n\nUser question: ${query}\n\nAnswer the user's specific question using the evidence above. Address the precise concern raised.`
+    : query;
+  yield* call(() => opts.session.prefillUser(prefillContent));
 
   yield* opts.events.send({ type: 'response:start' });
   const t = performance.now();
@@ -503,7 +526,7 @@ function* coldResearch(
   const t0 = performance.now();
 
   const r = yield* research(questions, query, opts, maxTurns);
-  const s = yield* synthesize(r.findings, query, opts);
+  const s = yield* synthesize(r.agentFindings, r.sourcePassages, query, opts);
 
   // Lightweight trunk — findings only, no tool-call bloat
   const findings = s.pool.agents[0]?.findings || '';
@@ -569,7 +592,10 @@ function* warmDecompose(
   opts: WorkflowOpts,
 ): Operation<void> {
   const r = yield* warmResearch(questions, query, opts);
-  const resp = yield* respond(query, opts, r.findings);
+  const resp = yield* respond(query, opts, {
+    agentFindings: r.agentFindings,
+    sourcePassages: r.sourcePassages,
+  });
 
   const timings: OpTiming[] = [
     { label: 'Plan', tokens: plan.tokenCount, detail: planIntent(plan), timeMs: plan.timeMs },

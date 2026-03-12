@@ -8,12 +8,14 @@ import * as fs from 'node:fs';
 import { each } from 'effection';
 import type { Channel, Operation } from 'effection';
 import type { AgentEvent, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
+import type { PlanQuestion } from '../shared/tools/plan';
 import type { OpTiming, ViewState, ViewHandler } from '../shared/tui/types';
 import {
   c, log, emit, statusClear,
 } from '../shared/tui/primitives';
 import { createViewState, agentHandler, label, resetLabels } from '../shared/tui/agent-view';
 import { statsHandler, completeHandler } from '../shared/tui/stats-view';
+import { createGaugeState, gaugeHandler } from '../shared/tui/gauge';
 
 // Re-export shared primitives for main.ts
 export { c, log, setJsonlMode, setVerboseMode, fmtSize } from '../shared/tui/primitives';
@@ -23,7 +25,7 @@ export type { OpTiming } from '../shared/tui/types';
 
 export type StepEvent =
   | { type: 'query'; query: string; warm: boolean }
-  | { type: 'plan'; intent: 'decompose' | 'passthrough' | 'clarify'; questions: string[]; tokenCount: number; timeMs: number }
+  | { type: 'plan'; intent: 'decompose' | 'passthrough' | 'clarify' | 'mixed'; questions: PlanQuestion[]; tokenCount: number; timeMs: number }
   | { type: 'research:start'; agentCount: number }
   | { type: 'research:done'; pool: AgentPoolResult; timeMs: number }
   | { type: 'synthesize:start' }
@@ -61,10 +63,13 @@ function planHandler(): ViewHandler {
     if (ev.type !== 'plan') return;
     emit('plan', { intent: ev.intent, questions: ev.questions, planTokens: ev.tokenCount });
     log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Plan${c.reset} ${c.dim}${ev.intent} \u00b7 ${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
-    if (ev.intent === 'clarify') {
-      ev.questions.forEach((q: string, i: number) => log(`    ${c.dim}?${c.reset} ${q}`));
-    } else if (ev.intent === 'decompose') {
-      ev.questions.forEach((q: string, i: number) => log(`    ${c.dim}${i + 1}.${c.reset} ${q}`));
+    let ri = 0;
+    for (const q of ev.questions) {
+      if (q.intent === 'clarify') {
+        log(`    ${c.dim}?${c.reset} ${q.text}`);
+      } else {
+        log(`    ${c.dim}${++ri}.${c.reset} ${q.text}`);
+      }
     }
   };
 }
@@ -186,11 +191,13 @@ export interface ViewOpts {
 
 export function createView(opts: ViewOpts) {
   const state = createViewState();
+  const gauge = createGaugeState();
 
   const handlers: ViewHandler[] = [
     queryHandler(state, opts),
     planHandler(),
-    agentHandler(state),
+    gaugeHandler(gauge),       // update pressure before agentHandler reads it
+    agentHandler(state, gauge),
     researchSummaryHandler(state),
     synthesizeHandler(state),
     evalHandler(),

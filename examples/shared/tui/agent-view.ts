@@ -1,4 +1,5 @@
 import type { ViewState, ViewHandler } from './types';
+import type { GaugeState } from './gauge';
 import { c, log, status, statusClear, emit, isVerboseMode } from './primitives';
 
 export function createViewState(): ViewState {
@@ -8,6 +9,8 @@ export function createViewState(): ViewState {
     agentText: new Map(),
     agentStatus: new Map(),
     agentParent: new Map(),
+    rootToAgent: new Map(),
+    spawningQueue: [],
     traceQuery: '',
   };
 }
@@ -24,6 +27,8 @@ export function resetLabels(state: ViewState): void {
   state.agentStatus.clear();
   state.agentText.clear();
   state.agentParent.clear();
+  state.rootToAgent.clear();
+  state.spawningQueue.length = 0;
 }
 
 export function isSubAgent(state: ViewState, agentId: number): boolean {
@@ -34,19 +39,21 @@ export function parentLabel(state: ViewState, agentId: number): string {
   return label(state, state.agentParent.get(agentId)!);
 }
 
-export function renderStatus(state: ViewState): void {
+export function renderStatus(state: ViewState, suffix?: string): void {
   const active = [...state.agentStatus.entries()]
     .filter(([id, s]) => s.state !== 'done' && !isSubAgent(state, id));
   if (active.length === 0) return;
+
+  const sfx = suffix || '';
 
   const generating = active.filter(([, s]) => s.state === 'gen');
   if (generating.length === 1 && active.length === 1) {
     const [id] = generating[0];
     const raw = (state.agentText.get(id) ?? '').replace(/\n/g, ' ').trimStart();
     const cols = process.stdout.columns || 80;
-    const maxLen = cols - 12;
+    const maxLen = cols - 12 - (sfx ? sfx.length + 2 : 0);
     const text = raw.length > maxLen ? raw.slice(raw.length - maxLen) : raw;
-    status(`    ${c.dim}\u25c6${c.reset} ${c.yellow}${label(state, id)}${c.reset} ${text}`);
+    status(`    ${c.dim}\u25c6${c.reset} ${c.yellow}${label(state, id)}${c.reset} ${text}${sfx}`);
     return;
   }
 
@@ -56,16 +63,32 @@ export function renderStatus(state: ViewState): void {
     const detail = s.detail ? ` ${s.detail}` : '';
     return `${lbl}: ${c.cyan}${s.state}${c.reset}${detail}`;
   });
-  status(`    ${c.dim}\u25c6${c.reset} ${parts.join('  ')}`);
+  status(`    ${c.dim}\u25c6${c.reset} ${parts.join('  ')}${sfx}`);
 }
 
-export function agentHandler(state: ViewState): ViewHandler {
+function pressureSuffix(gauge?: GaugeState): string {
+  if (!gauge || gauge.nCtx <= 0) return '';
+  const pct = Math.min(100, Math.round((gauge.cellsUsed / gauge.nCtx) * 100));
+  const color = pct >= 90 ? c.red : pct >= 70 ? c.yellow : c.green;
+  return `  ${color}${pct}%${c.reset}`;
+}
+
+export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler {
   return (ev) => {
     switch (ev.type) {
       case 'agent:spawn': {
-        // If parent is a known labeled agent, this is a sub-agent
         if (state.agentLabel.has(ev.parentAgentId)) {
           state.agentParent.set(ev.agentId, ev.parentAgentId);
+        } else {
+          // Unknown parent = root branch from withSharedRoot inside a tool
+          let logicalParent = state.rootToAgent.get(ev.parentAgentId);
+          if (logicalParent == null && state.spawningQueue.length > 0) {
+            logicalParent = state.spawningQueue[0];
+            state.rootToAgent.set(ev.parentAgentId, logicalParent);
+          }
+          if (logicalParent != null) {
+            state.agentParent.set(ev.agentId, logicalParent);
+          }
         }
         break;
       }
@@ -74,11 +97,14 @@ export function agentHandler(state: ViewState): ViewHandler {
         state.agentText.set(ev.agentId, (state.agentText.get(ev.agentId) ?? '') + ev.text);
         state.agentStatus.set(ev.agentId, { state: 'gen', tokenCount: ev.tokenCount, detail: '' });
         if (sub) break;  // sub-agents: skip verbose/status output
-        if (!isVerboseMode()) renderStatus(state);
+        if (!isVerboseMode()) renderStatus(state, pressureSuffix(gauge));
         // verbose: accumulate only — flushed as a block on tool_call/done
         break;
       }
       case 'agent:tool_call': {
+        if (ev.tool === 'web_research' || ev.tool === 'research') {
+          state.spawningQueue.push(ev.agentId);
+        }
         const sub = isSubAgent(state, ev.agentId);
         if (isVerboseMode() && !sub) {
           const raw = (state.agentText.get(ev.agentId) ?? '').trim();
@@ -124,6 +150,10 @@ export function agentHandler(state: ViewState): ViewHandler {
         break;
       }
       case 'agent:tool_result': {
+        if (ev.tool === 'web_research' || ev.tool === 'research') {
+          const idx = state.spawningQueue.indexOf(ev.agentId);
+          if (idx >= 0) state.spawningQueue.splice(idx, 1);
+        }
         emit('tool_result', {
           agentId: ev.agentId, toolName: ev.tool,
           result: ev.result.length > 200 ? ev.result.slice(0, 200) + '...' : ev.result,
@@ -171,7 +201,7 @@ export function agentHandler(state: ViewState): ViewHandler {
       }
       case 'agent:tool_progress': {
         state.agentStatus.set(ev.agentId, { state: ev.tool, tokenCount: 0, detail: `${ev.filled}/${ev.total}` });
-        renderStatus(state);
+        renderStatus(state, pressureSuffix(gauge));
         break;
       }
       case 'agent:report': {
@@ -216,6 +246,11 @@ export function agentHandler(state: ViewState): ViewHandler {
             }
           }
         }
+        break;
+      }
+      case 'agent:tick': {
+        // Re-render status line with updated pressure
+        if (!isVerboseMode()) renderStatus(state, pressureSuffix(gauge));
         break;
       }
     }

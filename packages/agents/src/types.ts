@@ -276,6 +276,8 @@ export interface GenerateOptions {
   params?: SamplingParams;
   /** Optional parser applied to the raw output string */
   parse?: (output: string) => unknown;
+  /** Fork from parent instead of creating a fresh root. Prompt is prefilled as a delta (with turn separator). */
+  parent?: Branch;
 }
 
 /**
@@ -371,4 +373,5 @@ export type AgentEvent =
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string }
   | { type: 'agent:tool_progress'; agentId: number; tool: string; filled: number; total: number }
   | { type: 'agent:report'; agentId: number; findings: string }
-  | { type: 'agent:done'; agentId: number };
+  | { type: 'agent:done'; agentId: number }
+  | { type: 'agent:tick'; cellsUsed: number; nCtx: number };

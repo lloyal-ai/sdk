@@ -23,6 +23,12 @@ export class FetchPageTool extends Tool<{ url: string }> {
     const url = args.url?.trim();
     if (!url) return { error: 'url must not be empty' };
 
+    // Early reject PDF URLs — can't extract readable content from binary PDF
+    const lowerUrl = url.toLowerCase();
+    if (lowerUrl.endsWith('.pdf') || lowerUrl.includes('.pdf?') || lowerUrl.includes('.pdf#')) {
+      return { error: 'PDF documents cannot be extracted. Try searching for an HTML version of this content.', url };
+    }
+
     const maxChars = this._maxChars;
     return yield* call(async () => {
       let res: Response;
@@ -36,6 +42,11 @@ export class FetchPageTool extends Tool<{ url: string }> {
       }
 
       if (!res.ok) return { error: `HTTP ${res.status} ${res.statusText}`, url };
+
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/pdf')) {
+        return { error: 'PDF documents cannot be extracted. Try searching for an HTML version of this content.', url };
+      }
 
       const html = await res.text();
 

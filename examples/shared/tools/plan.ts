@@ -2,7 +2,7 @@ import { call } from 'effection';
 import type { Operation } from 'effection';
 import { Tool, Ctx, generate } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
-import { Branch, Session } from '@lloyal-labs/sdk';
+import { Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 
 export interface PlanToolOpts {
@@ -11,16 +11,20 @@ export interface PlanToolOpts {
   maxQuestions: number;
 }
 
+export interface PlanQuestion {
+  text: string;
+  intent: 'research' | 'clarify';
+}
+
 export interface PlanResult {
-  intent: 'decompose' | 'passthrough' | 'clarify';
-  questions: string[];
+  questions: PlanQuestion[];
   tokenCount: number;
   timeMs: number;
 }
 
 export class PlanTool extends Tool<{ query: string; context?: string }> {
   readonly name = 'plan';
-  readonly description = 'Analyze a research query. Return "decompose" with independent sub-questions if the query has multiple facets. Return "passthrough" if the query is specific enough to research directly. Return "clarify" with questions for the user if the query is ambiguous.';
+  readonly description = 'Analyze a research query. Return sub-questions classified as "research" (answerable via web search) or "clarify" (needs user input). Return empty array if the query is focused enough to research directly.';
   readonly parameters: JsonSchema = {
     type: 'object',
     properties: {
@@ -48,14 +52,20 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     const schema = {
       type: 'object',
       properties: {
-        intent: { type: 'string', enum: ['decompose', 'passthrough', 'clarify'] },
         questions: {
           type: 'array',
-          items: { type: 'string' },
+          items: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              intent: { type: 'string', enum: ['research', 'clarify'] },
+            },
+            required: ['text', 'intent'],
+          },
           maxItems: this._maxQuestions,
         },
       },
-      required: ['intent', 'questions'],
+      required: ['questions'],
     };
     const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(schema)));
 
@@ -72,49 +82,27 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     ];
     const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
 
-    let output: string;
-    let tokenCount: number;
-
     const parent = this._session.trunk ?? undefined;
-    if (parent) {
-      const lead: Branch = yield* call(() => parent.fork());
-      try {
-        lead.setGrammar(grammar);
-        const sep = ctx.getTurnSeparator();
-        const delta: number[] = yield* call(() => ctx.tokenize(prompt, false));
-        yield* call(() => lead.prefill([...sep, ...delta]));
-
-        ({ output, tokenCount } = yield* call(async () => {
-          let o = '';
-          let tc = 0;
-          for await (const { text } of lead) { o += text; tc++; }
-          return { output: o, tokenCount: tc };
-        }));
-      } finally {
-        yield* call(() => lead.prune());
-      }
-    } else {
-      const result = yield* generate({ prompt, grammar, params: { temperature: 0.3 } });
-      output = result.output;
-      tokenCount = result.tokenCount;
-    }
+    const result = yield* generate({
+      prompt,
+      grammar,
+      params: { temperature: 0.3 },
+      parent,
+    });
+    const { output, tokenCount } = result;
 
     const timeMs = performance.now() - t;
 
     try {
       const parsed = JSON.parse(output);
-      const intent = parsed.intent as string;
-      if (intent !== 'decompose' && intent !== 'passthrough' && intent !== 'clarify') {
-        return { intent: 'passthrough', questions: [], tokenCount, timeMs } satisfies PlanResult;
-      }
-      return {
-        intent,
-        questions: (parsed.questions || []).slice(0, this._maxQuestions),
-        tokenCount,
-        timeMs,
-      } satisfies PlanResult;
+      const raw = (parsed.questions || []) as { text?: string; intent?: string }[];
+      const questions: PlanQuestion[] = raw
+        .slice(0, this._maxQuestions)
+        .filter(q => typeof q.text === 'string' && (q.intent === 'research' || q.intent === 'clarify'))
+        .map(q => ({ text: q.text!, intent: q.intent as 'research' | 'clarify' }));
+      return { questions, tokenCount, timeMs } satisfies PlanResult;
     } catch {
-      return { intent: 'passthrough', questions: [], tokenCount, timeMs } satisfies PlanResult;
+      return { questions: [], tokenCount, timeMs } satisfies PlanResult;
     }
   }
 }

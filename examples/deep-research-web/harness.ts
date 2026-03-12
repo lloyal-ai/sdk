@@ -34,6 +34,7 @@ const SYNTHESIZE = loadTask('synthesize');
 const VERIFY = loadTask('verify');
 const EVAL = loadTask('eval');
 const REPORT = loadTask('report');
+const EXTRACT = loadTask('extract');
 
 // ── Options ──────────────────────────────────────────────────────
 
@@ -44,12 +45,22 @@ export interface WorkflowOpts {
   verifyCount: number;
   maxTurns: number;
   trace: boolean;
+  findingsMaxChars?: number;
   events: Channel<WorkflowEvent, void>;
 }
 
 export type QueryResult =
   | { type: 'done' }
   | { type: 'clarify'; questions: string[] };
+
+function planIntent(plan: PlanResult): string {
+  const r = plan.questions.filter(q => q.intent === 'research').length;
+  const cl = plan.questions.filter(q => q.intent === 'clarify').length;
+  if (r === 0 && cl === 0) return 'passthrough';
+  if (r === 0) return 'clarify';
+  if (cl > 0) return 'mixed';
+  return 'decompose';
+}
 
 // ── Buffering fetch_page ─────────────────────────────────────────
 
@@ -61,7 +72,7 @@ interface FetchedPage {
 
 class BufferingFetchPage extends Tool<{ url: string }> {
   readonly name = 'fetch_page';
-  readonly description = 'Fetch a web page and extract its article content. Returns readable text with title and excerpt. Use to read search results or follow links discovered in pages.';
+  readonly description = 'Fetch a web page and extract its article content. Returns a summary and any links worth following. Use to read search results or follow links discovered in pages.';
   readonly parameters: JsonSchema = {
     type: 'object',
     properties: { url: { type: 'string', description: 'URL to fetch' } },
@@ -70,22 +81,65 @@ class BufferingFetchPage extends Tool<{ url: string }> {
 
   private _inner: FetchPageTool;
   private _buffer: FetchedPage[];
+  private _parent: Branch;
 
-  constructor(buffer: FetchedPage[], maxChars?: number) {
+  constructor(buffer: FetchedPage[], parent: Branch, maxChars?: number) {
     super();
     this._inner = new FetchPageTool(maxChars);
     this._buffer = buffer;
+    this._parent = parent;
   }
 
   *execute(args: { url: string }): Operation<unknown> {
     const result = yield* this._inner.execute(args);
     const r = result as Record<string, unknown>;
     if (typeof r?.content === 'string' && r.content !== '[Could not extract article content]') {
+      const content = r.content as string;
+      // Buffer full content for reranking
       this._buffer.push({
         url: (r.url as string) || args.url,
         title: (r.title as string) || '',
-        text: r.content as string,
+        text: content,
       });
+
+      // Attention scratchpad: fork, attend to full content, extract summary + links, prune
+      const ctx: SessionContext = yield* Ctx.expect();
+      const schema = {
+        type: 'object',
+        properties: {
+          summary: { type: 'string' },
+          links: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['summary', 'links'],
+      };
+      const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(schema)));
+      const extractPrompt = EXTRACT.user
+        .replace('{{url}}', args.url)
+        .replace('{{title}}', (r.title as string) || '')
+        .replace('{{content}}', content);
+      const messages = [
+        { role: 'system', content: EXTRACT.system },
+        { role: 'user', content: extractPrompt },
+      ];
+      const { prompt } = ctx.formatChatSync(JSON.stringify(messages));
+
+      try {
+        const extracted = yield* generate<{ summary: string; links: string[] }>({
+          prompt,
+          grammar,
+          params: { temperature: 0.3 },
+          parse: (o) => JSON.parse(o),
+          parent: this._parent,
+        });
+        return {
+          url: r.url || args.url,
+          title: r.title || '',
+          summary: extracted.parsed?.summary || '',
+          links: extracted.parsed?.links || [],
+        };
+      } catch {
+        return result; // fallback to full result on extraction failure
+      }
     }
     return result;
   }
@@ -128,6 +182,7 @@ function* rerankFindings(
   query: string,
   reranker: Reranker,
   topN = 10,
+  maxChars = 4000,
 ): Operation<string> {
   if (buffer.length === 0) return '';
 
@@ -143,10 +198,16 @@ function* rerankFindings(
     }
   });
 
-  return scored.slice(0, topN).map(sc => {
+  const passages: string[] = [];
+  let totalChars = 0;
+  for (const sc of scored.slice(0, topN)) {
     const chunk = chunks.find(c => c.resource === sc.file && c.startLine === sc.startLine);
-    return `[${sc.heading}](${sc.file})\n${chunk?.text || ''}`;
-  }).join('\n\n---\n\n');
+    const passage = `[${sc.heading}](${sc.file})\n${chunk?.text || ''}`;
+    if (totalChars + passage.length > maxChars && passages.length > 0) break;
+    passages.push(passage);
+    totalChars += passage.length;
+  }
+  return passages.join('\n\n---\n\n');
 }
 
 // ── Agent task builder ───────────────────────────────────────────
@@ -194,7 +255,7 @@ function* reportPass(
 
 // ── Web toolkit factory ──────────────────────────────────────────
 
-function buildWebToolkit(opts: WorkflowOpts, buffer: FetchedPage[]) {
+function buildWebToolkit(opts: WorkflowOpts, buffer: FetchedPage[], parent: Branch) {
   const webResearchTool = new WebResearchTool({
     systemPrompt: RESEARCH.system,
     reporterPrompt: REPORT,
@@ -203,7 +264,7 @@ function buildWebToolkit(opts: WorkflowOpts, buffer: FetchedPage[]) {
   });
   const fullToolkit = createToolkit([
     new WebSearchTool(new TavilyProvider()),
-    new BufferingFetchPage(buffer),
+    new BufferingFetchPage(buffer, parent),
     webResearchTool,
     reportTool,
   ]);
@@ -221,14 +282,14 @@ function* research(
 ): Operation<{ pool: AgentPoolResult; findings: string; sharedPrefixLength: number; timeMs: number }> {
   const effectiveMaxTurns = maxTurns ?? opts.maxTurns;
   const buffer: FetchedPage[] = [];
-  const fullToolkit = buildWebToolkit(opts, buffer);
 
   yield* opts.events.send({ type: 'research:start', agentCount: questions.length });
   const t = performance.now();
 
   const { result: pool, prefixLen: sharedPrefixLength } = yield* withSharedRoot(
-    { systemPrompt: RESEARCH.system, tools: fullToolkit.toolsJson },
+    { systemPrompt: RESEARCH.system },
     function*(root, prefixLen) {
+      const fullToolkit = buildWebToolkit(opts, buffer, root);
       const pool = yield* useAgentPool({
         tasks: agentTasks(questions, fullToolkit.toolsJson, root),
         tools: fullToolkit.toolMap, maxTurns: effectiveMaxTurns, trace: opts.trace,
@@ -245,7 +306,7 @@ function* research(
   yield* opts.events.send({ type: 'research:done', pool, timeMs });
 
   // Rerank buffered pages — top passages go to synthesis verbatim
-  const findings = yield* rerankFindings(buffer, query, opts.reranker);
+  const findings = yield* rerankFindings(buffer, query, opts.reranker, 10, opts.findingsMaxChars);
 
   return { pool, findings, sharedPrefixLength, timeMs };
 }
@@ -256,7 +317,7 @@ function* warmResearch(
   opts: WorkflowOpts,
 ): Operation<{ pool: AgentPoolResult; findings: string; timeMs: number }> {
   const buffer: FetchedPage[] = [];
-  const fullToolkit = buildWebToolkit(opts, buffer);
+  const fullToolkit = buildWebToolkit(opts, buffer, opts.session.trunk!);
 
   yield* opts.events.send({ type: 'research:start', agentCount: questions.length });
   const t = performance.now();
@@ -276,7 +337,7 @@ function* warmResearch(
   const timeMs = performance.now() - t;
   yield* opts.events.send({ type: 'research:done', pool, timeMs });
 
-  const findings = yield* rerankFindings(buffer, query, opts.reranker);
+  const findings = yield* rerankFindings(buffer, query, opts.reranker, 10, opts.findingsMaxChars);
 
   return { pool, findings, timeMs };
 }
@@ -299,10 +360,12 @@ function* synthesize(
 
   const reportOnlyToolkit = createToolkit([reportTool]);
 
-  const inner = yield* withSharedRoot(
+  // Synthesis runs inside withSharedRoot; verify+eval run outside so that
+  // pruning the shared root frees KV (via fork_head decrement) before diverge.
+  const synthPool = yield* withSharedRoot(
     { systemPrompt: SYNTHESIZE.system, tools: reportOnlyToolkit.toolsJson },
     function*(root) {
-      const synthPool = yield* useAgentPool({
+      const pool = yield* useAgentPool({
         tasks: [{ systemPrompt: SYNTHESIZE.system, content, tools: reportOnlyToolkit.toolsJson, parent: root }],
         tools: reportOnlyToolkit.toolMap,
         terminalTool: 'report',
@@ -311,38 +374,38 @@ function* synthesize(
         pressure: { softLimit: 1024 },
       });
 
-      yield* reportPass(synthPool, opts);
-
-      const synthTimeMs = performance.now() - t;
-      yield* opts.events.send({ type: 'synthesize:done', pool: synthPool, timeMs: synthTimeMs });
-
-      // N cheap text-only samples for entropy check
-      const ctx: SessionContext = yield* Ctx.expect();
-      const verifyContent = VERIFY.user
-        .replace('{{findings}}', findings)
-        .replace('{{query}}', query);
-      const messages = [
-        { role: 'system', content: VERIFY.system },
-        { role: 'user', content: verifyContent },
-      ];
-      const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
-
-      const samples = yield* diverge({
-        prompt,
-        attempts: opts.verifyCount,
-        params: { temperature: 0.7 },
-      });
-
-      const e = yield* evaluate(samples.attempts.map(a => a.output), opts);
-
-      const agent = synthPool.agents[0];
-      yield* opts.events.send({ type: 'answer', text: agent?.findings || '' });
-
-      return { synthPool, e, synthTimeMs };
+      yield* reportPass(pool, opts);
+      return pool;
     },
   );
+  // withSharedRoot's finally has pruned the shared root — KV freed
 
-  return { pool: inner.synthPool, eval: inner.e, timeMs: inner.synthTimeMs };
+  const synthTimeMs = performance.now() - t;
+  yield* opts.events.send({ type: 'synthesize:done', pool: synthPool, timeMs: synthTimeMs });
+
+  const agent = synthPool.agents[0];
+  yield* opts.events.send({ type: 'answer', text: agent?.findings || '' });
+
+  // N cheap text-only samples for entropy check — runs with freed KV
+  const ctx: SessionContext = yield* Ctx.expect();
+  const verifyContent = VERIFY.user
+    .replace('{{findings}}', findings)
+    .replace('{{query}}', query);
+  const messages = [
+    { role: 'system', content: VERIFY.system },
+    { role: 'user', content: verifyContent },
+  ];
+  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+
+  const samples = yield* diverge({
+    prompt,
+    attempts: opts.verifyCount,
+    params: { temperature: 0.7 },
+  });
+
+  const e = yield* evaluate(samples.attempts.map(a => a.output), opts);
+
+  return { pool: synthPool, eval: e, timeMs: synthTimeMs };
 }
 
 function* evaluate(
@@ -458,7 +521,7 @@ function* coldResearch(
   }
 
   const timings: OpTiming[] = [
-    { label: 'Plan', tokens: plan.tokenCount, detail: plan.intent, timeMs: plan.timeMs },
+    { label: 'Plan', tokens: plan.tokenCount, detail: planIntent(plan), timeMs: plan.timeMs },
     {
       label: 'Research', tokens: r.pool.totalTokens,
       detail: `(${r.pool.agents.map(a => a.tokenCount).join(' + ')})  ${r.pool.totalToolCalls} tools`,
@@ -482,7 +545,7 @@ function* coldResearch(
   yield* opts.events.send({
     type: 'complete',
     data: {
-      intent: plan.intent,
+      intent: planIntent(plan),
       planTokens: plan.tokenCount,
       agentTokens: r.pool.totalTokens, researchSteps: r.pool.steps,
       agentPpl: r.pool.agents.map(a => a.ppl),
@@ -509,7 +572,7 @@ function* warmDecompose(
   const resp = yield* respond(query, opts, r.findings);
 
   const timings: OpTiming[] = [
-    { label: 'Plan', tokens: plan.tokenCount, detail: plan.intent, timeMs: plan.timeMs },
+    { label: 'Plan', tokens: plan.tokenCount, detail: planIntent(plan), timeMs: plan.timeMs },
     {
       label: 'Research', tokens: r.pool.totalTokens,
       detail: `(${r.pool.agents.map(a => a.tokenCount).join(' + ')})  ${r.pool.totalToolCalls} tools`,
@@ -536,18 +599,27 @@ export function* handleQuery(
     maxQuestions: opts.agentCount,
   });
   const p = (yield* planTool.execute({ query, context })) as PlanResult;
+
+  const research = p.questions.filter(q => q.intent === 'research');
+  const clarify = p.questions.filter(q => q.intent === 'clarify');
+  const intent = research.length === 0 && clarify.length === 0 ? 'passthrough'
+    : research.length === 0 ? 'clarify'
+    : clarify.length > 0 ? 'mixed' : 'decompose';
+
   yield* opts.events.send({
-    type: 'plan', intent: p.intent, questions: p.questions,
+    type: 'plan', intent, questions: p.questions,
     tokenCount: p.tokenCount, timeMs: p.timeMs,
   });
 
-  if (p.intent === 'clarify') {
-    return { type: 'clarify', questions: p.questions };
+  if (intent === 'clarify') {
+    return { type: 'clarify', questions: clarify.map(q => q.text) };
   }
 
   const warm = !!opts.session.trunk;
+  const researchQuestions = research.map(q => q.text);
 
-  if (p.intent === 'passthrough') {
+  if (researchQuestions.length === 0) {
+    // Passthrough — no sub-questions, research query directly
     if (warm) {
       const resp = yield* respond(query, opts);
       const timings: OpTiming[] = [
@@ -556,17 +628,17 @@ export function* handleQuery(
       ];
       yield* summarize(timings, opts);
     } else {
-      // Single agent with higher maxTurns for chain queries
       yield* coldResearch([query], query, p, opts, opts.maxTurns * 2);
     }
     return { type: 'done' };
   }
 
-  // intent === 'decompose'
+  // Has research questions — dispatch agents
+  const maxTurns = researchQuestions.length === 1 ? opts.maxTurns * 2 : undefined;
   if (warm) {
-    yield* warmDecompose(p.questions, query, p, opts);
+    yield* warmDecompose(researchQuestions, query, p, opts);
   } else {
-    yield* coldResearch(p.questions, query, p, opts);
+    yield* coldResearch(researchQuestions, query, p, opts, maxTurns);
   }
   return { type: 'done' };
 }

@@ -93,7 +93,7 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
             tools: new Map([['report', reportTool]]),
             terminalTool: 'report',
             trace,
-            pressure: { softLimit: 200, hardLimit: 64 },
+            pressure: { softLimit: 1024, hardLimit: 256 },
           });
           hardCut.forEach((a, i) => {
             if (reporters.agents[i]?.findings) a.findings = reporters.agents[i].findings;

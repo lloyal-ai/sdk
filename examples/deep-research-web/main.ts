@@ -50,7 +50,7 @@ function argVal(flag: string): string | null {
   return i !== -1 ? args[i + 1] : null;
 }
 const flagIndices = new Set(
-  ["--reranker", "--query"].flatMap((f) => {
+  ["--reranker", "--query", "--findings-budget"].flatMap((f) => {
     const i = args.indexOf(f);
     return i !== -1 ? [i, i + 1] : [];
   }),
@@ -58,6 +58,7 @@ const flagIndices = new Set(
 
 const rerankModelPath = argVal("--reranker") || DEFAULT_RERANKER;
 const initialQuery = argVal("--query");
+const findingsMaxChars = argVal("--findings-budget") ? parseInt(argVal("--findings-budget")!, 10) : undefined;
 const modelPath =
   args.find((a, i) => !a.startsWith("--") && !flagIndices.has(i)) ||
   DEFAULT_MODEL;
@@ -152,6 +153,7 @@ main(function* () {
     verifyCount: VERIFY_COUNT,
     maxTurns: MAX_TOOL_TURNS,
     trace,
+    findingsMaxChars,
   };
 
   // Initial query — clarify falls through to passthrough in non-interactive mode

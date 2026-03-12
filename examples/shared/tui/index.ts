@@ -8,3 +8,5 @@ export {
   isSubAgent, parentLabel, renderStatus,
 } from './agent-view';
 export { statsHandler, completeHandler } from './stats-view';
+export { createGaugeState, gaugeHandler } from './gauge';
+export type { GaugeState } from './gauge';

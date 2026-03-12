@@ -7,14 +7,19 @@ import type { GenerateOptions, GenerateResult } from './types';
 /**
  * Single-branch grammar-constrained generation as an Effection operation
  *
- * Creates a fresh branch at position 0, prefills the prompt, generates
- * to EOG, and prunes the branch. Uses {@link Branch}'s async iterator
- * — single-branch generation doesn't need batched commit.
+ * Creates a fresh branch (or forks from `opts.parent`), prefills the prompt,
+ * generates to EOG, and prunes the branch. Uses {@link Branch}'s async
+ * iterator — single-branch generation doesn't need batched commit.
+ *
+ * When `parent` is provided, the prompt is prefilled as a delta (with turn
+ * separator) on a fork of the parent. This is the attention scratchpad
+ * pattern: the fork sees the parent's context, attends to the prompt
+ * content, generates a result, and is pruned — zero net KV cost.
  *
  * The branch is always cleaned up via try/finally, even on error or
  * scope cancellation.
  *
- * @param opts - Generation options (prompt, grammar, params, parse)
+ * @param opts - Generation options (prompt, grammar, params, parse, parent)
  * @returns Generated text, token count, and optionally parsed result
  *
  * @example Grammar-constrained JSON generation
@@ -25,21 +30,39 @@ import type { GenerateOptions, GenerateResult } from './types';
  *   params: { temperature: 0.3 },
  *   parse: output => JSON.parse(output),
  * });
- * console.log(plan.parsed); // typed result from parse()
+ * ```
+ *
+ * @example Attention scratchpad — fork, attend, extract, prune
+ * ```typescript
+ * const extracted = yield* generate({
+ *   prompt: contentToAttend,
+ *   grammar: extractionGrammar,
+ *   parse: output => JSON.parse(output),
+ *   parent: agentBranch,
+ * });
+ * // Fork is pruned — parent's KV unchanged
  * ```
  *
  * @category Agents
  */
 export function* generate<T = unknown>(opts: GenerateOptions): Operation<GenerateResult<T>> {
   const ctx = yield* Ctx.expect();
-
   const samplerParams = opts.params ?? {};
-  const branch = Branch.create(ctx, 0, samplerParams, undefined, opts.grammar);
 
-  try {
+  let branch: Branch;
+  if (opts.parent) {
+    branch = yield* call(() => opts.parent!.fork());
+    if (opts.grammar) branch.setGrammar(opts.grammar);
+    const sep = ctx.getTurnSeparator();
+    const delta: number[] = yield* call(() => ctx.tokenize(opts.prompt, false));
+    yield* call(() => branch.prefill([...sep, ...delta]));
+  } else {
+    branch = Branch.create(ctx, 0, samplerParams, undefined, opts.grammar);
     const tokens = ctx.tokenizeSync(opts.prompt);
     yield* call(() => branch.prefill(tokens));
+  }
 
+  try {
     // Consume async iterator inside call() — generators can't use for-await
     const { output, tokenCount } = yield* call(async () => {
       let output = '';

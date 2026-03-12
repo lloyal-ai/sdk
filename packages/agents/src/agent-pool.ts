@@ -93,8 +93,6 @@ export class ContextPressure {
   /**
    * KV slots remaining (`nCtx - cellsUsed`).
    * Infinity when nCtx ≤ 0 (no context limit).
-   * Conservative: may undercount actual free space when branches have been
-   * pruned, since `cellsUsed` is monotonic.
    */
   readonly remaining: number;
   /** Remaining KV floor — tokens reserved for downstream work */
@@ -429,6 +427,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       if (entries.length > 0) {
         yield* call(() => store.commit(entries));
         steps++;
+        const tp = ctx._storeKvPressure();
+        yield* events.send({ type: 'agent:tick', cellsUsed: tp.cellsUsed, nCtx: tp.nCtx });
       }
 
       // -- Phase 3: SETTLE -- drain settled tool buffer, batch prefill

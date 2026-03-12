@@ -15,7 +15,7 @@ export { FetchPageTool } from './fetch-page';
 export { WebResearchTool } from './web-research';
 export type { WebResearchToolOpts } from './web-research';
 export { PlanTool } from './plan';
-export type { PlanResult, PlanToolOpts } from './plan';
+export type { PlanResult, PlanQuestion, PlanToolOpts } from './plan';
 
 export const reportTool = new ReportTool();
 

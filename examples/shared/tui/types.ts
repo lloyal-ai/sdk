@@ -11,6 +11,8 @@ export interface ViewState {
   agentText: Map<number, string>;
   agentStatus: Map<number, { state: string; tokenCount: number; detail: string }>;
   agentParent: Map<number, number>;  // childId -> parentId (sub-agent tracking)
+  rootToAgent: Map<number, number>;  // root branch handle -> calling agent id
+  spawningQueue: number[];           // agent IDs currently in web_research/research tool calls
   traceQuery: string;
 }
 

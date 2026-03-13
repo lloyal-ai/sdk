@@ -1,9 +1,21 @@
-import { call } from 'effection';
-import type { Operation } from 'effection';
-import { Tool, Ctx, generate, useAgentPool, withSharedRoot } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema, Toolkit, PressureThresholds } from '@lloyal-labs/lloyal-agents';
+import { call } from "effection";
+import type { Operation } from "effection";
+import {
+  Tool,
+  Ctx,
+  generate,
+  useAgentPool,
+  withSharedRoot,
+} from "@lloyal-labs/lloyal-agents";
+import type {
+  JsonSchema,
+  Toolkit,
+  PressureThresholds,
+} from "@lloyal-labs/lloyal-agents";
 
 export interface WebResearchToolOpts {
+  name?: string;
+  description?: string;
   systemPrompt: string;
   reporterPrompt: { system: string; user: string };
   maxTurns?: number;
@@ -12,18 +24,18 @@ export interface WebResearchToolOpts {
 }
 
 export class WebResearchTool extends Tool<{ questions: string[] }> {
-  readonly name = 'web_research';
-  readonly description = 'Spawn parallel web research agents that each search the web, fetch pages, and report findings. Each question gets its own agent.';
+  readonly name: string;
+  readonly description: string;
   readonly parameters: JsonSchema = {
-    type: 'object',
+    type: "object",
     properties: {
       questions: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Sub-questions to research in parallel',
+        type: "array",
+        items: { type: "string" },
+        description: "Sub-questions to research in parallel",
       },
     },
-    required: ['questions'],
+    required: ["questions"],
   };
 
   private _systemPrompt: string;
@@ -35,6 +47,10 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
 
   constructor(opts: WebResearchToolOpts) {
     super();
+    this.name = opts.name ?? "research";
+    this.description =
+      opts.description ??
+      "Spawn parallel research agents to investigate sub-questions. Each question gets its own agent.";
     this._systemPrompt = opts.systemPrompt;
     this._reporterPrompt = opts.reporterPrompt;
     this._maxTurns = opts.maxTurns ?? 20;
@@ -49,10 +65,17 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
   *execute(args: { questions: string[] }): Operation<unknown> {
     const questions = args?.questions;
     if (!Array.isArray(questions) || questions.length === 0) {
-      return { error: 'questions must be a non-empty array of strings', example: '{"questions": ["q1", "q2"]}' };
+      return {
+        error: "questions must be a non-empty array of strings",
+        example: '{"questions": ["q1", "q2"]}',
+      };
     }
 
-    if (!this._toolkit) throw new Error('WebResearchTool: setToolkit() must be called before execute');
+    if (!this._toolkit)
+      throw new Error(
+        "WebResearchTool: setToolkit() must be called before execute",
+      );
+
     const toolkit = this._toolkit;
     const systemPrompt = this._systemPrompt;
     const reporterPrompt = this._reporterPrompt;
@@ -62,23 +85,25 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
 
     return yield* withSharedRoot(
       { systemPrompt, tools: toolkit.toolsJson },
-      function*(root) {
+      function* (root) {
         const pool = yield* useAgentPool({
-          tasks: questions.map(q => ({
+          tasks: questions.map((q) => ({
             systemPrompt,
             content: q,
             tools: toolkit.toolsJson,
             parent: root,
           })),
           tools: toolkit.toolMap,
-          terminalTool: 'report',
+          terminalTool: "report",
           maxTurns,
           trace,
           pressure,
         });
 
         // Scratchpad extraction for hard-cut agents — works under pressure
-        const hardCut = pool.agents.filter(a => !a.findings && !a.branch.disposed);
+        const hardCut = pool.agents.filter(
+          (a) => !a.findings && !a.branch.disposed,
+        );
         if (hardCut.length > 0) {
           for (const a of pool.agents) {
             if (a.findings && !a.branch.disposed) a.branch.pruneSync();
@@ -86,14 +111,16 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
 
           const ctx = yield* Ctx.expect();
           const schema = {
-            type: 'object',
-            properties: { findings: { type: 'string' } },
-            required: ['findings'],
+            type: "object",
+            properties: { findings: { type: "string" } },
+            required: ["findings"],
           };
-          const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(schema)));
+          const grammar: string = yield* call(() =>
+            ctx.jsonSchemaToGrammar(JSON.stringify(schema)),
+          );
           const msgs = [
-            { role: 'system', content: reporterPrompt.system },
-            { role: 'user', content: reporterPrompt.user },
+            { role: "system", content: reporterPrompt.system },
+            { role: "user", content: reporterPrompt.user },
           ];
           const { prompt } = ctx.formatChatSync(JSON.stringify(msgs));
 
@@ -106,13 +133,15 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
                 parent: a.branch,
               });
               if (result.parsed?.findings) a.findings = result.parsed.findings;
-            } catch { /* extraction failure non-fatal */ }
+            } catch {
+              /* extraction failure non-fatal */
+            }
             if (!a.branch.disposed) a.branch.pruneSync();
           }
         }
 
         return {
-          findings: pool.agents.map(a => a.findings).filter(Boolean),
+          findings: pool.agents.map((a) => a.findings).filter(Boolean),
           agentCount: pool.agents.length,
           totalTokens: pool.totalTokens,
           totalToolCalls: pool.totalToolCalls,

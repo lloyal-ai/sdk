@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 /**
- * Deep Research Web — CLI entry point
+ * Deep Research — CLI entry point
  *
- * Web-only deep research using Tavily search + page fetching + reranker.
+ * Source-agnostic deep research: web (Tavily), local corpus, or both.
  *
  * Usage:
  *   TAVILY_API_KEY=tvly-... npx tsx examples/deep-research-web/main.ts [model-path] [--query <text>] [--reranker <path>] [options]
+ *   npx tsx examples/deep-research-web/main.ts [model-path] --corpus <dir> [--query <text>] [options]
+ *   TAVILY_API_KEY=tvly-... npx tsx examples/deep-research-web/main.ts [model-path] --corpus <dir> [--query <text>] [options]
  */
 
 import * as fs from "node:fs";
@@ -23,11 +25,18 @@ import {
 import { createContext } from "@lloyal-labs/lloyal.node";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import { initAgents } from "@lloyal-labs/lloyal-agents";
+import type { Source } from "@lloyal-labs/lloyal-agents";
 import { c, log, setJsonlMode, setVerboseMode, fmtSize, createView } from "./tui";
 import type { WorkflowEvent } from "./tui";
 import { createReranker } from "../shared/reranker";
 import { handleQuery } from "./harness";
 import type { WorkflowOpts } from "./harness";
+import { WebSource } from "../shared/sources/web";
+import { CorpusSource } from "../shared/sources/corpus";
+import { TavilyProvider } from "../shared/tools/web-search";
+import { loadResources, chunkResources } from "../shared/resources/files";
+import type { SourceContext } from "../shared/sources/types";
+import type { Chunk } from "../shared/resources/types";
 
 // ── CLI args ─────────────────────────────────────────────────────
 
@@ -49,8 +58,9 @@ function argVal(flag: string): string | null {
   const i = args.indexOf(flag);
   return i !== -1 ? args[i + 1] : null;
 }
+const corpusDir = argVal("--corpus");
 const flagIndices = new Set(
-  ["--reranker", "--query", "--findings-budget"].flatMap((f) => {
+  ["--reranker", "--query", "--findings-budget", "--corpus"].flatMap((f) => {
     const i = args.indexOf(f);
     return i !== -1 ? [i, i + 1] : [];
   }),
@@ -63,13 +73,15 @@ const modelPath =
   args.find((a, i) => !a.startsWith("--") && !flagIndices.has(i)) ||
   DEFAULT_MODEL;
 
-// ── Validate TAVILY_API_KEY ──────────────────────────────────────
+// ── Validate sources ─────────────────────────────────────────────
 
-if (!process.env.TAVILY_API_KEY) {
+const hasTavily = !!process.env.TAVILY_API_KEY;
+if (!hasTavily && !corpusDir) {
   process.stdout.write(
-    `Missing TAVILY_API_KEY environment variable.\n\n` +
-    `Get a key at https://tavily.com and run:\n` +
-    `  TAVILY_API_KEY=tvly-... npx tsx examples/deep-research-web/main.ts [model-path] [--query <text>]\n`,
+    `At least one source required.\n\n` +
+    `  Web:    TAVILY_API_KEY=tvly-... npx tsx examples/deep-research-web/main.ts\n` +
+    `  Corpus: npx tsx examples/deep-research-web/main.ts --corpus <dir>\n` +
+    `  Both:   TAVILY_API_KEY=tvly-... npx tsx examples/deep-research-web/main.ts --corpus <dir>\n`,
   );
   process.exit(1);
 }
@@ -94,9 +106,10 @@ const MAX_TOOL_TURNS = 20;
 main(function* () {
   const modelName = path.basename(modelPath).replace(/-Q\w+\.gguf$/, "");
 
+  const mode = hasTavily && corpusDir ? 'Web + Corpus' : hasTavily ? 'Web' : 'Corpus';
   log();
   log(
-    `${c.bold}  Deep Research Web${c.reset} ${c.dim}\u2014 Web Search + Structured Concurrency${c.reset}`,
+    `${c.bold}  Deep Research${c.reset} ${c.dim}\u2014 ${mode} + Structured Concurrency${c.reset}`,
   );
   log();
   log(
@@ -128,9 +141,19 @@ main(function* () {
     reranker.dispose();
   });
 
-  log(
-    `  ${c.dim}  Tavily web search enabled${c.reset}`,
-  );
+  const sources: Source<SourceContext, Chunk>[] = [];
+
+  if (hasTavily) {
+    sources.push(new WebSource(new TavilyProvider()));
+    log(`  ${c.dim}  Tavily web search enabled${c.reset}`);
+  }
+
+  if (corpusDir) {
+    const resources = loadResources(corpusDir);
+    const chunks = chunkResources(resources);
+    sources.push(new CorpusSource(resources, chunks));
+    log(`  ${c.dim}  Corpus: ${resources.length} files, ${chunks.length} chunks${c.reset}`);
+  }
 
   const { session, events } = yield* initAgents<WorkflowEvent>(ctx);
 
@@ -154,6 +177,7 @@ main(function* () {
     maxTurns: MAX_TOOL_TURNS,
     trace,
     findingsMaxChars,
+    sources,
   };
 
   // Initial query — clarify falls through to passthrough in non-interactive mode

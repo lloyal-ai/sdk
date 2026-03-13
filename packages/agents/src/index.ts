@@ -1,5 +1,6 @@
 export { Ctx, Store, Events } from './context';
 export { Tool } from './Tool';
+export { Source } from './source';
 export { buildUserDelta, buildToolResultDelta } from '@lloyal-labs/sdk';
 export { generate } from './generate';
 export { diverge } from './diverge';

@@ -7,7 +7,8 @@ import type { SessionContext } from '@lloyal-labs/sdk';
 import {
   Ctx, Tool, generate, diverge, useAgentPool, withSharedRoot, createToolkit,
 } from '@lloyal-labs/lloyal-agents';
-import type { AgentPoolResult, JsonSchema } from '@lloyal-labs/lloyal-agents';
+import type { Source } from '@lloyal-labs/lloyal-agents';
+import type { AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent, OpTiming } from './tui';
 import { reportTool } from '../shared/tools';
 import { PlanTool } from '../shared/tools/plan';
@@ -15,8 +16,7 @@ import type { PlanResult } from '../shared/tools/plan';
 import type { Reranker, ScoredChunk } from '../shared/tools/types';
 import type { Chunk } from '../shared/resources/types';
 import { WebResearchTool } from '../shared/tools/web-research';
-import { WebSearchTool, TavilyProvider } from '../shared/tools/web-search';
-import { FetchPageTool } from '../shared/tools/fetch-page';
+import type { SourceContext } from '../shared/sources/types';
 
 /** Load a task prompt file. Convention: system prompt above `---`, user content below. */
 function loadTask(name: string): { system: string; user: string } {
@@ -32,7 +32,6 @@ const SYNTHESIZE = loadTask('synthesize');
 const VERIFY = loadTask('verify');
 const EVAL = loadTask('eval');
 const REPORT = loadTask('report');
-const EXTRACT = loadTask('extract');
 
 // ── Options ──────────────────────────────────────────────────────
 
@@ -45,6 +44,7 @@ export interface WorkflowOpts {
   trace: boolean;
   findingsMaxChars?: number;
   events: Channel<WorkflowEvent, void>;
+  sources: Source<SourceContext, Chunk>[];
 }
 
 export type QueryResult =
@@ -60,131 +60,15 @@ function planIntent(plan: PlanResult): string {
   return 'decompose';
 }
 
-// ── Buffering fetch_page ─────────────────────────────────────────
-
-interface FetchedPage {
-  url: string;
-  title: string;
-  text: string;
-}
-
-class BufferingFetchPage extends Tool<{ url: string }> {
-  readonly name = 'fetch_page';
-  readonly description = 'Fetch a web page and extract its article content. Returns a summary and any links worth following. Use to read search results or follow links discovered in pages.';
-  readonly parameters: JsonSchema = {
-    type: 'object',
-    properties: { url: { type: 'string', description: 'URL to fetch' } },
-    required: ['url'],
-  };
-
-  private _inner: FetchPageTool;
-  private _buffer: FetchedPage[];
-  private _parent: Branch;
-
-  constructor(buffer: FetchedPage[], parent: Branch, maxChars?: number) {
-    super();
-    this._inner = new FetchPageTool(maxChars);
-    this._buffer = buffer;
-    this._parent = parent;
-  }
-
-  *execute(args: { url: string }): Operation<unknown> {
-    const result = yield* this._inner.execute(args);
-    const r = result as Record<string, unknown>;
-    if (typeof r?.content === 'string' && r.content !== '[Could not extract article content]') {
-      const content = r.content as string;
-      // Buffer full content for reranking
-      this._buffer.push({
-        url: (r.url as string) || args.url,
-        title: (r.title as string) || '',
-        text: content,
-      });
-
-      // Attention scratchpad: fork, attend to full content, extract summary + links, prune
-      const ctx: SessionContext = yield* Ctx.expect();
-      const schema = {
-        type: 'object',
-        properties: {
-          summary: { type: 'string' },
-          links: { type: 'array', items: { type: 'string' } },
-        },
-        required: ['summary', 'links'],
-      };
-      const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(schema)));
-      const extractPrompt = EXTRACT.user
-        .replace('{{url}}', args.url)
-        .replace('{{title}}', (r.title as string) || '')
-        .replace('{{content}}', content);
-      const messages = [
-        { role: 'system', content: EXTRACT.system },
-        { role: 'user', content: extractPrompt },
-      ];
-      const { prompt } = ctx.formatChatSync(JSON.stringify(messages));
-
-      try {
-        const extracted = yield* generate<{ summary: string; links: string[] }>({
-          prompt,
-          grammar,
-          params: { temperature: 0.3 },
-          parse: (o) => JSON.parse(o),
-          parent: this._parent,
-        });
-        return {
-          url: r.url || args.url,
-          title: r.title || '',
-          summary: extracted.parsed?.summary || '',
-          links: extracted.parsed?.links || [],
-        };
-      } catch {
-        return result; // fallback to full result on extraction failure
-      }
-    }
-    return result;
-  }
-}
-
 // ── Reranking ────────────────────────────────────────────────────
 
-function chunkFetchedPages(pages: FetchedPage[]): Chunk[] {
-  const chunks: Chunk[] = [];
-  for (const page of pages) {
-    const paragraphs = page.text
-      .split(/\n\s*\n/)
-      .map(p => p.trim())
-      .filter(p => p.length > 40);
-
-    if (paragraphs.length === 0) {
-      if (page.text.trim().length > 40) {
-        chunks.push({
-          resource: page.url, heading: page.title || page.url,
-          text: page.text.trim(), tokens: [],
-          startLine: 1, endLine: 1,
-        });
-      }
-      continue;
-    }
-
-    for (let i = 0; i < paragraphs.length; i++) {
-      chunks.push({
-        resource: page.url, heading: page.title || page.url,
-        text: paragraphs[i], tokens: [],
-        startLine: i + 1, endLine: i + 1,
-      });
-    }
-  }
-  return chunks;
-}
-
-function* rerankFindings(
-  buffer: FetchedPage[],
+function* rerankChunks(
+  chunks: Chunk[],
   query: string,
   reranker: Reranker,
   topN = 10,
   maxChars = 4000,
 ): Operation<string> {
-  if (buffer.length === 0) return '';
-
-  const chunks = chunkFetchedPages(buffer);
   if (chunks.length === 0) return '';
 
   yield* call(() => reranker.tokenizeChunks(chunks));
@@ -210,9 +94,9 @@ function* rerankFindings(
 
 // ── Agent task builder ───────────────────────────────────────────
 
-function agentTasks(questions: string[], toolsJson: string, parent: Branch, seed?: number) {
+function agentTasks(questions: string[], toolsJson: string, parent: Branch, researchPrompt: { system: string }, seed?: number) {
   return questions.map((q, i) => ({
-    systemPrompt: RESEARCH.system,
+    systemPrompt: researchPrompt.system,
     content: q,
     tools: toolsJson,
     parent,
@@ -271,23 +155,39 @@ function collectAgentFindings(pool: AgentPoolResult, questions: string[]): strin
   return sections.join('\n\n');
 }
 
-// ── Web toolkit factory ──────────────────────────────────────────
+// ── Prompt + toolkit factories ───────────────────────────────────
 
-function buildWebToolkit(opts: WorkflowOpts, buffer: FetchedPage[], parent: Branch) {
-  const webResearchTool = new WebResearchTool({
-    systemPrompt: RESEARCH.system,
-    reporterPrompt: REPORT,
+function buildResearchPrompt(
+  template: { system: string; user: string },
+  sources: Source<SourceContext, Chunk>[],
+): { system: string; user: string } {
+  const toolGuide = sources.map(s => s.toolGuide).join('\n');
+  const processSteps = sources.map(s => s.processSteps).join('\n');
+  return {
+    system: template.system
+      .replace('{{toolGuide}}', toolGuide)
+      .replace('{{processSteps}}', processSteps),
+    user: template.user,
+  };
+}
+
+function buildToolkit(
+  sources: Source<SourceContext, Chunk>[],
+  researchPrompt: { system: string; user: string },
+  reportPrompt: { system: string; user: string },
+  opts: { maxTurns: number; trace: boolean },
+) {
+  const researchTool = new WebResearchTool({
+    systemPrompt: researchPrompt.system,
+    reporterPrompt: reportPrompt,
     maxTurns: opts.maxTurns,
     trace: opts.trace,
   });
-  const fullToolkit = createToolkit([
-    new WebSearchTool(new TavilyProvider()),
-    new BufferingFetchPage(buffer, parent),
-    webResearchTool,
-    reportTool,
-  ]);
-  webResearchTool.setToolkit(fullToolkit);
-  return fullToolkit;
+  const tools: Tool[] = sources.flatMap(s => s.tools);
+  tools.push(researchTool, reportTool);
+  const toolkit = createToolkit(tools);
+  researchTool.setToolkit(toolkit);
+  return toolkit;
 }
 
 // ── Operations ───────────────────────────────────────────────────
@@ -299,24 +199,30 @@ function* research(
   maxTurns?: number,
 ): Operation<{ pool: AgentPoolResult; agentFindings: string; sourcePassages: string; sharedPrefixLength: number; timeMs: number }> {
   const effectiveMaxTurns = maxTurns ?? opts.maxTurns;
-  const buffer: FetchedPage[] = [];
+  const researchPrompt = buildResearchPrompt(RESEARCH, opts.sources);
+  if (opts.trace) {
+    process.stderr.write(`\n── compiled research prompt ──\n${researchPrompt.system}\n──────────────────────────────\n\n`);
+  }
 
   yield* opts.events.send({ type: 'research:start', agentCount: questions.length });
   const t = performance.now();
 
-  const { result: pool, prefixLen: sharedPrefixLength } = yield* withSharedRoot(
-    { systemPrompt: RESEARCH.system },
+  const { pool, prefixLen: sharedPrefixLength, chunks } = yield* withSharedRoot(
+    { systemPrompt: researchPrompt.system },
     function*(root, prefixLen) {
-      const fullToolkit = buildWebToolkit(opts, buffer, root);
+      for (const source of opts.sources)
+        yield* source.bind({ parent: root, reranker: opts.reranker });
+      const toolkit = buildToolkit(opts.sources, researchPrompt, REPORT, { maxTurns: effectiveMaxTurns, trace: opts.trace });
       const pool = yield* useAgentPool({
-        tasks: agentTasks(questions, fullToolkit.toolsJson, root),
-        tools: fullToolkit.toolMap, maxTurns: effectiveMaxTurns, trace: opts.trace,
+        tasks: agentTasks(questions, toolkit.toolsJson, root, researchPrompt),
+        tools: toolkit.toolMap, maxTurns: effectiveMaxTurns, trace: opts.trace,
         terminalTool: 'report',
         pressure: { softLimit: 2048 },
       });
 
       yield* reportPass(pool, opts);
-      return { result: pool, prefixLen };
+      const chunks = opts.sources.flatMap(s => s.getChunks());
+      return { pool, prefixLen, chunks };
     },
   );
 
@@ -324,7 +230,7 @@ function* research(
   yield* opts.events.send({ type: 'research:done', pool, timeMs });
 
   const agentFindings = collectAgentFindings(pool, questions);
-  const sourcePassages = yield* rerankFindings(buffer, query, opts.reranker, 10, opts.findingsMaxChars);
+  const sourcePassages = yield* rerankChunks(chunks, query, opts.reranker, 10, opts.findingsMaxChars);
 
   return { pool, agentFindings, sourcePassages, sharedPrefixLength, timeMs };
 }
@@ -334,16 +240,21 @@ function* warmResearch(
   query: string,
   opts: WorkflowOpts,
 ): Operation<{ pool: AgentPoolResult; agentFindings: string; sourcePassages: string; timeMs: number }> {
-  const buffer: FetchedPage[] = [];
-  const fullToolkit = buildWebToolkit(opts, buffer, opts.session.trunk!);
+  const researchPrompt = buildResearchPrompt(RESEARCH, opts.sources);
+  if (opts.trace) {
+    process.stderr.write(`\n── compiled research prompt (warm) ──\n${researchPrompt.system}\n─────────────────────────────────────\n\n`);
+  }
+  for (const source of opts.sources)
+    yield* source.bind({ parent: opts.session.trunk!, reranker: opts.reranker });
+  const toolkit = buildToolkit(opts.sources, researchPrompt, REPORT, { maxTurns: opts.maxTurns, trace: opts.trace });
 
   yield* opts.events.send({ type: 'research:start', agentCount: questions.length });
   const t = performance.now();
 
   const pool = yield* scoped(function*() {
     const pool = yield* useAgentPool({
-      tasks: agentTasks(questions, fullToolkit.toolsJson, opts.session.trunk!, Date.now()),
-      tools: fullToolkit.toolMap, maxTurns: opts.maxTurns, trace: opts.trace,
+      tasks: agentTasks(questions, toolkit.toolsJson, opts.session.trunk!, researchPrompt, Date.now()),
+      tools: toolkit.toolMap, maxTurns: opts.maxTurns, trace: opts.trace,
       terminalTool: 'report',
       pressure: { softLimit: 1024 },
     });
@@ -356,7 +267,8 @@ function* warmResearch(
   yield* opts.events.send({ type: 'research:done', pool, timeMs });
 
   const agentFindings = collectAgentFindings(pool, questions);
-  const sourcePassages = yield* rerankFindings(buffer, query, opts.reranker, 10, opts.findingsMaxChars);
+  const chunks = opts.sources.flatMap(s => s.getChunks());
+  const sourcePassages = yield* rerankChunks(chunks, query, opts.reranker, 10, opts.findingsMaxChars);
 
   return { pool, agentFindings, sourcePassages, timeMs };
 }

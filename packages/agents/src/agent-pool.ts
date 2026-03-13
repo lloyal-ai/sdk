@@ -54,11 +54,10 @@ interface SettledTool {
  *
  * Created from `SessionContext._storeKvPressure()` which returns
  * `{ nCtx, cellsUsed, remaining }` where `remaining = nCtx - cellsUsed`.
- * `cellsUsed` is a monotonic counter in `BranchStore` — it increments on
- * every `decode_each` / `decode_scatter` but does **not** decrement on
- * individual branch prune (only resets on bulk ops like `retainOnly` and
- * `drain`). This means `remaining` is a conservative lower bound that
- * becomes increasingly pessimistic as branches are pruned mid-run.
+ * `cellsUsed` tracks unique KV cells per branch — incremented on
+ * `decode_each` / `decode_scatter`, decremented on release by
+ * `position - fork_head` (unique cells above the fork point), reset on
+ * bulk ops like `retainOnly` and `drain`.
  *
  * Two thresholds partition `remaining` into three zones:
  *
@@ -513,6 +512,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
               tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({ error: `Unknown tool: ${tc.name}` })
             );
           });
+
           const resultStr = JSON.stringify(result);
           yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr });
 

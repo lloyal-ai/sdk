@@ -1,11 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { call, scoped } from 'effection';
+import { call } from 'effection';
 import type { Operation, Channel } from 'effection';
 import { Branch, Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  Ctx, Tool, generate, diverge, useAgentPool, withSharedRoot, createToolkit,
+  Ctx, generate, diverge, useAgentPool, withSharedRoot, createToolkit,
 } from '@lloyal-labs/lloyal-agents';
 import type { Source } from '@lloyal-labs/lloyal-agents';
 import type { AgentPoolResult } from '@lloyal-labs/lloyal-agents';
@@ -15,7 +15,6 @@ import { PlanTool } from '../shared/tools/plan';
 import type { PlanResult } from '../shared/tools/plan';
 import type { Reranker, ScoredChunk } from '../shared/tools/types';
 import type { Chunk } from '../shared/resources/types';
-import { WebResearchTool } from '../shared/tools/web-research';
 import type { SourceContext } from '../shared/sources/types';
 
 /** Load a task prompt file. Convention: system prompt above `---`, user content below. */
@@ -27,7 +26,8 @@ function loadTask(name: string): { system: string; user: string } {
 }
 
 const PLAN = loadTask('plan');
-const RESEARCH = loadTask('research');
+const ROOT = loadTask('root');
+const BRIDGE = loadTask('bridge');
 const SYNTHESIZE = loadTask('synthesize');
 const VERIFY = loadTask('verify');
 const EVAL = loadTask('eval');
@@ -92,16 +92,13 @@ function* rerankChunks(
   return passages.join('\n\n---\n\n');
 }
 
-// ── Agent task builder ───────────────────────────────────────────
+// ── Source research result ────────────────────────────────────
 
-function agentTasks(questions: string[], toolsJson: string, parent: Branch, researchPrompt: { system: string }, seed?: number) {
-  return questions.map((q, i) => ({
-    systemPrompt: researchPrompt.system,
-    content: q,
-    tools: toolsJson,
-    parent,
-    seed: seed != null ? seed + i : undefined,
-  }));
+interface SourceResearchResult {
+  findings: string[];
+  agentCount: number;
+  totalTokens: number;
+  totalToolCalls: number;
 }
 
 function* reportPass(
@@ -144,52 +141,6 @@ function* reportPass(
   }
 }
 
-function collectAgentFindings(pool: AgentPoolResult, questions: string[]): string {
-  const sections: string[] = [];
-  for (let i = 0; i < pool.agents.length; i++) {
-    const a = pool.agents[i];
-    if (!a.findings) continue;
-    const q = questions[i] || `Agent ${i + 1}`;
-    sections.push(`### ${q}\n${a.findings}`);
-  }
-  return sections.join('\n\n');
-}
-
-// ── Prompt + toolkit factories ───────────────────────────────────
-
-function buildResearchPrompt(
-  template: { system: string; user: string },
-  sources: Source<SourceContext, Chunk>[],
-): { system: string; user: string } {
-  const toolGuide = sources.map(s => s.toolGuide).join('\n');
-  const processSteps = sources.map(s => s.processSteps).join('\n');
-  return {
-    system: template.system
-      .replace('{{toolGuide}}', toolGuide)
-      .replace('{{processSteps}}', processSteps),
-    user: template.user,
-  };
-}
-
-function buildToolkit(
-  sources: Source<SourceContext, Chunk>[],
-  researchPrompt: { system: string; user: string },
-  reportPrompt: { system: string; user: string },
-  opts: { maxTurns: number; trace: boolean },
-) {
-  const researchTool = new WebResearchTool({
-    systemPrompt: researchPrompt.system,
-    reporterPrompt: reportPrompt,
-    maxTurns: opts.maxTurns,
-    trace: opts.trace,
-  });
-  const tools: Tool[] = sources.flatMap(s => s.tools);
-  tools.push(researchTool, reportTool);
-  const toolkit = createToolkit(tools);
-  researchTool.setToolkit(toolkit);
-  return toolkit;
-}
-
 // ── Operations ───────────────────────────────────────────────────
 
 function* research(
@@ -197,80 +148,178 @@ function* research(
   query: string,
   opts: WorkflowOpts,
   maxTurns?: number,
-): Operation<{ pool: AgentPoolResult; agentFindings: string; sourcePassages: string; sharedPrefixLength: number; timeMs: number }> {
+): Operation<{ agentFindings: string; sourcePassages: string; totalTokens: number; totalToolCalls: number; timeMs: number }> {
   const effectiveMaxTurns = maxTurns ?? opts.maxTurns;
-  const researchPrompt = buildResearchPrompt(RESEARCH, opts.sources);
-  if (opts.trace) {
-    process.stderr.write(`\n── compiled research prompt ──\n${researchPrompt.system}\n──────────────────────────────\n\n`);
-  }
 
   yield* opts.events.send({ type: 'research:start', agentCount: questions.length });
   const t = performance.now();
 
-  const { pool, prefixLen: sharedPrefixLength, chunks } = yield* withSharedRoot(
-    { systemPrompt: researchPrompt.system },
-    function*(root, prefixLen) {
-      for (const source of opts.sources)
-        yield* source.bind({ parent: root, reranker: opts.reranker });
-      const toolkit = buildToolkit(opts.sources, researchPrompt, REPORT, { maxTurns: effectiveMaxTurns, trace: opts.trace });
-      const pool = yield* useAgentPool({
-        tasks: agentTasks(questions, toolkit.toolsJson, root, researchPrompt),
-        tools: toolkit.toolMap, maxTurns: effectiveMaxTurns, trace: opts.trace,
-        terminalTool: 'report',
-        pressure: { softLimit: 2048 },
-      });
+  const findingSections: string[] = [];
+  let totalTokens = 0;
+  let totalToolCalls = 0;
 
-      yield* reportPass(pool, opts);
-      const chunks = opts.sources.flatMap(s => s.getChunks());
-      return { pool, prefixLen, chunks };
+  // withSharedRoot provides parent branch for source.bind() —
+  // BufferingFetchPage forks from this outer root via generate({ parent })
+  const chunks = yield* withSharedRoot(
+    { systemPrompt: ROOT.system },
+    function*(root) {
+      for (const source of opts.sources)
+        yield* source.bind({
+          parent: root, reranker: opts.reranker,
+          reporterPrompt: REPORT, reportTool,
+          maxTurns: effectiveMaxTurns, trace: opts.trace,
+        });
+
+      let activeQuestions = questions;
+
+      for (let i = 0; i < opts.sources.length; i++) {
+        const source = opts.sources[i];
+        const result = (yield* source.researchTool.execute({ questions: activeQuestions })) as SourceResearchResult;
+        totalTokens += result.totalTokens;
+        totalToolCalls += result.totalToolCalls;
+
+        const sectionFindings = result.findings.filter(Boolean)
+          .map((f, j) => `### Agent ${j + 1}\n${f}`).join('\n\n');
+        if (sectionFindings) findingSections.push(`## ${source.name} research\n\n${sectionFindings}`);
+
+        // Exit gate: structure discoveries as durable context for the next source
+        if (i < opts.sources.length - 1 && sectionFindings) {
+          const sourceChunks = source.getChunks();
+          const passages = yield* rerankChunks(sourceChunks, query, opts.reranker, 10, opts.findingsMaxChars);
+
+          yield* opts.events.send({ type: 'bridge:start' });
+          const bt = performance.now();
+
+          const bridgeContent = BRIDGE.user
+            .replace('{{agentFindings}}', sectionFindings)
+            .replace('{{sourcePassages}}', passages)
+            .replace('{{query}}', query);
+          const reportOnlyToolkit = createToolkit([reportTool]);
+
+          const discoveries = yield* withSharedRoot(
+            { systemPrompt: BRIDGE.system, tools: reportOnlyToolkit.toolsJson },
+            function*(bridgeRoot) {
+              const pool = yield* useAgentPool({
+                tasks: [{ systemPrompt: BRIDGE.system, content: bridgeContent, tools: reportOnlyToolkit.toolsJson, parent: bridgeRoot }],
+                tools: reportOnlyToolkit.toolMap,
+                terminalTool: 'report',
+                maxTurns: effectiveMaxTurns,
+                trace: opts.trace,
+                pressure: { softLimit: 1024 },
+              });
+              yield* reportPass(pool, opts);
+              totalTokens += pool.totalTokens;
+              totalToolCalls += pool.totalToolCalls;
+              return pool.agents[0]?.findings || '';
+            },
+          );
+
+          const bridgeTimeMs = performance.now() - bt;
+          yield* opts.events.send({ type: 'bridge:done', findings: discoveries, timeMs: bridgeTimeMs });
+
+          if (discoveries) {
+            activeQuestions = questions.map(q =>
+              `${q}\n\nPrior research discoveries:\n${discoveries}`
+            );
+          }
+        }
+      }
+
+      return opts.sources.flatMap(s => s.getChunks());
     },
   );
 
   const timeMs = performance.now() - t;
-  yield* opts.events.send({ type: 'research:done', pool, timeMs });
+  yield* opts.events.send({ type: 'research:done', totalTokens, totalToolCalls, timeMs });
 
-  const agentFindings = collectAgentFindings(pool, questions);
+  const agentFindings = findingSections.join('\n\n');
   const sourcePassages = yield* rerankChunks(chunks, query, opts.reranker, 10, opts.findingsMaxChars);
 
-  return { pool, agentFindings, sourcePassages, sharedPrefixLength, timeMs };
+  return { agentFindings, sourcePassages, totalTokens, totalToolCalls, timeMs };
 }
 
 function* warmResearch(
   questions: string[],
   query: string,
   opts: WorkflowOpts,
-): Operation<{ pool: AgentPoolResult; agentFindings: string; sourcePassages: string; timeMs: number }> {
-  const researchPrompt = buildResearchPrompt(RESEARCH, opts.sources);
-  if (opts.trace) {
-    process.stderr.write(`\n── compiled research prompt (warm) ──\n${researchPrompt.system}\n─────────────────────────────────────\n\n`);
-  }
+): Operation<{ agentFindings: string; sourcePassages: string; totalTokens: number; totalToolCalls: number; timeMs: number }> {
   for (const source of opts.sources)
-    yield* source.bind({ parent: opts.session.trunk!, reranker: opts.reranker });
-  const toolkit = buildToolkit(opts.sources, researchPrompt, REPORT, { maxTurns: opts.maxTurns, trace: opts.trace });
+    yield* source.bind({
+      parent: opts.session.trunk!, reranker: opts.reranker,
+      reporterPrompt: REPORT, reportTool,
+      maxTurns: opts.maxTurns, trace: opts.trace,
+    });
 
   yield* opts.events.send({ type: 'research:start', agentCount: questions.length });
   const t = performance.now();
 
-  const pool = yield* scoped(function*() {
-    const pool = yield* useAgentPool({
-      tasks: agentTasks(questions, toolkit.toolsJson, opts.session.trunk!, researchPrompt, Date.now()),
-      tools: toolkit.toolMap, maxTurns: opts.maxTurns, trace: opts.trace,
-      terminalTool: 'report',
-      pressure: { softLimit: 1024 },
-    });
+  const findingSections: string[] = [];
+  let totalTokens = 0;
+  let totalToolCalls = 0;
+  let activeQuestions = questions;
 
-    yield* reportPass(pool, opts);
-    return pool;
-  });
+  for (let i = 0; i < opts.sources.length; i++) {
+    const source = opts.sources[i];
+    const result = (yield* source.researchTool.execute({ questions: activeQuestions })) as SourceResearchResult;
+    totalTokens += result.totalTokens;
+    totalToolCalls += result.totalToolCalls;
 
-  const timeMs = performance.now() - t;
-  yield* opts.events.send({ type: 'research:done', pool, timeMs });
+    const sectionFindings = result.findings.filter(Boolean)
+      .map((f, j) => `### Agent ${j + 1}\n${f}`).join('\n\n');
+    if (sectionFindings) findingSections.push(`## ${source.name} research\n\n${sectionFindings}`);
 
-  const agentFindings = collectAgentFindings(pool, questions);
+    // Exit gate: structure discoveries as durable context for the next source
+    if (i < opts.sources.length - 1 && sectionFindings) {
+      const sourceChunks = source.getChunks();
+      const passages = yield* rerankChunks(sourceChunks, query, opts.reranker, 10, opts.findingsMaxChars);
+
+      yield* opts.events.send({ type: 'bridge:start' });
+      const bt = performance.now();
+
+      const bridgeContent = BRIDGE.user
+        .replace('{{agentFindings}}', sectionFindings)
+        .replace('{{sourcePassages}}', passages)
+        .replace('{{query}}', query);
+      const reportOnlyToolkit = createToolkit([reportTool]);
+
+      const discoveries = yield* withSharedRoot(
+        { systemPrompt: BRIDGE.system, tools: reportOnlyToolkit.toolsJson },
+        function*(bridgeRoot) {
+          const pool = yield* useAgentPool({
+            tasks: [{ systemPrompt: BRIDGE.system, content: bridgeContent, tools: reportOnlyToolkit.toolsJson, parent: bridgeRoot }],
+            tools: reportOnlyToolkit.toolMap,
+            terminalTool: 'report',
+            maxTurns: opts.maxTurns,
+            trace: opts.trace,
+            pressure: { softLimit: 1024 },
+          });
+          yield* reportPass(pool, opts);
+          totalTokens += pool.totalTokens;
+          totalToolCalls += pool.totalToolCalls;
+          return pool.agents[0]?.findings || '';
+        },
+      );
+
+      const bridgeTimeMs = performance.now() - bt;
+      yield* opts.events.send({ type: 'bridge:done', findings: discoveries, timeMs: bridgeTimeMs });
+
+      if (discoveries) {
+        activeQuestions = questions.map(q =>
+          `${q}\n\nPrior research discoveries:\n${discoveries}`
+        );
+      }
+    }
+  }
+
   const chunks = opts.sources.flatMap(s => s.getChunks());
+  const timeMs = performance.now() - t;
+
+  yield* opts.events.send({ type: 'research:done', totalTokens, totalToolCalls, timeMs });
+
+  const agentFindings = findingSections.join('\n\n');
   const sourcePassages = yield* rerankChunks(chunks, query, opts.reranker, 10, opts.findingsMaxChars);
 
-  return { pool, agentFindings, sourcePassages, timeMs };
+  return { agentFindings, sourcePassages, totalTokens, totalToolCalls, timeMs };
 }
 
 function* synthesize(
@@ -458,8 +507,8 @@ function* coldResearch(
   const timings: OpTiming[] = [
     { label: 'Plan', tokens: plan.tokenCount, detail: planIntent(plan), timeMs: plan.timeMs },
     {
-      label: 'Research', tokens: r.pool.totalTokens,
-      detail: `(${r.pool.agents.map(a => a.tokenCount).join(' + ')})  ${r.pool.totalToolCalls} tools`,
+      label: 'Research', tokens: r.totalTokens,
+      detail: `${r.totalToolCalls} tools`,
       timeMs: r.timeMs,
     },
     {
@@ -470,29 +519,21 @@ function* coldResearch(
     { label: 'Eval', tokens: s.eval.tokenCount, detail: `converged: ${s.eval.converged ? 'yes' : 'no'}`, timeMs: s.eval.timeMs },
   ];
 
-  const kvSaved = r.sharedPrefixLength * (questions.length - 1);
-  const kvLine = questions.length > 1
-    ? `KV shared    ${r.sharedPrefixLength} \u00d7 ${questions.length - 1} = ${kvSaved.toLocaleString()} tok saved`
-    : undefined;
-
-  yield* summarize(timings, opts, { kvLine });
+  yield* summarize(timings, opts);
 
   yield* opts.events.send({
     type: 'complete',
     data: {
       intent: planIntent(plan),
       planTokens: plan.tokenCount,
-      agentTokens: r.pool.totalTokens, researchSteps: r.pool.steps,
-      agentPpl: r.pool.agents.map(a => a.ppl),
+      agentTokens: r.totalTokens,
       synthTokens: s.pool.totalTokens, synthToolCalls: s.pool.totalToolCalls,
       evalTokens: s.eval.tokenCount, converged: s.eval.converged,
-      totalToolCalls: r.pool.totalToolCalls + s.pool.totalToolCalls,
-      sharedPrefixTokens: r.sharedPrefixLength,
+      totalToolCalls: r.totalToolCalls + s.pool.totalToolCalls,
       agentCount: questions.length, synthCount: s.pool.agents.length,
       wallTimeMs: Math.round(performance.now() - t0),
       planMs: Math.round(plan.timeMs), researchMs: Math.round(r.timeMs),
       synthMs: Math.round(s.timeMs), evalMs: Math.round(s.eval.timeMs),
-      ...r.pool.counters,
     },
   });
 }
@@ -512,8 +553,8 @@ function* warmDecompose(
   const timings: OpTiming[] = [
     { label: 'Plan', tokens: plan.tokenCount, detail: planIntent(plan), timeMs: plan.timeMs },
     {
-      label: 'Research', tokens: r.pool.totalTokens,
-      detail: `(${r.pool.agents.map(a => a.tokenCount).join(' + ')})  ${r.pool.totalToolCalls} tools`,
+      label: 'Research', tokens: r.totalTokens,
+      detail: `${r.totalToolCalls} tools`,
       timeMs: r.timeMs,
     },
     { label: 'Response', tokens: resp.tokenCount, detail: '', timeMs: resp.timeMs },

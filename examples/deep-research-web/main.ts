@@ -143,16 +143,16 @@ main(function* () {
 
   const sources: Source<SourceContext, Chunk>[] = [];
 
-  if (hasTavily) {
-    sources.push(new WebSource(new TavilyProvider()));
-    log(`  ${c.dim}  Tavily web search enabled${c.reset}`);
-  }
-
   if (corpusDir) {
     const resources = loadResources(corpusDir);
     const chunks = chunkResources(resources);
     sources.push(new CorpusSource(resources, chunks));
     log(`  ${c.dim}  Corpus: ${resources.length} files, ${chunks.length} chunks${c.reset}`);
+  }
+
+  if (hasTavily) {
+    sources.push(new WebSource(new TavilyProvider()));
+    log(`  ${c.dim}  Tavily web search enabled${c.reset}`);
   }
 
   const { session, events } = yield* initAgents<WorkflowEvent>(ctx);

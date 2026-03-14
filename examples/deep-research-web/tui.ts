@@ -4,7 +4,6 @@
  * Same event-driven architecture as deep-research/tui.ts.
  */
 
-import * as fs from 'node:fs';
 import { each } from 'effection';
 import type { Channel, Operation } from 'effection';
 import type { AgentEvent, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
@@ -27,7 +26,9 @@ export type StepEvent =
   | { type: 'query'; query: string; warm: boolean }
   | { type: 'plan'; intent: 'decompose' | 'passthrough' | 'clarify' | 'mixed'; questions: PlanQuestion[]; tokenCount: number; timeMs: number }
   | { type: 'research:start'; agentCount: number }
-  | { type: 'research:done'; pool: AgentPoolResult; timeMs: number }
+  | { type: 'research:done'; totalTokens: number; totalToolCalls: number; timeMs: number }
+  | { type: 'bridge:start' }
+  | { type: 'bridge:done'; findings: string; timeMs: number }
   | { type: 'synthesize:start' }
   | { type: 'synthesize:done'; pool: AgentPoolResult; timeMs: number }
   | { type: 'eval:done'; converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }
@@ -75,22 +76,6 @@ function planHandler(): ViewHandler {
 }
 
 function researchSummaryHandler(state: ViewState): ViewHandler {
-  function flushTrace(pool: AgentPoolResult): void {
-    if (!pool.agents.some(a => a.trace?.length)) return;
-    const filename = `trace-${Date.now()}.json`;
-    fs.writeFileSync(filename, JSON.stringify({
-      query: state.traceQuery,
-      timestamp: new Date().toISOString(),
-      agents: pool.agents.map(a => ({
-        agentId: a.agentId, label: label(state, a.agentId),
-        ppl: a.ppl, samplingPpl: a.samplingPpl,
-        tokenCount: a.tokenCount, toolCallCount: a.toolCallCount,
-        findings: a.findings, trace: a.trace ?? [],
-      })),
-    }, null, 2));
-    log(`  ${c.dim}Trace written to ${filename}${c.reset}`);
-  }
-
   return (ev) => {
     switch (ev.type) {
       case 'research:start': {
@@ -100,22 +85,24 @@ function researchSummaryHandler(state: ViewState): ViewHandler {
       }
       case 'research:done': {
         statusClear();
-        ev.pool.agents.forEach((a: AgentPoolResult['agents'][number], i: number) => {
-          const tree = i === ev.pool.agents.length - 1 ? '\u2514' : '\u251c';
-          emit('agent_done', {
-            index: i, findings: (a.findings || '').slice(0, 500),
-            toolCalls: a.toolCallCount, tokenCount: a.tokenCount,
-            ppl: a.ppl, samplingPpl: a.samplingPpl,
-          });
-          const raw = (state.agentText.get(a.agentId) ?? '').replace(/\n/g, ' ').trim();
-          if (raw) log(`    ${c.dim}\u251c${c.reset} ${c.yellow}${label(state, a.agentId)}${c.reset} ${c.dim}\u25b8 ${raw.slice(0, 120)}${raw.length > 120 ? '\u2026' : ''}${c.reset}`);
-          const pplStr = Number.isFinite(a.ppl) ? ` \u00b7 ppl ${a.ppl.toFixed(2)}` : '';
-          log(`    ${c.dim}${tree}${c.reset} ${c.yellow}${label(state, a.agentId)}${c.reset} ${c.green}done${c.reset} ${c.dim}${a.tokenCount} tok \u00b7 ${a.toolCallCount} tools${pplStr}${c.reset}`);
-        });
-        log(`    ${c.dim}${ev.pool.totalTokens} tok \u00b7 ${ev.pool.totalToolCalls} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
-        flushTrace(ev.pool);
+        log(`    ${c.dim}${ev.totalTokens} tok \u00b7 ${ev.totalToolCalls} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
         break;
       }
+    }
+  };
+}
+
+function bridgeHandler(state: ViewState): ViewHandler {
+  return (ev) => {
+    switch (ev.type) {
+      case 'bridge:start':
+        log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Bridge${c.reset}`);
+        resetLabels(state);
+        break;
+      case 'bridge:done':
+        statusClear();
+        log(`    ${c.dim}${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+        break;
     }
   };
 }
@@ -199,6 +186,7 @@ export function createView(opts: ViewOpts) {
     gaugeHandler(gauge),       // update pressure before agentHandler reads it
     agentHandler(state, gauge),
     researchSummaryHandler(state),
+    bridgeHandler(state),
     synthesizeHandler(state),
     evalHandler(),
     answerHandler(),

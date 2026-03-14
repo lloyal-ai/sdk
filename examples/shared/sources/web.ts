@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { call } from 'effection';
 import type { Operation } from 'effection';
 import { Source } from '@lloyal-labs/lloyal-agents';
-import { Tool, Ctx, generate } from '@lloyal-labs/lloyal-agents';
+import { Tool, Ctx, generate, createToolkit } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import type { Branch } from '@lloyal-labs/sdk';
@@ -12,6 +12,7 @@ import type { SourceContext } from './types';
 import type { SearchProvider } from '../tools/types';
 import { WebSearchTool } from '../tools/web-search';
 import { FetchPageTool } from '../tools/fetch-page';
+import { WebResearchTool } from '../tools/web-research';
 
 // ── Task loader ──────────────────────────────────────────────────
 
@@ -149,32 +150,41 @@ export class WebSource extends Source<SourceContext, Chunk> {
   private _buffer: FetchedPage[] = [];
   private _fetchPage: BufferingFetchPage;
   private _webSearch: WebSearchTool;
+  private _researchPrompt: { system: string; user: string };
+  private _researchTool: WebResearchTool | null = null;
 
-  readonly toolGuide = [
-    '- **web_search**: search the web — returns results with titles, snippets, and URLs',
-    '- **fetch_page**: fetch a URL and extract article content — use to read search results or follow links',
-  ].join('\n');
-
-  readonly processSteps = [
-    '1. Search the web with focused queries targeting specific aspects of the question.',
-    '2. Read the most promising results with fetch_page. Follow links within pages when they lead to more authoritative content.',
-    '3. Search again with refined queries based on what you learned. Target gaps in your findings.',
-    '4. Call research with sub-questions if you judge there are areas that need deeper investigation.',
-    '5. Report with source URLs and direct quotes as evidence. State what you found and what you checked.',
-  ].join('\n');
+  readonly name = 'web';
 
   constructor(provider: SearchProvider) {
     super();
     const extractTask = readTask('extract');
+    this._researchPrompt = readTask('web-research');
     this._fetchPage = new BufferingFetchPage(this._buffer, extractTask);
     this._webSearch = new WebSearchTool(provider);
   }
 
-  get tools(): Tool[] { return [this._webSearch, this._fetchPage]; }
+  get researchTool(): Tool {
+    if (!this._researchTool) throw new Error('WebSource: bind() must be called first');
+    return this._researchTool;
+  }
 
   *bind(ctx: SourceContext): Operation<void> {
     this._buffer.length = 0;
     this._fetchPage.setParent(ctx.parent);
+
+    if (!this._researchTool) {
+      const webResearch = new WebResearchTool({
+        name: 'web_research',
+        description: 'Spawn parallel web research agents that search the web, fetch pages, and report findings.',
+        systemPrompt: this._researchPrompt.system,
+        reporterPrompt: ctx.reporterPrompt,
+        maxTurns: ctx.maxTurns,
+        trace: ctx.trace,
+      });
+      const toolkit = createToolkit([this._webSearch, this._fetchPage, webResearch, ctx.reportTool]);
+      webResearch.setToolkit(toolkit);
+      this._researchTool = webResearch;
+    }
   }
 
   getChunks(): Chunk[] { return chunkFetchedPages(this._buffer); }

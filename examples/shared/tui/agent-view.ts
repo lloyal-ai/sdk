@@ -17,7 +17,20 @@ export function createViewState(): ViewState {
 
 export function label(state: ViewState, agentId: number): string {
   let l = state.agentLabel.get(agentId);
-  if (!l) { l = `A${state.nextLabel++}`; state.agentLabel.set(agentId, l); }
+  if (!l) {
+    const parentId = state.agentParent.get(agentId);
+    if (parentId != null) {
+      const parentLbl = label(state, parentId);
+      let childIndex = 0;
+      for (const [childId, pId] of state.agentParent) {
+        if (pId === parentId && state.agentLabel.has(childId)) childIndex++;
+      }
+      l = `${parentLbl}.${childIndex}`;
+    } else {
+      l = `A${state.nextLabel++}`;
+    }
+    state.agentLabel.set(agentId, l);
+  }
   return l;
 }
 
@@ -37,6 +50,24 @@ export function isSubAgent(state: ViewState, agentId: number): boolean {
 
 export function parentLabel(state: ViewState, agentId: number): string {
   return label(state, state.agentParent.get(agentId)!);
+}
+
+export function depth(state: ViewState, agentId: number): number {
+  let d = 0;
+  let id = agentId;
+  while (state.agentParent.has(id)) {
+    id = state.agentParent.get(id)!;
+    d++;
+  }
+  return d;
+}
+
+function agentIndent(state: ViewState, agentId: number): string {
+  const d = depth(state, agentId);
+  if (d === 0) return '    ';
+  let indent = '    ';
+  for (let i = 0; i < d; i++) indent += `${c.dim}\u2502${c.reset}  `;
+  return indent;
 }
 
 export function renderStatus(state: ViewState, suffix?: string): void {
@@ -83,7 +114,7 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
           // Unknown parent = root branch from withSharedRoot inside a tool
           let logicalParent = state.rootToAgent.get(ev.parentAgentId);
           if (logicalParent == null && state.spawningQueue.length > 0) {
-            logicalParent = state.spawningQueue[0];
+            logicalParent = state.spawningQueue[state.spawningQueue.length - 1];
             state.rootToAgent.set(ev.parentAgentId, logicalParent);
           }
           if (logicalParent != null) {
@@ -105,15 +136,15 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
         if (ev.tool === 'web_research' || ev.tool === 'research') {
           state.spawningQueue.push(ev.agentId);
         }
-        const sub = isSubAgent(state, ev.agentId);
-        if (isVerboseMode() && !sub) {
+        const ind = agentIndent(state, ev.agentId);
+        const lbl = label(state, ev.agentId);
+        if (isVerboseMode()) {
           const raw = (state.agentText.get(ev.agentId) ?? '').trim();
           if (raw) {
             statusClear();
-            const lbl = label(state, ev.agentId);
-            log(`    ${c.dim}\u2500\u2500\u2500 ${c.yellow}${lbl}${c.reset} ${c.dim}tokens \u2500\u2500\u2500${c.reset}`);
+            log(`${ind}${c.dim}\u2500\u2500\u2500 ${c.yellow}${lbl}${c.reset} ${c.dim}tokens \u2500\u2500\u2500${c.reset}`);
             for (const line of raw.split('\n')) {
-              log(`    ${c.dim}${line}${c.reset}`);
+              log(`${ind}${c.dim}${line}${c.reset}`);
             }
           }
         }
@@ -134,17 +165,11 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
           : ev.tool === 'fetch_page'
           ? `${toolArgs.url || ''}`
           : `${toolArgs.filename}` + (toolArgs.startLine ? ` L${toolArgs.startLine}-${toolArgs.endLine}` : '');
-        if (sub) {
-          const plbl = `${c.yellow}${parentLabel(state, ev.agentId)}${c.reset}`;
-          log(`    ${c.dim}\u2502${c.reset}  ${c.dim}\u2514${c.reset} ${plbl} ${c.cyan}${ev.tool}${c.reset}${argSummary ? `(${argSummary})` : ''}`);
-        } else {
-          log(`    ${c.dim}\u251c${c.reset} ${c.yellow}${label(state, ev.agentId)}${c.reset} ${c.cyan}${ev.tool}${c.reset}${argSummary ? `(${argSummary})` : ''}`);
-        }
+        log(`${ind}${c.dim}\u251c${c.reset} ${c.yellow}${lbl}${c.reset} ${c.cyan}${ev.tool}${c.reset}${argSummary ? `(${argSummary})` : ''}`);
         if (ev.tool === 'research' || ev.tool === 'web_research') {
           const qs = (toolArgs as Record<string, unknown>).questions as string[] | undefined;
-          const indent = sub ? `    ${c.dim}\u2502${c.reset}  ` : '    ';
           qs?.forEach((q, i) => {
-            log(`${indent}${c.dim}\u2502${c.reset}   ${c.dim}${i + 1}. ${q}${c.reset}`);
+            log(`${ind}${c.dim}\u2502${c.reset}   ${c.dim}${i + 1}. ${q}${c.reset}`);
           });
         }
         break;
@@ -191,12 +216,8 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
             preview = ` \u00b7 ${r.intent}${r.questions?.length ? ` \u00b7 ${r.questions.length} questions` : ''}`;
           } catch { /* non-fatal */ }
         }
-        if (isSubAgent(state, ev.agentId)) {
-          const plbl = `${c.yellow}${parentLabel(state, ev.agentId)}${c.reset}`;
-          log(`    ${c.dim}\u2502${c.reset}  ${c.dim}\u2514${c.reset} ${plbl} ${c.dim}\u2190 ${ev.tool} ${ev.result.length}b${preview}${c.reset}`);
-        } else {
-          log(`    ${c.dim}\u251c${c.reset} ${c.yellow}${label(state, ev.agentId)}${c.reset} ${c.dim}\u2190 ${ev.tool} ${ev.result.length}b${preview}${c.reset}`);
-        }
+        const rInd = agentIndent(state, ev.agentId);
+        log(`${rInd}${c.dim}\u251c${c.reset} ${c.yellow}${label(state, ev.agentId)}${c.reset} ${c.dim}\u2190 ${ev.tool} ${ev.result.length}b${preview}${c.reset}`);
         break;
       }
       case 'agent:tool_progress': {
@@ -206,16 +227,15 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
       }
       case 'agent:report': {
         state.agentStatus.set(ev.agentId, { state: 'done', tokenCount: 0, detail: '' });
-        const sub = isSubAgent(state, ev.agentId);
         const cols = process.stdout.columns || 80;
-        const displayLabel = sub ? parentLabel(state, ev.agentId) : label(state, ev.agentId);
-        const lbl = `${c.yellow}${displayLabel}${c.reset}`;
-        const indent = sub ? `    ${c.dim}\u2502${c.reset}  ` : '    ';
-        const prefix = `${indent}${c.dim}\u2502${c.reset}   `;
-        const wrap = cols - (sub ? 11 : 8);
+        const rptLbl = `${c.yellow}${label(state, ev.agentId)}${c.reset}`;
+        const rptInd = agentIndent(state, ev.agentId);
+        const prefix = `${rptInd}${c.dim}\u2502${c.reset}   `;
+        const d = depth(state, ev.agentId);
+        const wrap = cols - (4 + d * 3 + 4);
 
-        log(`${indent}${c.dim}\u2502${c.reset}`);
-        log(`${indent}${c.dim}\u251c\u2500\u2500${c.reset} ${lbl} ${c.bold}findings${c.reset}`);
+        log(`${rptInd}${c.dim}\u2502${c.reset}`);
+        log(`${rptInd}${c.dim}\u251c\u2500\u2500${c.reset} ${rptLbl} ${c.bold}findings${c.reset}`);
 
         for (const para of ev.findings.split('\n')) {
           if (!para.trim()) { log(prefix); continue; }
@@ -231,18 +251,19 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
           }
           if (line) log(`${prefix}${c.dim}${line}${c.reset}`);
         }
-        log(`${indent}${c.dim}\u2502${c.reset}`);
+        log(`${rptInd}${c.dim}\u2502${c.reset}`);
         break;
       }
       case 'agent:done': {
-        if (isVerboseMode() && !isSubAgent(state, ev.agentId)) {
+        if (isVerboseMode()) {
           const raw = (state.agentText.get(ev.agentId) ?? '').trim();
           if (raw) {
             statusClear();
-            const lbl = label(state, ev.agentId);
-            log(`    ${c.dim}\u2500\u2500\u2500 ${c.yellow}${lbl}${c.reset} ${c.dim}tokens \u2500\u2500\u2500${c.reset}`);
+            const doneInd = agentIndent(state, ev.agentId);
+            const doneLbl = label(state, ev.agentId);
+            log(`${doneInd}${c.dim}\u2500\u2500\u2500 ${c.yellow}${doneLbl}${c.reset} ${c.dim}tokens \u2500\u2500\u2500${c.reset}`);
             for (const line of raw.split('\n')) {
-              log(`    ${c.dim}${line}${c.reset}`);
+              log(`${doneInd}${c.dim}${line}${c.reset}`);
             }
           }
         }

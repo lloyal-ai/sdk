@@ -58,7 +58,7 @@ export class FetchPageTool extends Tool<{ url: string }> {
 
       if (!article) return { url, content: '[Could not extract article content]' };
 
-      let content = article.textContent;
+      let content = article.textContent ?? '';
       if (content.length > maxChars) {
         content = content.slice(0, maxChars) + '\n\n[truncated]';
       }

@@ -23,4 +23,6 @@ export abstract class Source<TCtx = Record<string, unknown>, TChunk = unknown> {
   *bind(_ctx: TCtx): Operation<void> {}
   /** Post-research chunks for reranking. Called after research completes. */
   getChunks(): TChunk[] { return []; }
+  /** Grounding tools for independent verification (e.g. search, read_file, grep). Empty by default. */
+  get groundingTools(): Tool[] { return []; }
 }

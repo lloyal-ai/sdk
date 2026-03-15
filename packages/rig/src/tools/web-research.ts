@@ -3,9 +3,11 @@ import type { Operation } from "effection";
 import {
   Tool,
   Ctx,
+  Trace,
   generate,
   useAgentPool,
   withSharedRoot,
+  traceScope,
 } from "@lloyal-labs/lloyal-agents";
 import type {
   JsonSchema,
@@ -76,6 +78,8 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
         "WebResearchTool: setToolkit() must be called before execute",
       );
 
+    const tw = yield* Trace.expect();
+    const scope = traceScope(tw, null, 'webResearchTool', { questionCount: questions.length });
     const toolkit = this._toolkit;
     const systemPrompt = this._systemPrompt;
     const reporterPrompt = this._reporterPrompt;
@@ -140,12 +144,14 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
           }
         }
 
-        return {
+        const result = {
           findings: pool.agents.map((a) => a.findings).filter(Boolean),
           agentCount: pool.agents.length,
           totalTokens: pool.totalTokens,
           totalToolCalls: pool.totalToolCalls,
         };
+        scope.close();
+        return result;
       },
     );
   }

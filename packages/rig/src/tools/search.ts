@@ -1,9 +1,9 @@
 import { call } from 'effection';
 import type { Operation } from 'effection';
-import { Tool } from '@lloyal-labs/lloyal-agents';
+import { Tool, Trace } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Chunk } from '../resources/types';
-import type { Reranker } from './types';
+import type { Reranker, ScoredChunk } from './types';
 
 export class SearchTool extends Tool<{ query: string }> {
   readonly name = 'search';
@@ -26,15 +26,34 @@ export class SearchTool extends Tool<{ query: string }> {
   *execute(args: { query: string }, context?: ToolContext): Operation<unknown> {
     const query = args.query?.trim();
     if (!query) return { error: 'query must not be empty' };
+    const tw = yield* Trace.expect();
     const reranker = this._reranker;
     const chunks = this._chunks;
-    return yield* call(async () => {
-      let last;
+
+    const t0 = performance.now();
+    tw.write({
+      traceId: tw.nextId(), parentTraceId: null, ts: t0,
+      type: 'rerank:start', query, chunkCount: chunks.length,
+    });
+
+    const results: ScoredChunk[] = yield* call(async () => {
+      let last: ScoredChunk[] = [];
       for await (const { results, filled, total } of reranker.score(query, chunks)) {
         if (context?.onProgress) context.onProgress({ filled, total });
         last = results;
       }
       return last;
     });
+
+    tw.write({
+      traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
+      type: 'rerank:end',
+      topResults: results.slice(0, 5).map(r => ({ file: r.file, heading: r.heading, score: r.score })),
+      selectedPassageCount: results.length,
+      totalChars: 0,
+      durationMs: performance.now() - t0,
+    });
+
+    return results;
   }
 }

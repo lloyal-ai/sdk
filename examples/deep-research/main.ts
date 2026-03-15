@@ -23,12 +23,10 @@ import {
 } from "effection";
 import { createContext } from "@lloyal-labs/lloyal.node";
 import type { SessionContext } from "@lloyal-labs/sdk";
-import { initAgents } from "@lloyal-labs/lloyal-agents";
+import { initAgents, JsonlTraceWriter } from "@lloyal-labs/lloyal-agents";
 import { c, log, setJsonlMode, setVerboseMode, fmtSize, createView } from "./tui";
 import type { WorkflowEvent } from "./tui";
-import { loadResources, chunkResources } from "../shared/resources/files";
-import { createReranker } from "../shared/reranker";
-import { createTools } from "../shared/tools";
+import { loadResources, chunkResources, createReranker, createTools } from "@lloyal-labs/rig";
 import { handleQuery } from "./harness";
 import type { WorkflowOpts } from "./harness";
 
@@ -142,7 +140,11 @@ main(function* () {
   );
 
   const { toolMap, toolsJson } = createTools({ resources, chunks, reranker });
-  const { session, events } = yield* initAgents<WorkflowEvent>(ctx);
+  const traceWriter = trace
+    ? new JsonlTraceWriter(fs.openSync(`trace-${Date.now()}.jsonl`, 'w'))
+    : undefined;
+  if (traceWriter) log(`  ${c.dim}  Trace: trace-*.jsonl${c.reset}`);
+  const { session, events } = yield* initAgents<WorkflowEvent>(ctx, { traceWriter });
 
   // View subscriber — all presentation lives here
   const view = createView({

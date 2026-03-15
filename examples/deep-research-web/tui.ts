@@ -7,7 +7,7 @@
 import { each } from 'effection';
 import type { Channel, Operation } from 'effection';
 import type { AgentEvent, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
-import type { PlanQuestion } from '../shared/tools/plan';
+import type { PlanQuestion } from '@lloyal-labs/rig';
 import type { OpTiming, ViewState, ViewHandler } from '../shared/tui/types';
 import {
   c, log, emit, statusClear,
@@ -33,9 +33,6 @@ export type StepEvent =
   | { type: 'synthesize:done'; pool: AgentPoolResult; timeMs: number }
   | { type: 'eval:done'; converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }
   | { type: 'answer'; text: string }
-  | { type: 'response:start' }
-  | { type: 'response:text'; text: string }
-  | { type: 'response:done' }
   | { type: 'stats'; timings: OpTiming[]; kvLine?: string; ctxPct: number; ctxPos: number; ctxTotal: number }
   | { type: 'complete'; data: Record<string, unknown> };
 
@@ -151,22 +148,6 @@ function answerHandler(): ViewHandler {
   };
 }
 
-function responseHandler(): ViewHandler {
-  return (ev) => {
-    switch (ev.type) {
-      case 'response:start':
-        process.stdout.write(`  ${c.dim}<${c.reset} `);
-        break;
-      case 'response:text':
-        process.stdout.write(ev.text);
-        break;
-      case 'response:done':
-        console.log('\n');
-        break;
-    }
-  };
-}
-
 // ── createView — composable view factory ─────────────────
 
 export interface ViewOpts {
@@ -190,7 +171,6 @@ export function createView(opts: ViewOpts) {
     synthesizeHandler(state),
     evalHandler(),
     answerHandler(),
-    responseHandler(),
     statsHandler(),
     completeHandler(),
   ];

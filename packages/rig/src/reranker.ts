@@ -1,5 +1,6 @@
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { Rerank } from "@lloyal-labs/sdk";
+import type { SessionContext } from "@lloyal-labs/sdk";
 import type { Chunk } from "./resources/types";
 import type { Reranker, ScoredResult } from "./tools/types";
 
@@ -16,7 +17,7 @@ export async function createReranker(
     typeK: 'q4_0',
     typeV: 'q4_0',
   });
-  const rerank = await Rerank.create(ctx, { nSeqMax, nCtx });
+  const rerank = await Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx });
 
   return {
     score(query: string, chunks: Chunk[]): AsyncIterable<ScoredResult> {

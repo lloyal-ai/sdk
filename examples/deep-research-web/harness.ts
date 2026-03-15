@@ -10,12 +10,8 @@ import {
 import type { Source } from '@lloyal-labs/lloyal-agents';
 import type { AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent, OpTiming } from './tui';
-import { reportTool } from '../shared/tools';
-import { PlanTool } from '../shared/tools/plan';
-import type { PlanResult } from '../shared/tools/plan';
-import type { Reranker, ScoredChunk } from '../shared/tools/types';
-import type { Chunk } from '../shared/resources/types';
-import type { SourceContext } from '../shared/sources/types';
+import { reportTool, PlanTool } from '@lloyal-labs/rig';
+import type { PlanResult, Reranker, ScoredChunk, Chunk, SourceContext } from '@lloyal-labs/rig';
 
 /** Load a task prompt file. Convention: system prompt above `---`, user content below. */
 function loadTask(name: string): { system: string; user: string } {
@@ -50,15 +46,6 @@ export interface WorkflowOpts {
 export type QueryResult =
   | { type: 'done' }
   | { type: 'clarify'; questions: string[] };
-
-function planIntent(plan: PlanResult): string {
-  const r = plan.questions.filter(q => q.intent === 'research').length;
-  const cl = plan.questions.filter(q => q.intent === 'clarify').length;
-  if (r === 0 && cl === 0) return 'passthrough';
-  if (r === 0) return 'clarify';
-  if (cl > 0) return 'mixed';
-  return 'decompose';
-}
 
 // ── Reranking ────────────────────────────────────────────────────
 
@@ -242,12 +229,14 @@ function* warmResearch(
   questions: string[],
   query: string,
   opts: WorkflowOpts,
+  maxTurns?: number,
 ): Operation<{ agentFindings: string; sourcePassages: string; totalTokens: number; totalToolCalls: number; timeMs: number }> {
+  const effectiveMaxTurns = maxTurns ?? opts.maxTurns;
   for (const source of opts.sources)
     yield* source.bind({
       parent: opts.session.trunk!, reranker: opts.reranker,
       reporterPrompt: REPORT, reportTool,
-      maxTurns: opts.maxTurns, trace: opts.trace,
+      maxTurns: effectiveMaxTurns, trace: opts.trace,
     });
 
   yield* opts.events.send({ type: 'research:start', agentCount: questions.length });
@@ -289,7 +278,7 @@ function* warmResearch(
             tasks: [{ systemPrompt: BRIDGE.system, content: bridgeContent, tools: reportOnlyToolkit.toolsJson, parent: bridgeRoot }],
             tools: reportOnlyToolkit.toolMap,
             terminalTool: 'report',
-            maxTurns: opts.maxTurns,
+            maxTurns: effectiveMaxTurns,
             trace: opts.trace,
             pressure: { softLimit: 1024 },
           });
@@ -340,16 +329,18 @@ function* synthesize(
   yield* opts.events.send({ type: 'synthesize:start' });
   const t = performance.now();
 
-  const reportOnlyToolkit = createToolkit([reportTool]);
+  // Grounding tools from all sources + report — synthesis can independently verify
+  const groundingTools = opts.sources.flatMap(s => s.groundingTools);
+  const synthToolkit = createToolkit([...groundingTools, reportTool]);
 
   // Synthesis runs inside withSharedRoot; verify+eval run outside so that
   // pruning the shared root frees KV (via fork_head decrement) before diverge.
   const synthPool = yield* withSharedRoot(
-    { systemPrompt: SYNTHESIZE.system, tools: reportOnlyToolkit.toolsJson },
+    { systemPrompt: SYNTHESIZE.system, tools: synthToolkit.toolsJson },
     function*(root) {
       const pool = yield* useAgentPool({
-        tasks: [{ systemPrompt: SYNTHESIZE.system, content, tools: reportOnlyToolkit.toolsJson, parent: root }],
-        tools: reportOnlyToolkit.toolMap,
+        tasks: [{ systemPrompt: SYNTHESIZE.system, content, tools: synthToolkit.toolsJson, parent: root }],
+        tools: synthToolkit.toolMap,
         terminalTool: 'report',
         maxTurns: opts.maxTurns,
         trace: opts.trace,
@@ -432,32 +423,6 @@ function* evaluate(
   return { converged: result.parsed as boolean | null, tokenCount: result.tokenCount, sampleCount, timeMs };
 }
 
-function* respond(
-  query: string,
-  opts: WorkflowOpts,
-  context?: { agentFindings: string; sourcePassages: string },
-): Operation<{ tokenCount: number; timeMs: number }> {
-  const prefillContent = context
-    ? `Research notes:\n${context.agentFindings}\n\nSource passages:\n${context.sourcePassages}\n\nUser question: ${query}\n\nAnswer the user's specific question using the evidence above. Address the precise concern raised.`
-    : query;
-  yield* call(() => opts.session.prefillUser(prefillContent));
-
-  yield* opts.events.send({ type: 'response:start' });
-  const t = performance.now();
-  let tokenCount = 0;
-  const trunk = opts.session.trunk!;
-  for (;;) {
-    const { token, text, isStop } = trunk.produceSync();
-    if (isStop) break;
-    yield* call(() => trunk.commit(token));
-    tokenCount++;
-    yield* opts.events.send({ type: 'response:text', text });
-  }
-  const timeMs = performance.now() - t;
-  yield* opts.events.send({ type: 'response:done' });
-  return { tokenCount, timeMs };
-}
-
 function* summarize(
   timings: OpTiming[],
   opts: WorkflowOpts,
@@ -475,41 +440,110 @@ function* summarize(
   });
 }
 
-// ── Workflow compositions ────────────────────────────────────────
+// ── Routing ──────────────────────────────────────────────────────
 
-function* coldResearch(
-  questions: string[],
+type Route =
+  | { type: 'clarify'; questions: string[] }
+  | { type: 'research'; questions: string[]; maxTurns: number };
+
+function route(plan: PlanResult, query: string, maxTurns: number): Route {
+  const research = plan.questions.filter(q => q.intent === 'research');
+  const clarify = plan.questions.filter(q => q.intent === 'clarify');
+
+  if (research.length === 0 && clarify.length > 0)
+    return { type: 'clarify', questions: clarify.map(q => q.text) };
+
+  // passthrough (empty array) or decompose — both go through research
+  const questions = research.length > 0 ? research.map(q => q.text) : [query];
+  const effectiveMaxTurns = questions.length === 1 ? maxTurns * 2 : maxTurns;
+  return { type: 'research', questions, maxTurns: effectiveMaxTurns };
+}
+
+// ── Finalize ─────────────────────────────────────────────────────
+
+function* promoteTrunk(
   query: string,
-  plan: PlanResult,
+  response: string,
   opts: WorkflowOpts,
-  maxTurns?: number,
 ): Operation<void> {
+  const ctx: SessionContext = yield* Ctx.expect();
+  const messages = [
+    { role: 'user', content: query },
+    { role: 'assistant', content: response },
+  ];
+  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+  const tokens: number[] = yield* call(() => ctx.tokenize(prompt, false));
+  const trunk = Branch.create(ctx, 0, {});
+  yield* call(() => trunk.prefill(tokens));
+  yield* call(() => opts.session.promote(trunk));
+}
+
+function* appendTurn(
+  query: string,
+  response: string,
+  opts: WorkflowOpts,
+): Operation<void> {
+  const ctx: SessionContext = yield* Ctx.expect();
+  const sep = ctx.getTurnSeparator();
+  const messages = [
+    { role: 'user', content: query },
+    { role: 'assistant', content: response },
+  ];
+  const { prompt } = ctx.formatChatSync(JSON.stringify(messages));
+  const tokens = ctx.tokenizeSync(prompt, false);
+  yield* call(() => opts.session.trunk!.prefill([...sep, ...tokens]));
+}
+
+// ── Entry point ──────────────────────────────────────────────────
+
+export function* handleQuery(
+  query: string,
+  opts: WorkflowOpts,
+  context?: string,
+): Operation<QueryResult> {
+  yield* opts.events.send({ type: 'query', query, warm: !!opts.session.trunk });
   const t0 = performance.now();
 
-  const r = yield* research(questions, query, opts, maxTurns);
-  const s = yield* synthesize(r.agentFindings, r.sourcePassages, query, opts);
+  // Plan
+  const planTool = new PlanTool({
+    prompt: PLAN,
+    session: opts.session,
+    maxQuestions: opts.agentCount,
+  });
+  const plan = (yield* planTool.execute({ query, context })) as PlanResult;
+  const r = route(plan, query, opts.maxTurns);
 
-  // Lightweight trunk — findings only, no tool-call bloat
+  const intent = r.type === 'clarify' ? 'clarify'
+    : plan.questions.length === 0 ? 'passthrough' : 'decompose';
+  yield* opts.events.send({
+    type: 'plan', intent, questions: plan.questions,
+    tokenCount: plan.tokenCount, timeMs: plan.timeMs,
+  });
+
+  if (r.type === 'clarify')
+    return { type: 'clarify', questions: r.questions };
+
+  // Research → Synthesize → Eval → Finalize
+  const warm = !!opts.session.trunk;
+  const res = warm
+    ? yield* warmResearch(r.questions, query, opts, r.maxTurns)
+    : yield* research(r.questions, query, opts, r.maxTurns);
+
+  const s = yield* synthesize(res.agentFindings, res.sourcePassages, query, opts);
+
   const findings = s.pool.agents[0]?.findings || '';
-  if (findings) {
-    const ctx: SessionContext = yield* Ctx.expect();
-    const messages = [
-      { role: 'user', content: query },
-      { role: 'assistant', content: findings },
-    ];
-    const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
-    const tokens: number[] = yield* call(() => ctx.tokenize(prompt, false));
-    const trunk = Branch.create(ctx, 0, {});
-    yield* call(() => trunk.prefill(tokens));
-    yield* call(() => opts.session.promote(trunk));
+  if (warm) {
+    yield* appendTurn(query, findings, opts);
+  } else if (findings) {
+    yield* promoteTrunk(query, findings, opts);
   }
 
   const timings: OpTiming[] = [
-    { label: 'Plan', tokens: plan.tokenCount, detail: planIntent(plan), timeMs: plan.timeMs },
+    { label: 'Plan', tokens: plan.tokenCount, detail: intent, timeMs: plan.timeMs },
     {
-      label: 'Research', tokens: r.totalTokens,
-      detail: `${r.totalToolCalls} tools`,
-      timeMs: r.timeMs,
+      label: 'Research', tokens: res.totalTokens,
+      detail: `${res.totalToolCalls} tools`,
+      timeMs: res.timeMs,
     },
     {
       label: 'Synthesize', tokens: s.pool.totalTokens,
@@ -524,100 +558,17 @@ function* coldResearch(
   yield* opts.events.send({
     type: 'complete',
     data: {
-      intent: planIntent(plan),
+      intent,
       planTokens: plan.tokenCount,
-      agentTokens: r.totalTokens,
+      agentTokens: res.totalTokens,
       synthTokens: s.pool.totalTokens, synthToolCalls: s.pool.totalToolCalls,
       evalTokens: s.eval.tokenCount, converged: s.eval.converged,
-      totalToolCalls: r.totalToolCalls + s.pool.totalToolCalls,
-      agentCount: questions.length, synthCount: s.pool.agents.length,
+      totalToolCalls: res.totalToolCalls + s.pool.totalToolCalls,
+      agentCount: r.questions.length, synthCount: s.pool.agents.length,
       wallTimeMs: Math.round(performance.now() - t0),
-      planMs: Math.round(plan.timeMs), researchMs: Math.round(r.timeMs),
+      planMs: Math.round(plan.timeMs), researchMs: Math.round(res.timeMs),
       synthMs: Math.round(s.timeMs), evalMs: Math.round(s.eval.timeMs),
     },
   });
-}
-
-function* warmDecompose(
-  questions: string[],
-  query: string,
-  plan: PlanResult,
-  opts: WorkflowOpts,
-): Operation<void> {
-  const r = yield* warmResearch(questions, query, opts);
-  const resp = yield* respond(query, opts, {
-    agentFindings: r.agentFindings,
-    sourcePassages: r.sourcePassages,
-  });
-
-  const timings: OpTiming[] = [
-    { label: 'Plan', tokens: plan.tokenCount, detail: planIntent(plan), timeMs: plan.timeMs },
-    {
-      label: 'Research', tokens: r.totalTokens,
-      detail: `${r.totalToolCalls} tools`,
-      timeMs: r.timeMs,
-    },
-    { label: 'Response', tokens: resp.tokenCount, detail: '', timeMs: resp.timeMs },
-  ];
-
-  yield* summarize(timings, opts);
-}
-
-// ── Entry point ──────────────────────────────────────────────────
-
-export function* handleQuery(
-  query: string,
-  opts: WorkflowOpts,
-  context?: string,
-): Operation<QueryResult> {
-  yield* opts.events.send({ type: 'query', query, warm: !!opts.session.trunk });
-
-  const planTool = new PlanTool({
-    prompt: PLAN,
-    session: opts.session,
-    maxQuestions: opts.agentCount,
-  });
-  const p = (yield* planTool.execute({ query, context })) as PlanResult;
-
-  const research = p.questions.filter(q => q.intent === 'research');
-  const clarify = p.questions.filter(q => q.intent === 'clarify');
-  const intent = research.length === 0 && clarify.length === 0 ? 'passthrough'
-    : research.length === 0 ? 'clarify'
-    : clarify.length > 0 ? 'mixed' : 'decompose';
-
-  yield* opts.events.send({
-    type: 'plan', intent, questions: p.questions,
-    tokenCount: p.tokenCount, timeMs: p.timeMs,
-  });
-
-  if (intent === 'clarify') {
-    return { type: 'clarify', questions: clarify.map(q => q.text) };
-  }
-
-  const warm = !!opts.session.trunk;
-  const researchQuestions = research.map(q => q.text);
-
-  if (researchQuestions.length === 0) {
-    // Passthrough — no sub-questions, research query directly
-    if (warm) {
-      const resp = yield* respond(query, opts);
-      const timings: OpTiming[] = [
-        { label: 'Plan', tokens: p.tokenCount, detail: 'passthrough', timeMs: p.timeMs },
-        { label: 'Response', tokens: resp.tokenCount, detail: '', timeMs: resp.timeMs },
-      ];
-      yield* summarize(timings, opts);
-    } else {
-      yield* coldResearch([query], query, p, opts, opts.maxTurns * 2);
-    }
-    return { type: 'done' };
-  }
-
-  // Has research questions — dispatch agents
-  const maxTurns = researchQuestions.length === 1 ? opts.maxTurns * 2 : undefined;
-  if (warm) {
-    yield* warmDecompose(researchQuestions, query, p, opts);
-  } else {
-    yield* coldResearch(researchQuestions, query, p, opts, maxTurns);
-  }
   return { type: 'done' };
 }

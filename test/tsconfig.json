@@ -6,12 +6,14 @@
     "rootDir": "..",
     "paths": {
       "@lloyal-labs/lloyal-agents": ["../packages/agents/dist"],
-      "@lloyal-labs/sdk": ["../packages/sdk/dist"]
+      "@lloyal-labs/sdk": ["../packages/sdk/dist"],
+      "@lloyal-labs/rig": ["../packages/rig/dist"]
     }
   },
   "include": ["**/*.ts"],
   "references": [
     { "path": "../packages/agents" },
-    { "path": "../packages/sdk" }
+    { "path": "../packages/sdk" },
+    { "path": "../packages/rig" }
   ]
 }

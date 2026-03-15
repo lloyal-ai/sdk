@@ -10,8 +10,7 @@ import {
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent, OpTiming } from './tui';
-import { reportTool } from '../shared/tools';
-import { ResearchTool } from '../shared/tools/research';
+import { reportTool, ResearchTool } from '@lloyal-labs/rig';
 
 /** Load a task prompt file. Convention: system prompt above `---`, user content below. */
 function loadTask(name: string): { system: string; user: string } {

@@ -24,19 +24,17 @@ import {
 } from "effection";
 import { createContext } from "@lloyal-labs/lloyal.node";
 import type { SessionContext } from "@lloyal-labs/sdk";
-import { initAgents } from "@lloyal-labs/lloyal-agents";
+import { initAgents, JsonlTraceWriter } from "@lloyal-labs/lloyal-agents";
 import type { Source } from "@lloyal-labs/lloyal-agents";
 import { c, log, setJsonlMode, setVerboseMode, fmtSize, createView } from "./tui";
 import type { WorkflowEvent } from "./tui";
-import { createReranker } from "../shared/reranker";
+import {
+  createReranker, WebSource, CorpusSource, TavilyProvider,
+  loadResources, chunkResources,
+} from "@lloyal-labs/rig";
+import type { SourceContext, Chunk } from "@lloyal-labs/rig";
 import { handleQuery } from "./harness";
 import type { WorkflowOpts } from "./harness";
-import { WebSource } from "../shared/sources/web";
-import { CorpusSource } from "../shared/sources/corpus";
-import { TavilyProvider } from "../shared/tools/web-search";
-import { loadResources, chunkResources } from "../shared/resources/files";
-import type { SourceContext } from "../shared/sources/types";
-import type { Chunk } from "../shared/resources/types";
 
 // ── CLI args ─────────────────────────────────────────────────────
 
@@ -155,7 +153,11 @@ main(function* () {
     log(`  ${c.dim}  Tavily web search enabled${c.reset}`);
   }
 
-  const { session, events } = yield* initAgents<WorkflowEvent>(ctx);
+  const traceWriter = trace
+    ? new JsonlTraceWriter(fs.openSync(`trace-${Date.now()}.jsonl`, 'w'))
+    : undefined;
+  if (traceWriter) log(`  ${c.dim}  Trace: trace-*.jsonl${c.reset}`);
+  const { session, events } = yield* initAgents<WorkflowEvent>(ctx, { traceWriter });
 
   // View subscriber — all presentation lives here
   const view = createView({

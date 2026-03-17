@@ -80,7 +80,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
       { role: 'system', content: this._prompt.system },
       { role: 'user', content: userContent },
     ];
-    const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+    const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
 
     const parent = this._session.trunk ?? undefined;
     const result = yield* generate({

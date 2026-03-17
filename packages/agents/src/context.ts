@@ -1,6 +1,6 @@
 import { createContext } from 'effection';
 import type { SessionContext } from '@lloyal-labs/sdk';
-import type { BranchStore } from '@lloyal-labs/sdk';
+import type { BranchStore, Branch } from '@lloyal-labs/sdk';
 import type { Channel } from 'effection';
 import type { AgentEvent } from './types';
 import type { TraceWriter } from './trace-writer';
@@ -57,3 +57,15 @@ export const Trace = createContext<TraceWriter>('lloyal.trace');
  * @category Agents
  */
 export const TraceParent = createContext<TraceId>('lloyal.traceParent');
+
+/**
+ * Effection context holding the scratchpad fork parent branch
+ *
+ * Set by {@link withSharedRoot} to the current root branch. Tools that
+ * need scratchpad extraction (e.g. BufferingFetchPage, BufferingWebSearch)
+ * read this via `yield* ScratchpadParent.expect()` to fork from the
+ * innermost active root — never a stale reference from a prior scope.
+ *
+ * @category Agents
+ */
+export const ScratchpadParent = createContext<Branch>('lloyal.scratchpadParent');

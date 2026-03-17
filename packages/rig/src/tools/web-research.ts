@@ -126,7 +126,7 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
             { role: "system", content: reporterPrompt.system },
             { role: "user", content: reporterPrompt.user },
           ];
-          const { prompt } = ctx.formatChatSync(JSON.stringify(msgs));
+          const { prompt } = ctx.formatChatSync(JSON.stringify(msgs), { enableThinking: false });
 
           for (const a of hardCut) {
             try {

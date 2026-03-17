@@ -137,7 +137,8 @@ function* setupAgent(
     { role: 'system', content: task.systemPrompt },
     { role: 'user', content: task.content },
   ];
-  const fmtOpts = task.tools ? { tools: task.tools } : {};
+  const fmtOpts: Record<string, unknown> = { enableThinking: false };
+  if (task.tools) fmtOpts.tools = task.tools;
   const fmt = ctx.formatChatSync(JSON.stringify(messages), fmtOpts);
   if (task.tools && (fmt.format === CHAT_FORMAT_CONTENT_ONLY || fmt.format === CHAT_FORMAT_GENERIC)) {
     // Error before fork — no branch to clean up

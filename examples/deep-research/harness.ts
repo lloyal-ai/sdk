@@ -112,7 +112,7 @@ function* plan(query: string, opts: WorkflowOpts): Operation<{ questions: string
     { role: 'system', content: PLAN.system },
     { role: 'user', content: userContent },
   ];
-  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
 
   let output: string;
   let tokenCount: number;
@@ -272,7 +272,7 @@ function* synthesize(
         { role: 'system', content: VERIFY.system },
         { role: 'user', content: verifyContent },
       ];
-      const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+      const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
 
       const samples = yield* diverge({
         prompt,
@@ -317,7 +317,7 @@ function* evaluate(
     required: ['converged'],
   };
   const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(evalSchema)));
-  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
 
   const t = performance.now();
   const result = yield* generate({
@@ -400,7 +400,7 @@ function* coldQuery(query: string, opts: WorkflowOpts): Operation<void> {
       { role: 'user', content: query },
       { role: 'assistant', content: findings },
     ];
-    const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+    const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
     const tokens: number[] = yield* call(() => ctx.tokenize(prompt, false));
     const trunk = Branch.create(ctx, 0, {});
     yield* call(() => trunk.prefill(tokens));

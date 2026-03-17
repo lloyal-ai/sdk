@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { call } from "effection";
 import type { Operation } from "effection";
 import { Source } from "@lloyal-labs/lloyal-agents";
-import { Tool, Ctx, Trace, generate, createToolkit } from "@lloyal-labs/lloyal-agents";
+import { Tool, Ctx, Trace, ScratchpadParent, generate, createToolkit } from "@lloyal-labs/lloyal-agents";
 import type { JsonSchema } from "@lloyal-labs/lloyal-agents";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import type { Branch } from "@lloyal-labs/sdk";
@@ -83,7 +83,6 @@ class BufferingFetchPage extends Tool<{ url: string }> {
 
   private _inner: FetchPageTool;
   private _buffer: FetchedPage[];
-  private _parent: Branch | undefined;
   private _extractTask: { system: string; user: string };
 
   constructor(
@@ -95,10 +94,6 @@ class BufferingFetchPage extends Tool<{ url: string }> {
     this._inner = new FetchPageTool(maxChars);
     this._buffer = buffer;
     this._extractTask = extractTask;
-  }
-
-  setParent(parent: Branch): void {
-    this._parent = parent;
   }
 
   *execute(args: { url: string }): Operation<unknown> {
@@ -116,8 +111,10 @@ class BufferingFetchPage extends Tool<{ url: string }> {
         text: content,
       });
 
-      // Attention scratchpad: fork, attend to full content, extract summary + links, prune
-      const parent = this._parent!;
+      // Attention scratchpad: fork from innermost active root, extract summary + links, prune
+      let parent: Branch | undefined;
+      try { parent = yield* ScratchpadParent.expect(); } catch { /* no parent — skip extraction */ }
+      if (!parent || parent.disposed) return result;
       const ctx: SessionContext = yield* Ctx.expect();
       const schema = {
         type: "object",
@@ -138,7 +135,7 @@ class BufferingFetchPage extends Tool<{ url: string }> {
         { role: "system", content: this._extractTask.system },
         { role: "user", content: extractPrompt },
       ];
-      const { prompt } = ctx.formatChatSync(JSON.stringify(messages));
+      const { prompt } = ctx.formatChatSync(JSON.stringify(messages), { enableThinking: false });
 
       try {
         const extracted = yield* generate<{ summary: string; links: string[] }>(
@@ -177,7 +174,6 @@ class BufferingWebSearch extends Tool<{ query: string }> {
   };
 
   private _inner: WebSearchTool;
-  private _parent: Branch | undefined;
   private _extractTask: { system: string; user: string };
 
   constructor(provider: SearchProvider, extractTask: { system: string; user: string }) {
@@ -186,20 +182,17 @@ class BufferingWebSearch extends Tool<{ query: string }> {
     this._extractTask = extractTask;
   }
 
-  setParent(parent: Branch): void {
-    this._parent = parent;
-  }
-
   *execute(args: { query: string }): Operation<unknown> {
     const results = yield* this._inner.execute(args);
 
     // If error or not an array, return as-is (no scratchpad needed)
     if (!Array.isArray(results) || results.length === 0) return results;
 
-    // No parent set (e.g. in synthesis grounding) — return raw results
-    if (!this._parent) return results;
+    // Scratchpad: fork from innermost active root, extract URLs + summary
+    let parent: Branch | undefined;
+    try { parent = yield* ScratchpadParent.expect(); } catch { /* no parent — return raw */ }
+    if (!parent || parent.disposed) return results;
 
-    // Scratchpad: fork from outer root, attend to full results, extract URLs + summary
     const ctx: SessionContext = yield* Ctx.expect();
     const schema = {
       type: "object",
@@ -223,7 +216,7 @@ class BufferingWebSearch extends Tool<{ query: string }> {
       { role: "system", content: this._extractTask.system },
       { role: "user", content: extractPrompt },
     ];
-    const { prompt } = ctx.formatChatSync(JSON.stringify(messages));
+    const { prompt } = ctx.formatChatSync(JSON.stringify(messages), { enableThinking: false });
 
     try {
       const extracted = yield* generate<{ urls: string[]; summary: string }>({
@@ -231,7 +224,7 @@ class BufferingWebSearch extends Tool<{ query: string }> {
         grammar,
         params: { temperature: 0.3 },
         parse: (o) => JSON.parse(o),
-        parent: this._parent,
+        parent,
       });
       return {
         urls: extracted.parsed?.urls || [],
@@ -274,8 +267,6 @@ export class WebSource extends Source<SourceContext, Chunk> {
 
   *bind(ctx: SourceContext): Operation<void> {
     this._buffer.length = 0;
-    this._fetchPage.setParent(ctx.parent);
-    this._webSearch.setParent(ctx.parent);
     const tw = yield* Trace.expect();
     tw.write({ traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
       type: 'source:bind', sourceName: this.name });

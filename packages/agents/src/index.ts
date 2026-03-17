@@ -1,4 +1,4 @@
-export { Ctx, Store, Events, Trace, TraceParent } from './context';
+export { Ctx, Store, Events, Trace, TraceParent, ScratchpadParent } from './context';
 export { Tool } from './Tool';
 export { Source } from './source';
 export { buildUserDelta, buildToolResultDelta } from '@lloyal-labs/sdk';

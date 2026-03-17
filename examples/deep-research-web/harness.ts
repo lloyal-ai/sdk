@@ -112,7 +112,7 @@ function* reportPass(
     { role: 'system', content: REPORT.system },
     { role: 'user', content: REPORT.user },
   ];
-  const { prompt } = ctx.formatChatSync(JSON.stringify(messages));
+  const { prompt } = ctx.formatChatSync(JSON.stringify(messages), { enableThinking: false });
 
   for (const a of hardCut) {
     try {
@@ -145,14 +145,14 @@ function* research(
   let totalTokens = 0;
   let totalToolCalls = 0;
 
-  // withSharedRoot provides parent branch for source.bind() —
-  // BufferingFetchPage forks from this outer root via generate({ parent })
+  // withSharedRoot sets ScratchpadParent context — tools that need
+  // scratchpad extraction read it automatically from the Effection scope
   const chunks = yield* withSharedRoot(
     { systemPrompt: ROOT.system },
     function*(root) {
       for (const source of opts.sources)
         yield* source.bind({
-          parent: root, reranker: opts.reranker,
+          reranker: opts.reranker,
           reporterPrompt: REPORT, reportTool,
           maxTurns: effectiveMaxTurns, trace: opts.trace,
         });
@@ -234,7 +234,7 @@ function* warmResearch(
   const effectiveMaxTurns = maxTurns ?? opts.maxTurns;
   for (const source of opts.sources)
     yield* source.bind({
-      parent: opts.session.trunk!, reranker: opts.reranker,
+      reranker: opts.reranker,
       reporterPrompt: REPORT, reportTool,
       maxTurns: effectiveMaxTurns, trace: opts.trace,
     });
@@ -369,7 +369,7 @@ function* synthesize(
     { role: 'system', content: VERIFY.system },
     { role: 'user', content: verifyContent },
   ];
-  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
 
   const samples = yield* diverge({
     prompt,
@@ -405,7 +405,7 @@ function* evaluate(
     required: ['converged'],
   };
   const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(evalSchema)));
-  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
 
   const t = performance.now();
   const result = yield* generate({
@@ -471,7 +471,7 @@ function* promoteTrunk(
     { role: 'user', content: query },
     { role: 'assistant', content: response },
   ];
-  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
+  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
   const tokens: number[] = yield* call(() => ctx.tokenize(prompt, false));
   const trunk = Branch.create(ctx, 0, {});
   yield* call(() => trunk.prefill(tokens));
@@ -489,7 +489,7 @@ function* appendTurn(
     { role: 'user', content: query },
     { role: 'assistant', content: response },
   ];
-  const { prompt } = ctx.formatChatSync(JSON.stringify(messages));
+  const { prompt } = ctx.formatChatSync(JSON.stringify(messages), { enableThinking: false });
   const tokens = ctx.tokenizeSync(prompt, false);
   yield* call(() => opts.session.trunk!.prefill([...sep, ...tokens]));
 }

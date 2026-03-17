@@ -1,3 +1,15 @@
+/**
+ * Rig — research infrastructure for the lloyal agent pipeline
+ *
+ * Provides source implementations ({@link WebSource}, {@link CorpusSource}),
+ * resource loading/chunking, reranking, and the tool library used by
+ * deep-research harnesses. Sources are composed via the abstract
+ * {@link Source} base class from `@lloyal-labs/lloyal-agents`.
+ *
+ * @packageDocumentation
+ * @category Rig
+ */
+
 // Tools
 export {
   createTools, reportTool,

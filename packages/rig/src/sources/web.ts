@@ -27,12 +27,36 @@ function readTask(name: string): { system: string; user: string } {
 
 // ── FetchedPage + chunking ───────────────────────────────────────
 
+/**
+ * Raw page content buffered during web research for post-research reranking
+ *
+ * Populated by {@link BufferingFetchPage} as agents fetch pages. After
+ * the research phase ends, buffered pages are converted to {@link Chunk}
+ * instances via {@link chunkFetchedPages} for reranker scoring.
+ *
+ * @category Rig
+ */
 export interface FetchedPage {
+  /** Resolved URL of the fetched page */
   url: string;
+  /** Page title extracted during fetch (may be empty) */
   title: string;
+  /** Full extracted article text */
   text: string;
 }
 
+/**
+ * Convert buffered web pages into {@link Chunk} instances for reranking
+ *
+ * Splits each page's text on blank-line paragraph boundaries, filtering
+ * paragraphs shorter than 40 characters. If no paragraphs survive the
+ * filter, the full text is emitted as a single chunk (if long enough).
+ *
+ * @param pages - Buffered pages from web research
+ * @returns Flat array of paragraph-level chunks with `tokens` arrays left empty for later tokenization
+ *
+ * @category Rig
+ */
 export function chunkFetchedPages(pages: FetchedPage[]): Chunk[] {
   const chunks: Chunk[] = [];
   for (const page of pages) {
@@ -71,6 +95,19 @@ export function chunkFetchedPages(pages: FetchedPage[]): Chunk[] {
 
 // ── BufferingFetchPage ───────────────────────────────────────────
 
+/**
+ * Fetch-page wrapper that buffers full content and extracts a compact summary
+ *
+ * Wraps {@link FetchPageTool} to intercept successful fetches. Full page
+ * content is pushed into a shared {@link FetchedPage} buffer for
+ * post-research reranking. An attention scratchpad (forked from
+ * {@link ScratchpadParent}) then grammar-constrains a summary + links
+ * extraction, returning the compact result to the calling agent instead
+ * of the full page text. Falls back to the full result if extraction
+ * fails or no scratchpad parent is available.
+ *
+ * @category Rig
+ */
 class BufferingFetchPage extends Tool<{ url: string }> {
   readonly name = "fetch_page";
   readonly description =
@@ -163,6 +200,17 @@ class BufferingFetchPage extends Tool<{ url: string }> {
 
 // ── BufferingWebSearch ────────────────────────────────────────────
 
+/**
+ * Web-search wrapper that extracts a compact summary via attention scratchpad
+ *
+ * Wraps {@link WebSearchTool} and, when a {@link ScratchpadParent} is
+ * available, forks a grammar-constrained generation to distill raw search
+ * results into a list of promising URLs plus a brief summary. The compact
+ * output reduces KV pressure on the calling agent. Falls back to raw
+ * results if extraction fails or no scratchpad parent is available.
+ *
+ * @category Rig
+ */
 class BufferingWebSearch extends Tool<{ query: string }> {
   readonly name = "web_search";
   readonly description =
@@ -239,6 +287,17 @@ class BufferingWebSearch extends Tool<{ query: string }> {
 
 // ── WebSource ────────────────────────────────────────────────────
 
+/**
+ * Web-backed research source using search + fetch with scratchpad extraction
+ *
+ * Wires up {@link BufferingWebSearch} and {@link BufferingFetchPage} for
+ * grounding, and a self-referential {@link WebResearchTool} for spawning
+ * parallel research sub-agents. Fetched page content is buffered in memory;
+ * after research completes, {@link getChunks} converts the buffer into
+ * {@link Chunk} instances via {@link chunkFetchedPages} for reranker scoring.
+ *
+ * @category Rig
+ */
 export class WebSource extends Source<SourceContext, Chunk> {
   private _buffer: FetchedPage[] = [];
   private _fetchPage: BufferingFetchPage;
@@ -246,8 +305,12 @@ export class WebSource extends Source<SourceContext, Chunk> {
   private _researchPrompt: { system: string; user: string };
   private _researchTool: WebResearchTool | null = null;
 
+  /** @inheritDoc */
   readonly name = "web";
 
+  /**
+   * @param provider - Search backend (e.g. {@link TavilyProvider}) for web_search calls
+   */
   constructor(provider: SearchProvider) {
     super();
     const extractTask = readTask("extract");
@@ -257,14 +320,26 @@ export class WebSource extends Source<SourceContext, Chunk> {
     this._webSearch = new BufferingWebSearch(provider, searchExtractTask);
   }
 
+  /** @inheritDoc */
   get researchTool(): Tool {
     if (!this._researchTool)
       throw new Error("WebSource: bind() must be called first");
     return this._researchTool;
   }
 
+  /** @inheritDoc */
   get groundingTools(): Tool[] { return [this._webSearch, this._fetchPage]; }
 
+  /**
+   * Clear the page buffer and build the self-referential research toolkit
+   *
+   * Resets the internal {@link FetchedPage} buffer on every call so
+   * prior-run content does not leak into a new research pass. Constructs
+   * the {@link WebResearchTool} on first bind only (toolkit is stateless
+   * once built).
+   *
+   * @inheritDoc
+   */
   *bind(ctx: SourceContext): Operation<void> {
     this._buffer.length = 0;
     const tw = yield* Trace.expect();
@@ -292,6 +367,7 @@ export class WebSource extends Source<SourceContext, Chunk> {
     }
   }
 
+  /** @inheritDoc */
   getChunks(): Chunk[] {
     return chunkFetchedPages(this._buffer);
   }

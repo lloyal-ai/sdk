@@ -15,16 +15,41 @@ import type {
   PressureThresholds,
 } from "@lloyal-labs/lloyal-agents";
 
+/**
+ * Configuration for {@link WebResearchTool}.
+ *
+ * @category Rig
+ */
 export interface WebResearchToolOpts {
+  /** Override the tool name exposed to the model. @defaultValue "research" */
   name?: string;
+  /** Override the tool description exposed to the model. */
   description?: string;
+  /** System prompt given to each spawned web-research sub-agent. */
   systemPrompt: string;
+  /** Prompts used for grammar-constrained scratchpad extraction on hard-cut agents. */
   reporterPrompt: { system: string; user: string };
+  /** Maximum tool-use turns per sub-agent before hard cut. @defaultValue 20 */
   maxTurns?: number;
+  /** Enable trace output for sub-agent execution. @defaultValue false */
   trace?: boolean;
+  /** Context pressure thresholds for the sub-agent pool. */
   pressure?: PressureThresholds;
 }
 
+/**
+ * Spawn parallel web-research sub-agents for a set of questions.
+ *
+ * Similar to {@link ResearchTool} but designed for web-source pipelines.
+ * Each question gets its own agent in a shared-root pool with access
+ * to web_search, fetch_page, and report tools. Hard-cut agents that
+ * exhaust their turns without reporting get a grammar-constrained
+ * scratchpad extraction via {@link generate} to recover partial findings.
+ *
+ * Must call {@link setToolkit} before the tool is executed.
+ *
+ * @category Rig
+ */
 export class WebResearchTool extends Tool<{ questions: string[] }> {
   readonly name: string;
   readonly description: string;
@@ -60,6 +85,7 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
     this._pressure = opts.pressure;
   }
 
+  /** Inject the toolkit that sub-agents will use. Must be called before execute. */
   setToolkit(toolkit: Toolkit): void {
     this._toolkit = toolkit;
   }

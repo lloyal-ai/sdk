@@ -5,6 +5,21 @@ import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Chunk } from '../resources/types';
 import type { Reranker, ScoredChunk } from './types';
 
+/**
+ * Semantic search over corpus chunks via a {@link Reranker}
+ *
+ * Scores all chunks against the query and returns ranked results
+ * with file names, headings, scores, and line ranges. Progress is
+ * reported through the optional {@link ToolContext.onProgress}
+ * callback as the reranker streams intermediate results.
+ *
+ * @example
+ * ```typescript
+ * const search = new SearchTool(chunks, reranker);
+ * ```
+ *
+ * @category Rig
+ */
 export class SearchTool extends Tool<{ query: string }> {
   readonly name = 'search';
   readonly description = 'Search the knowledge base. Returns sections ranked by relevance with line ranges for read_file.';

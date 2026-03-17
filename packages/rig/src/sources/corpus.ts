@@ -20,28 +20,59 @@ function readTask(name: string): { system: string; user: string } {
   return { system: raw.slice(0, sep).trim(), user: raw.slice(sep + 5).trim() };
 }
 
+/**
+ * Corpus-backed research source using local file search, read, and grep
+ *
+ * Provides grounding tools (`search`, `read_file`, `grep`) over a set of
+ * loaded {@link Resource} / {@link Chunk} pairs. On {@link bind}, tokenizes
+ * chunks via the reranker and prepends a reranker-backed `search` tool to
+ * the tool list. The `search` tool is ordered first so the model prefers
+ * semantic search before falling back to `read_file` or `grep`.
+ *
+ * The research tool is a self-referential {@link ResearchTool} that spawns
+ * sub-agents with corpus-specific prompts and the full grounding toolkit.
+ *
+ * @category Rig
+ */
 export class CorpusSource extends Source<SourceContext, Chunk> {
   private _chunks: Chunk[];
   private _tools: Tool[] = [];
   private _researchTool: ResearchTool | null = null;
   private _bound = false;
 
+  /** @inheritDoc */
   readonly name = "corpus";
 
+  /**
+   * @param resources - Loaded file resources for read_file and grep tools
+   * @param chunks - Pre-split chunks for reranker-backed search
+   */
   constructor(resources: Resource[], chunks: Chunk[]) {
     super();
     this._chunks = chunks;
     this._tools = [new ReadFileTool(resources), new GrepTool(resources)];
   }
 
+  /** @inheritDoc */
   get researchTool(): Tool {
     if (!this._researchTool)
       throw new Error("CorpusSource: bind() must be called first");
     return this._researchTool;
   }
 
+  /** @inheritDoc */
   get groundingTools(): Tool[] { return this._tools; }
 
+  /**
+   * Late-bind reranker and build the research toolkit
+   *
+   * Tokenizes all chunks through the reranker, prepends a {@link SearchTool}
+   * to the tool list, then constructs the self-referential
+   * {@link ResearchTool} with corpus-specific prompts. Idempotent — skips
+   * if already bound.
+   *
+   * @inheritDoc
+   */
   *bind(ctx: SourceContext): Operation<void> {
     if (this._bound) return;
     const tw = yield* Trace.expect();

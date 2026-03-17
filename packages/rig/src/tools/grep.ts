@@ -3,6 +3,17 @@ import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 import type { Resource } from '../resources/types';
 
+/**
+ * Exhaustive regex search across all corpus resources
+ *
+ * Scans every line of every loaded {@link Resource} for matches
+ * against a regular expression. Returns matching lines with file
+ * names and line numbers, capped at 50 results. Complements
+ * {@link SearchTool} which ranks by semantic relevance -- grep
+ * finds exact patterns exhaustively.
+ *
+ * @category Rig
+ */
 export class GrepTool extends Tool<{ pattern: string; ignoreCase?: boolean }> {
   readonly name = 'grep';
   readonly description = 'Search the entire corpus for a regex pattern. Returns every matching line with line numbers and total match count. Complements search() which ranks by relevance — grep scans exhaustively.';

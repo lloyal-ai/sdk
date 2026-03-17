@@ -3,6 +3,16 @@ import type { Operation } from 'effection';
 import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 
+/**
+ * Fetch a web page and extract readable article content.
+ *
+ * Uses the Fetch API with a 10-second timeout, then extracts the
+ * article body via linkedom + Readability. Content is truncated to
+ * `maxChars` (default 6000). PDF URLs are rejected early since
+ * binary content cannot be extracted as readable text.
+ *
+ * @category Rig
+ */
 export class FetchPageTool extends Tool<{ url: string }> {
   readonly name = 'fetch_page';
   readonly description = 'Fetch a web page and extract its article content. Returns readable text with title and excerpt. Use to read search results or follow links discovered in pages.';

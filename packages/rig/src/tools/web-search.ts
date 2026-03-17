@@ -8,6 +8,15 @@ export type { SearchProvider, SearchResult };
 
 // ── Tavily provider (default) ───────────────────────────
 
+/**
+ * {@link SearchProvider} implementation backed by the Tavily search API.
+ *
+ * Reads the API key from the constructor argument or the
+ * `TAVILY_API_KEY` environment variable. Throws at search time
+ * if no key is available.
+ *
+ * @category Rig
+ */
 export class TavilyProvider implements SearchProvider {
   private _apiKey: string;
 
@@ -37,6 +46,15 @@ export class TavilyProvider implements SearchProvider {
 
 // ── WebSearchTool ───────────────────────────────────────
 
+/**
+ * Web search tool backed by a pluggable {@link SearchProvider}.
+ *
+ * Delegates to the provider's `search` method and returns an array
+ * of {@link SearchResult} objects. Use alongside {@link FetchPageTool}
+ * to let agents read full page content from promising results.
+ *
+ * @category Rig
+ */
 export class WebSearchTool extends Tool<{ query: string }> {
   readonly name = 'web_search';
   readonly description = 'Search the web. Returns results with titles, snippets, and URLs. Use fetch_page to read full content of promising results.';

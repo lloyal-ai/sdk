@@ -1,4 +1,12 @@
-/** Monotonically increasing trace ID. Cheap — just an incrementing counter. */
+/**
+ * Monotonically increasing trace ID
+ *
+ * Allocated by {@link TraceWriter.nextId}. Cheap — just an incrementing
+ * counter. Used to build parent-child relationships across scopes, agent
+ * pools, and tool dispatches in the trace tree.
+ *
+ * @category Agents
+ */
 export type TraceId = number;
 
 /** Base shape for all trace events */
@@ -8,7 +16,21 @@ interface TraceEventBase {
   ts: number; // performance.now()
 }
 
-/** Discriminated union of all trace event types */
+/**
+ * Discriminated union of all trace event types
+ *
+ * Every variant extends {@link TraceEventBase} with a `type` discriminant.
+ * Events cover the full lifecycle of agent execution: scope open/close,
+ * prompt formatting, branch creation/prefill/prune, generation start/end,
+ * agent pool ticks, tool dispatch/result, diverge attempts, reranker
+ * passes, and source bindings.
+ *
+ * Written to a {@link TraceWriter} throughout the runtime. Consumers
+ * (e.g. {@link JsonlTraceWriter}) serialize events to JSONL for
+ * post-hoc analysis.
+ *
+ * @category Agents
+ */
 export type TraceEvent =
   // ── Scope events ────────────────────────────
   | TraceEventBase & { type: 'scope:open'; name: string; meta?: Record<string, unknown> }

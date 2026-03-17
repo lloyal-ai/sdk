@@ -17,8 +17,27 @@ export type { WebResearchToolOpts } from './web-research';
 export { PlanTool } from './plan';
 export type { PlanResult, PlanQuestion, PlanToolOpts } from './plan';
 
+/**
+ * Shared singleton {@link ReportTool} instance.
+ *
+ * Re-used across toolkits since ReportTool is stateless.
+ *
+ * @category Rig
+ */
 export const reportTool = new ReportTool();
 
+/**
+ * Build the standard corpus-research toolkit.
+ *
+ * Returns a {@link Toolkit} containing {@link SearchTool},
+ * {@link ReadFileTool}, {@link GrepTool}, and {@link ReportTool}
+ * wired to the provided resources, chunks, and reranker.
+ *
+ * @param opts - Resources, chunks, and reranker to bind into the tools.
+ * @returns A ready-to-use toolkit for corpus research agents.
+ *
+ * @category Rig
+ */
 export function createTools(opts: {
   resources: Resource[];
   chunks: Chunk[];

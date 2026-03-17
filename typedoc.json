@@ -3,7 +3,8 @@
   "plugin": ["typedoc-rhineai-theme"],
   "entryPoints": [
     "packages/sdk/src/index.ts",
-    "packages/agents/src/index.ts"
+    "packages/agents/src/index.ts",
+    "packages/rig/src/index.ts"
   ],
   "entryPointStrategy": "expand",
   "out": "docs/api",

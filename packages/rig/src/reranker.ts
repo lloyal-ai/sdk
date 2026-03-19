@@ -1,8 +1,25 @@
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { Rerank } from "@lloyal-labs/sdk";
+import type { SessionContext } from "@lloyal-labs/sdk";
 import type { Chunk } from "./resources/types";
 import type { Reranker, ScoredResult } from "./tools/types";
 
+/**
+ * Create a {@link Reranker} backed by a dedicated reranking model context
+ *
+ * Loads a separate model (typically a cross-encoder) into its own KV cache
+ * and exposes `score`, `tokenizeChunks`, and `dispose` methods. The returned
+ * `score` method yields {@link ScoredResult} batches as an async iterable,
+ * mapping raw indices back to the original {@link Chunk} metadata.
+ *
+ * @param modelPath - Absolute path to the reranking model file (GGUF)
+ * @param opts - Optional context sizing overrides
+ * @param opts.nSeqMax - Maximum parallel scoring sequences (default 8)
+ * @param opts.nCtx - Context window size for the reranker model (default 4096)
+ * @returns A ready-to-use reranker instance; call `dispose()` when finished
+ *
+ * @category Rig
+ */
 export async function createReranker(
   modelPath: string,
   opts?: { nSeqMax?: number; nCtx?: number },
@@ -16,7 +33,7 @@ export async function createReranker(
     typeK: 'q4_0',
     typeV: 'q4_0',
   });
-  const rerank = await Rerank.create(ctx, { nSeqMax, nCtx });
+  const rerank = await Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx });
 
   return {
     score(query: string, chunks: Chunk[]): AsyncIterable<ScoredResult> {

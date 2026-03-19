@@ -1,15 +1,39 @@
 import type { Operation } from 'effection';
-import { Tool, useAgentPool, runAgents, withSharedRoot } from '@lloyal-labs/lloyal-agents';
+import { Tool, Trace, useAgentPool, runAgents, withSharedRoot, traceScope } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, Toolkit, PressureThresholds } from '@lloyal-labs/lloyal-agents';
 
+/**
+ * Configuration for {@link ResearchTool}
+ *
+ * @category Rig
+ */
 export interface ResearchToolOpts {
+  /** System prompt for each spawned research agent */
   systemPrompt: string;
+  /** Prompt pair used to extract findings from hard-cut agents */
   reporterPrompt: { system: string; user: string };
+  /** Maximum tool-use turns per research agent (default: 20) */
   maxTurns?: number;
+  /** Enable trace logging for sub-agent pools */
   trace?: boolean;
+  /** Context pressure thresholds for sub-agent pools */
   pressure?: PressureThresholds;
 }
 
+/**
+ * Spawn parallel research agents for sub-questions (corpus source)
+ *
+ * Creates a {@link withSharedRoot | shared root} and runs a
+ * {@link useAgentPool | pool} of research agents, one per question.
+ * Each agent has access to the full toolkit (search, read_file,
+ * grep, report). Agents that hit the turn limit without reporting
+ * are forced through a reporter pass that extracts partial findings.
+ *
+ * Call {@link ResearchTool.setToolkit | setToolkit()} before first
+ * execution to wire the toolkit into the sub-agent pool.
+ *
+ * @category Rig
+ */
 export class ResearchTool extends Tool<{ questions: string[] }> {
   readonly name = 'research';
   readonly description = 'Spawn parallel research agents to investigate sub-questions. Each question gets its own agent.';
@@ -41,6 +65,7 @@ export class ResearchTool extends Tool<{ questions: string[] }> {
     this._pressure = opts.pressure;
   }
 
+  /** Inject the toolkit that sub-agents will use. Must be called before execute. */
   setToolkit(toolkit: Toolkit): void {
     this._toolkit = toolkit;
   }
@@ -52,6 +77,8 @@ export class ResearchTool extends Tool<{ questions: string[] }> {
     }
 
     if (!this._toolkit) throw new Error('ResearchTool: setToolkit() must be called before execute');
+    const tw = yield* Trace.expect();
+    const scope = traceScope(tw, null, 'researchTool', { questionCount: questions.length });
     const toolkit = this._toolkit;
     const systemPrompt = this._systemPrompt;
     const reporterPrompt = this._reporterPrompt;
@@ -100,12 +127,14 @@ export class ResearchTool extends Tool<{ questions: string[] }> {
           });
         }
 
-        return {
+        const result = {
           findings: pool.agents.map(a => a.findings).filter(Boolean),
           agentCount: pool.agents.length,
           totalTokens: pool.totalTokens,
           totalToolCalls: pool.totalToolCalls,
         };
+        scope.close();
+        return result;
       },
     );
   }

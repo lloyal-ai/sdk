@@ -3,8 +3,9 @@ import type { Operation, Channel } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Events } from './context';
+import { Ctx, Store, Events, Trace, TraceParent } from './context';
 import { buildToolResultDelta } from '@lloyal-labs/sdk';
+import { traceScope } from './trace-scope';
 import type {
   TraceToken,
   PressureThresholds,
@@ -54,11 +55,10 @@ interface SettledTool {
  *
  * Created from `SessionContext._storeKvPressure()` which returns
  * `{ nCtx, cellsUsed, remaining }` where `remaining = nCtx - cellsUsed`.
- * `cellsUsed` is a monotonic counter in `BranchStore` — it increments on
- * every `decode_each` / `decode_scatter` but does **not** decrement on
- * individual branch prune (only resets on bulk ops like `retainOnly` and
- * `drain`). This means `remaining` is a conservative lower bound that
- * becomes increasingly pessimistic as branches are pruned mid-run.
+ * `cellsUsed` tracks unique KV cells per branch — incremented on
+ * `decode_each` / `decode_scatter`, decremented on release by
+ * `position - fork_head` (unique cells above the fork point), reset on
+ * bulk ops like `retainOnly` and `drain`.
  *
  * Two thresholds partition `remaining` into three zones:
  *
@@ -93,8 +93,6 @@ export class ContextPressure {
   /**
    * KV slots remaining (`nCtx - cellsUsed`).
    * Infinity when nCtx ≤ 0 (no context limit).
-   * Conservative: may undercount actual free space when branches have been
-   * pruned, since `cellsUsed` is monotonic.
    */
   readonly remaining: number;
   /** Remaining KV floor — tokens reserved for downstream work */
@@ -134,12 +132,13 @@ function* setupAgent(
   parent: Branch,
   task: AgentTaskSpec,
   ctx: SessionContext,
-): Operation<{ agent: AgentInternal; suffixTokens: number[] }> {
+): Operation<{ agent: AgentInternal; suffixTokens: number[]; formattedPrompt: string }> {
   const messages = [
     { role: 'system', content: task.systemPrompt },
     { role: 'user', content: task.content },
   ];
-  const fmtOpts = task.tools ? { tools: task.tools } : {};
+  const fmtOpts: Record<string, unknown> = { enableThinking: false };
+  if (task.tools) fmtOpts.tools = task.tools;
   const fmt = ctx.formatChatSync(JSON.stringify(messages), fmtOpts);
   if (task.tools && (fmt.format === CHAT_FORMAT_CONTENT_ONLY || fmt.format === CHAT_FORMAT_GENERIC)) {
     // Error before fork — no branch to clean up
@@ -174,6 +173,7 @@ function* setupAgent(
       traceBuffer: [],
     },
     suffixTokens,
+    formattedPrompt: fmt.prompt,
   };
 }
 
@@ -239,7 +239,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         yield* each.next();
       }
     });
+    const tw = yield* Trace.expect();
     const { tasks, tools, maxTurns = 100, terminalTool, trace = false, pressure: pressureOpts } = opts;
+
+    // Tool index map for trace — position in toolkit array
+    const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
+    const toolkitSize = tools.size;
+
+    const poolT0 = performance.now();
+    let poolParentTraceId: number | null = null;
+    try { const p = yield* TraceParent.get(); if (p != null) poolParentTraceId = p; } catch { /* top level */ }
+    const poolScope = traceScope(tw, poolParentTraceId, 'pool', { agentCount: tasks.length, maxTurns, terminalTool });
 
     // Whether the pool's tool registry contains tools besides the terminal tool.
     // When false, agents are allowed to call the terminal tool as their first
@@ -263,9 +273,25 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       const parent = task.parent;
       if (!parent) throw new Error('useAgentPool: each task must have a parent branch');
 
-      const { agent, suffixTokens } = yield* setupAgent(parent, task, ctx);
+      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx);
       agents.push(agent);
       prefillSetup.push([agent.branch, suffixTokens]);
+      tw.write({
+        traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+        type: 'branch:create', branchHandle: agent.id, parentHandle: agent.parentId,
+        position: 0, role: 'agentFork',
+      });
+      tw.write({
+        traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+        type: 'prompt:format', promptText: formattedPrompt,
+        taskContent: task.content,
+        tokenCount: suffixTokens.length,
+        messages: JSON.stringify([
+          { role: 'system', content: task.systemPrompt },
+          { role: 'user', content: task.content },
+        ]),
+        tools: task.tools, role: 'agentSuffix',
+      });
     }
 
     // Batch prefill all agent suffixes — pressure-gated.
@@ -283,11 +309,22 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         prefillSetup.pop();
         const dropped = agents.pop()!;
         dropped.state = 'done';
+        tw.write({
+          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'pool:agentDrop', agentId: dropped.id, reason: 'pressure_init',
+        });
       }
     }
     if (prefillSetup.length > 0) {
       yield* call(() => store.prefill(prefillSetup));
     }
+
+    tw.write({
+      traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+      type: 'pool:open', agentCount: agents.length,
+      taskSuffixTokens: prefillSetup.map(([, t]) => t.length),
+      pressure: { remaining: initPressure.remaining, softLimit: initPressure.softLimit, headroom: initPressure.headroom },
+    });
 
     // Emit spawn events — TUI uses parentAgentId to detect sub-agents
     for (const a of agents) {
@@ -343,6 +380,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
         if (pressure.critical) {
           a.state = 'done';
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'pool:agentDrop', agentId: a.id, reason: 'pressure_critical' });
           yield* events.send({ type: 'agent:done', agentId: a.id });
           continue;
         }
@@ -353,6 +392,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             reasoningFormat: a.fmt.reasoningFormat,
             thinkingForcedOpen: a.fmt.thinkingForcedOpen,
             parser: a.fmt.parser,
+          });
+
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'agent:turn', agentId: a.id, turn: a.turns,
+            rawOutput: a.rawOutput,
+            parsedContent: parsed.content || null,
+            parsedToolCalls: parsed.toolCalls.map(tc => ({ name: tc.name, arguments: tc.arguments })),
           });
 
           const tc = parsed.toolCalls[0];
@@ -376,6 +423,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
           if (overBudget) {
             a.state = 'done';
+            tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+              type: 'pool:agentDrop', agentId: a.id,
+              reason: a.turns >= maxTurns ? 'maxTurns' : 'pressure_softcut' });
             yield* events.send({ type: 'agent:done', agentId: a.id });
             continue;
           }
@@ -429,6 +479,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       if (entries.length > 0) {
         yield* call(() => store.commit(entries));
         steps++;
+        const tp = ctx._storeKvPressure();
+        yield* events.send({ type: 'agent:tick', cellsUsed: tp.cellsUsed, nCtx: tp.nCtx });
       }
 
       // -- Phase 3: SETTLE -- drain settled tool buffer, batch prefill
@@ -455,6 +507,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             if (trace) {
               try { process.stderr.write(`[SETTLE] REJECT ${item.toolName}:${item.prefillTokens.length} > headroom=${headroom}\n`); } catch {}
             }
+            tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+              type: 'pool:agentDrop', agentId: a.id, reason: 'pressure_settle_reject' });
             a.state = 'done';
             yield* events.send({ type: 'agent:done', agentId: a.id });
             continue;
@@ -463,6 +517,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           prefillPairs.push([a.branch, item.prefillTokens]);
           settledAgents.push(a);
           headroom -= item.prefillTokens.length;
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'branch:prefill', branchHandle: a.id,
+            tokenCount: item.prefillTokens.length, role: 'toolResult' });
         }
 
         if (prefillPairs.length > 0) {
@@ -499,6 +556,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
         yield* events.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
 
+        const dispatchTraceId = tw.nextId();
+        const toolT0 = performance.now();
+        tw.write({
+          traceId: dispatchTraceId, parentTraceId: poolScope.traceId, ts: toolT0,
+          type: 'tool:dispatch', agentId: agent.id, tool: tc.name,
+          toolIndex: toolIndexMap.get(tc.name) ?? -1, toolkitSize,
+          args: toolArgs, callId,
+        });
+
         const tool = tools.get(tc.name);
         const toolContext = {
           agentId: agent.id,
@@ -508,19 +574,35 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         };
 
         try {
+          // Set TraceParent so inner pools (research/web_research) link to this dispatch
+          yield* TraceParent.set(dispatchTraceId);
+
           const result: unknown = yield* scoped(function*() {
             return yield* call(() =>
               tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({ error: `Unknown tool: ${tc.name}` })
             );
           });
+
           const resultStr = JSON.stringify(result);
           yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr });
 
           const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
           settledBuffer.push({ agentId: agent.id, prefillTokens, toolName: tc.name });
+
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+            type: 'tool:result', agentId: agent.id, tool: tc.name,
+            result, prefillTokenCount: prefillTokens.length,
+            durationMs: performance.now() - toolT0,
+          });
         } catch (err) {
           agent.state = 'done';
           agent.findings = `Tool error: ${(err as Error).message}`;
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+            type: 'tool:error', agentId: agent.id, tool: tc.name,
+            error: (err as Error).message,
+          });
         }
       }
 
@@ -531,6 +613,19 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     // ── Provide result — suspends, branches stay alive ───────
     // Branch cleanup is handled by each branch's ensure() from setupAgent —
     // when this resource's scope exits, all ensure() callbacks fire.
+    tw.write({
+      traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+      type: 'pool:close',
+      agents: agents.map(a => ({
+        agentId: a.id, tokenCount: a.tokenCount,
+        toolCallCount: a.toolCallCount, findings: a.findings,
+        ppl: a.branch.perplexity,
+      })),
+      totalTokens: agents.reduce((s, a) => s + a.tokenCount, 0),
+      steps, durationMs: performance.now() - poolT0,
+    });
+    poolScope.close();
+
     const result: AgentPoolResult = {
       agents: agents.map(a => ({
           agentId: a.id,

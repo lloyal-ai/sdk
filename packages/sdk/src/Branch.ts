@@ -585,6 +585,12 @@ export class Branch {
     return h === 0 ? null : h;
   }
 
+  /** Position at which this branch was forked from its parent (0 for root branches) */
+  get forkHead(): number {
+    this._ensureNotDisposed();
+    return this._ctx._branchForkHead(this._handle);
+  }
+
   /** Child branch handles */
   get children(): number[] {
     this._ensureNotDisposed();

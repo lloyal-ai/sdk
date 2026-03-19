@@ -27,9 +27,7 @@ import type { SessionContext } from "@lloyal-labs/sdk";
 import { initAgents } from "@lloyal-labs/lloyal-agents";
 import { c, log, setJsonlMode, setVerboseMode, fmtSize, createView } from "./tui";
 import type { WorkflowEvent } from "./tui";
-import { loadResources, chunkResources } from "../shared/resources/files";
-import { createReranker } from "../shared/reranker";
-import { createTools } from "../shared/tools";
+import { loadResources, chunkResources, createReranker, createTools } from "@lloyal-labs/rig";
 import { handleQuery } from "./harness";
 import type { HarnessOpts } from "./harness";
 

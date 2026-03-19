@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/sdk",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Backend-agnostic TypeScript SDK for the lloyal inference platform",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

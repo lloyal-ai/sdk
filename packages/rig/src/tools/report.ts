@@ -2,6 +2,16 @@ import type { Operation } from 'effection';
 import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 
+/**
+ * Terminal tool for submitting research findings
+ *
+ * Used as the `terminalTool` in agent pools -- when an agent calls
+ * this tool, the pool records the findings string and marks the
+ * agent as finished. The tool itself is a no-op; the agent pool
+ * intercepts the call and extracts the `findings` argument.
+ *
+ * @category Rig
+ */
 export class ReportTool extends Tool<{ findings: string }> {
   readonly name = 'report';
   readonly description = 'Submit your final research findings. Call this when you have gathered enough information to answer the question.';

@@ -3,8 +3,10 @@ import type { Operation, Channel } from 'effection';
 import { BranchStore } from '@lloyal-labs/sdk';
 import { Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
-import { Ctx, Store, Events } from './context';
+import { Ctx, Store, Events, Trace } from './context';
 import type { AgentEvent } from './types';
+import type { TraceWriter } from './trace-writer';
+import { NullTraceWriter } from './trace-writer';
 
 /**
  * Handle returned by {@link initAgents} containing all agent resources
@@ -60,6 +62,7 @@ export interface AgentHandle<E = AgentEvent> {
  */
 export function* initAgents<E = AgentEvent>(
   ctx: SessionContext,
+  opts?: { traceWriter?: TraceWriter },
 ): Operation<AgentHandle<E>> {
   const store = new BranchStore(ctx);
   const session = new Session({ ctx, store });
@@ -68,8 +71,11 @@ export function* initAgents<E = AgentEvent>(
   yield* Ctx.set(ctx);
   yield* Store.set(store);
   yield* Events.set(events as unknown as Channel<AgentEvent, void>);
+  yield* Trace.set(opts?.traceWriter ?? new NullTraceWriter());
 
   yield* ensure(function*() {
+    const tw = yield* Trace.expect();
+    tw.flush();
     yield* call(() => session.dispose());
     ctx.dispose();
   });

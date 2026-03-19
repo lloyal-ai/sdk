@@ -1,0 +1,45 @@
+{
+  "name": "@lloyal-labs/rig",
+  "version": "1.2.0",
+  "description": "Retrieval-Interleaved Generation for lloyal-agents",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/sdk.git",
+    "directory": "packages/rig"
+  },
+  "homepage": "https://github.com/lloyal-ai/sdk/tree/main/packages/rig#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/sdk/issues"
+  },
+  "keywords": [
+    "llm",
+    "rig",
+    "retrieval-interleaved-generation",
+    "reranker",
+    "agents",
+    "tools"
+  ],
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -b && mkdir -p dist/sources && cp src/sources/*.md dist/sources/"
+  },
+  "dependencies": {
+    "@lloyal-labs/sdk": "*",
+    "@lloyal-labs/lloyal-agents": "*",
+    "effection": "^4.0.2",
+    "linkedom": "^0.18.12",
+    "@mozilla/readability": "^0.6.0"
+  },
+  "peerDependencies": {
+    "@lloyal-labs/lloyal.node": "^2.0.2"
+  },
+  "files": [
+    "dist/"
+  ]
+}

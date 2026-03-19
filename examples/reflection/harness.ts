@@ -9,7 +9,7 @@ import {
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult, DivergeResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
-import { reportTool } from '../shared/tools';
+import { reportTool } from '@lloyal-labs/rig';
 
 function loadTask(name: string): { system: string; user: string } {
   const raw = fs.readFileSync(path.resolve(__dirname, `tasks/${name}.md`), 'utf8').trim();

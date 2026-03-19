@@ -1407,6 +1407,9 @@ export interface SessionContext {
   _branchParent(handle: number): number;
 
   /** @internal */
+  _branchForkHead(handle: number): number;
+
+  /** @internal */
   _branchChildren(handle: number): number[];
 
   /** @internal */

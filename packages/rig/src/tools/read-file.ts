@@ -3,7 +3,20 @@ import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Resource } from '../resources/types';
 
-/** Subtract covered ranges from [s, e), return uncovered sub-ranges */
+/**
+ * Subtract previously-covered ranges from a target range
+ *
+ * Given a target half-open interval `[s, e)` and an array of
+ * already-covered intervals, returns the sub-ranges of `[s, e)`
+ * that have not yet been covered. Used by {@link ReadFileTool}
+ * to avoid re-reading lines the agent has already seen.
+ *
+ * @param range - Target range `[start, end)` (0-indexed)
+ * @param covered - Array of previously-covered `[start, end)` ranges
+ * @returns Uncovered sub-ranges of the target
+ *
+ * @category Rig
+ */
 export function subtractRanges(
   [s, e]: [number, number],
   covered: [number, number][],
@@ -21,7 +34,18 @@ export function subtractRanges(
   return ranges;
 }
 
-/** Merge overlapping/adjacent ranges */
+/**
+ * Merge overlapping or adjacent half-open ranges into a minimal set
+ *
+ * Sorts the input ranges by start position, then collapses any
+ * overlapping or touching intervals. Used by {@link ReadFileTool}
+ * to maintain a compact record of lines already read per agent.
+ *
+ * @param ranges - Array of `[start, end)` ranges to merge
+ * @returns Merged non-overlapping ranges sorted by start
+ *
+ * @category Rig
+ */
 export function mergeRanges(ranges: [number, number][]): [number, number][] {
   if (ranges.length === 0) return [];
   const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
@@ -37,6 +61,18 @@ export function mergeRanges(ranges: [number, number][]): [number, number][] {
   return merged;
 }
 
+/**
+ * Read content from corpus files by line range
+ *
+ * Tracks which lines each agent has already read and returns only
+ * the unread portions, preventing redundant context inflation.
+ * Line ranges typically come from {@link SearchTool} results.
+ *
+ * Uses {@link subtractRanges} and {@link mergeRanges} internally
+ * to maintain per-agent read tracking keyed by `agentId:filename`.
+ *
+ * @category Rig
+ */
 export class ReadFileTool extends Tool<{ filename: string; startLine?: number; endLine?: number }> {
   readonly name = 'read_file';
   readonly description = 'Read content from a file at specific line ranges. Use startLine/endLine from search results.';

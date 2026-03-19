@@ -6,6 +6,18 @@ import type { Resource, Chunk } from './types';
 interface Section { heading: string; level: number; startLine: number; endLine: number }
 const { parseMarkdown } = loadBinary() as unknown as { parseMarkdown(text: string): Section[] };
 
+/**
+ * Load documents from a directory (or single file) into {@link Resource} objects
+ *
+ * If `dir` is a file path, returns a single-element array. If it is a
+ * directory, reads all `.md` files within it. Exits the process with an
+ * error message if the path does not exist or contains no Markdown files.
+ *
+ * @param dir - Absolute path to a directory of `.md` files or a single file
+ * @returns Array of loaded resources with file name and content
+ *
+ * @category Rig
+ */
 export function loadResources(dir: string): Resource[] {
   if (!fs.existsSync(dir)) {
     process.stdout.write(`Error: corpus not found: ${dir}\n`);
@@ -50,6 +62,18 @@ function chunkByParagraph(res: Resource): Chunk[] {
   return chunks;
 }
 
+/**
+ * Split loaded resources into {@link Chunk} instances for reranking
+ *
+ * Uses native Markdown heading detection (via `parseMarkdown`) to produce
+ * section-level chunks. Falls back to blank-line paragraph splitting for
+ * resources with no headings (or fewer than 10 lines of content).
+ *
+ * @param resources - Resources to chunk (from {@link loadResources})
+ * @returns Flat array of chunks across all resources, ready for {@link Reranker.tokenizeChunks}
+ *
+ * @category Rig
+ */
 export function chunkResources(resources: Resource[]): Chunk[] {
   const out: Chunk[] = [];
   for (const res of resources) {

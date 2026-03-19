@@ -3,4 +3,5 @@ dist/
 package-lock.json
 *.tsbuildinfo
 .DS_Store
-docs/internal
+docs/_internal
+tmp/

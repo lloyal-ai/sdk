@@ -10,26 +10,23 @@
 
 Instead of N independent model calls rebuilding the prompt each step, all agents advance inside one continuous decode process. They fork from shared KV cache state, prefill tool results directly into the attention mechanism, and spawn sub-agents from their own live branches. Context is never serialized, summarized, or reconstructed.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/continuous-context-dark.svg">
-  <img src="assets/continuous-context.svg" alt="Traditional Agents vs Continuous Context Agents — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
-</picture>
-
-## What you get
-
-* **Parallel agents, one GPU** — N branches advance in a single forward pass
-* **Recursive sub-agents** — agents spawn agents from live state, not summaries
-* **Shared KV prefix** — tokenize once, every agent inherits it
-* **Multi-hop tool use** — results land fully before the next action
-* **Tools that spawn agents** — the model decides when to go deeper
-* **Branch comparison** — N attempts from one origin, measure agreement
-* **Fully offline** — no API key, no network
+## Making Edge-AI practical
 
 <p>
   <img src="assets/demo.gif" alt="Deep Research: 3 agents analyzing DOJ v Apple complaint — plan, research with tool calls, verify, synthesize" width="100%">
   <br>
   <em>Qwen3 4B + 0.6B reranker · 3 agents · 14 tool calls · 98s · fully offline on M2 MacBook Pro</em>
 </p>
+
+## What you get
+
+- **Parallel agents, one GPU** — N branches advance in a single forward pass
+- **Recursive sub-agents** — agents spawn agents from live state, not summaries
+- **Shared KV prefix** — tokenize once, every agent inherits it
+- **Multi-hop tool use** — results land fully before the next action
+- **Tools that spawn agents** — the model decides when to go deeper
+- **Branch comparison** — N attempts from one origin, measure agreement
+- **Fully offline** — no API key, no network
 
 ## Install
 
@@ -41,16 +38,16 @@ npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node
 
 ## Use this if
 
-* You want **local tool-calling agents**
-* You need **parallel or recursive task execution**
-* You want **shared-state efficiency** instead of many isolated model calls
-* You care about **inspectable execution** and real runtime control
+- You want **local tool-calling agents**
+- You need **parallel or recursive task execution**
+- You want **shared-state efficiency** instead of many isolated model calls
+- You care about **inspectable execution** and real runtime control
 
 ## Don't use this if
 
-* You just need a chat wrapper
-* You only use hosted APIs
-* You do not need sub-agents, branching, or runtime-level control
+- You just need a chat wrapper
+- You only use hosted APIs
+- You do not need sub-agents, branching, or runtime-level control
 
 ## Quickstart
 
@@ -83,9 +80,9 @@ main(function* () {
 
 The basic mental model is simple:
 
-* create a backend context
-* initialize the runtime
-* generate from a branch
+- create a backend context
+- initialize the runtime
+- generate from a branch
 
 From there, you can fork branches, run agents in parallel, attach tools, and promote winning branches into the session trunk.
 
@@ -107,15 +104,15 @@ The high-level runtime for recursive agents, tools, and orchestration.
 
 Includes:
 
-* `initAgents`
-* `generate`
-* `diverge`
-* `useAgentPool`
-* `runAgents`
-* `withSharedRoot`
-* `createToolkit`
-* `Tool`
-* events and Effection contexts
+- `initAgents`
+- `generate`
+- `diverge`
+- `useAgentPool`
+- `runAgents`
+- `withSharedRoot`
+- `createToolkit`
+- `Tool`
+- events and Effection contexts
 
 ```bash
 npm i @lloyal-labs/lloyal-agents
@@ -127,10 +124,10 @@ The lower-level branching inference primitives the agent runtime is built on.
 
 Includes:
 
-* `Branch`
-* `BranchStore`
-* `Session`
-* `Rerank`
+- `Branch`
+- `BranchStore`
+- `Session`
+- `Rerank`
 
 ```bash
 npm i @lloyal-labs/sdk
@@ -204,20 +201,21 @@ All examples run in-process, on local weights, fully offline.
 ## Shared-root parallelism
 
 ```typescript
-yield* withSharedRoot(
-  { systemPrompt: RESEARCH_PROMPT, tools: toolsJson },
-  function* (root) {
-    return yield* runAgents({
-      tasks: questions.map((q) => ({
-        systemPrompt: RESEARCH_PROMPT,
-        content: q,
-        tools: toolsJson,
-        parent: root,
-      })),
-      tools: toolMap,
-    });
-  },
-);
+yield *
+  withSharedRoot(
+    { systemPrompt: RESEARCH_PROMPT, tools: toolsJson },
+    function* (root) {
+      return yield* runAgents({
+        tasks: questions.map((q) => ({
+          systemPrompt: RESEARCH_PROMPT,
+          content: q,
+          tools: toolsJson,
+          parent: root,
+        })),
+        tools: toolMap,
+      });
+    },
+  );
 ```
 
 Every task forks from the same prefilled root. Everything before the fork is shared KV state. Everything after the fork is independent reasoning.
@@ -229,15 +227,17 @@ Recursion happens at two levels:
 **Harness-level** — the developer writes the pipeline. The deep-research example includes a `reportPass`: if a research agent gets cut off, a reporter sub-agent forks from its live branch with a narrower mandate.
 
 ```typescript
-const reporters = yield* runAgents({
-  tasks: hardCut.map((a) => ({
-    systemPrompt: REPORT_PROMPT,
-    content: "Report your findings.",
-    parent: a.branch, // continues from the agent's live KV state
-  })),
-  tools: new Map([["report", reportTool]]),
-  terminalTool: "report",
-});
+const reporters =
+  yield *
+  runAgents({
+    tasks: hardCut.map((a) => ({
+      systemPrompt: REPORT_PROMPT,
+      content: "Report your findings.",
+      parent: a.branch, // continues from the agent's live KV state
+    })),
+    tools: new Map([["report", reportTool]]),
+    terminalTool: "report",
+  });
 ```
 
 **Model-level** — the model decides when to recurse. A `Tool` subclass whose `execute()` returns an `Operation` can `yield*` into any framework primitive. The deep-research example includes a `ResearchTool` — when an agent calls `research(questions)`, the tool spawns parallel sub-agents via `withSharedRoot` + `useAgentPool`, waits for their findings, and returns them as the tool result. The calling agent's branch stays alive; findings flow back into its live context.
@@ -249,11 +249,13 @@ In both cases, the sub-agent continues from live state, not from a summary paste
 `diverge()` forks multiple branches from a shared frontier, generates independently, and returns the attempts plus the surviving best branch.
 
 ```typescript
-const result = yield* diverge({
-  parent: root,
-  attempts: 3,
-  params: { temperature: 0.7 },
-});
+const result =
+  yield *
+  diverge({
+    parent: root,
+    attempts: 3,
+    params: { temperature: 0.7 },
+  });
 ```
 
 Because those branches share a computational ancestor, agreement and disagreement between them are meaningful signals.
@@ -289,8 +291,8 @@ class SearchTool extends Tool<{ query: string }> {
 
 `createToolkit(tools)` turns a tool set into:
 
-* `toolMap` for runtime dispatch
-* `toolsJson` for prompt formatting
+- `toolMap` for runtime dispatch
+- `toolsJson` for prompt formatting
 
 ## Events
 
@@ -312,16 +314,16 @@ The runtime emits structured events for TUI, logging, and telemetry:
 
 Built on:
 
-* [lloyal.node](https://github.com/lloyal-ai/lloyal.node) — forkable decode state + continuous tree batching over llama.cpp
-* [liblloyal](https://github.com/lloyal-ai/liblloyal) — C++20 inference kernel
+- [lloyal.node](https://github.com/lloyal-ai/lloyal.node) — forkable decode state + continuous tree batching over llama.cpp
+- [liblloyal](https://github.com/lloyal-ai/liblloyal) — C++20 inference kernel
 
 ## Testing
 
 Every pull request must pass:
 
-* **Build**
-* **Typecheck**
-* **GPU integration tests** against real models on NVIDIA L4 hardware
+- **Build**
+- **Typecheck**
+- **GPU integration tests** against real models on NVIDIA L4 hardware
 
 The GPU gate runs cross-repo: SDK PRs trigger [lloyal.node](https://github.com/lloyal-ai/lloyal.node)'s GPU workflow, which builds the PR packages against the native runtime and runs the full agent integration suite before merge.
 

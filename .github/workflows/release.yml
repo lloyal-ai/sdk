@@ -40,20 +40,18 @@ jobs:
       - name: Typecheck
         run: npx tsc -b packages/sdk packages/agents packages/rig
 
-      - name: Publish @lloyal-labs/sdk
+      - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
-        run: npm publish --workspace packages/sdk --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @lloyal-labs/lloyal-agents
-        if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
-        run: npm publish --workspace packages/agents --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @lloyal-labs/rig
-        if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
-        run: npm publish --workspace packages/rig --access public --provenance
+        run: |
+          for pkg in packages/sdk packages/agents packages/rig; do
+            name=$(node -p "require('./$pkg/package.json').name")
+            version=$(node -p "require('./$pkg/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "⏭ $name@$version already published, skipping"
+            else
+              echo "Publishing $name@$version..."
+              npm publish --workspace "$pkg" --access public --provenance
+            fi
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -28,11 +28,12 @@ import { initAgents, JsonlTraceWriter } from "@lloyal-labs/lloyal-agents";
 import type { Source } from "@lloyal-labs/lloyal-agents";
 import { c, log, setJsonlMode, setVerboseMode, fmtSize, createView } from "./tui";
 import type { WorkflowEvent } from "./tui";
-import {
-  createReranker, WebSource, CorpusSource, TavilyProvider,
-  loadResources, chunkResources,
-} from "@lloyal-labs/rig";
+import { TavilyProvider } from "@lloyal-labs/rig";
 import type { SourceContext, Chunk } from "@lloyal-labs/rig";
+import {
+  createReranker, WebSource, CorpusSource,
+  loadResources, chunkResources,
+} from "@lloyal-labs/rig/node";
 import { handleQuery } from "./harness";
 import type { WorkflowOpts } from "./harness";
 

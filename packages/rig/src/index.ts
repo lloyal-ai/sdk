@@ -1,19 +1,20 @@
 /**
  * Rig — research infrastructure for the lloyal agent pipeline
  *
- * Provides source implementations ({@link WebSource}, {@link CorpusSource}),
- * resource loading/chunking, reranking, and the tool library used by
- * deep-research harnesses. Sources are composed via the abstract
- * {@link Source} base class from `@lloyal-labs/lloyal-agents`.
+ * The default export is RN-safe: no node:fs, no linkedom, no lloyal.node.
+ * Platform-specific exports are available via sub-path imports:
+ *
+ * - `@lloyal-labs/rig/node` — Node.js-specific: createReranker, WebSource,
+ *   CorpusSource, loadResources, chunkResources, FetchPageTool
  *
  * @packageDocumentation
  * @category Rig
  */
 
-// Tools
+// Tools (all pure TS + Effection — RN-safe)
 export {
   createTools, reportTool,
-  ResearchTool, WebSearchTool, TavilyProvider, FetchPageTool,
+  ResearchTool, WebSearchTool, TavilyProvider,
   WebResearchTool, PlanTool,
 } from './tools';
 export type {
@@ -23,13 +24,12 @@ export type {
   Reranker, ScoredChunk, ScoredResult,
 } from './tools';
 
-// Sources
-export { WebSource, CorpusSource } from './sources';
-export type { SourceContext } from './sources';
+// Chunking (pure TS — RN-safe)
+export { chunkFetchedPages } from './sources/chunking';
+export type { FetchedPage } from './sources/chunking';
 
-// Resources
-export { loadResources, chunkResources } from './resources';
-export type { Resource, Chunk } from './resources';
+// Source types (pure TS — RN-safe)
+export type { SourceContext } from './sources/types';
 
-// Reranker
-export { createReranker } from './reranker';
+// Resource types (pure TS — RN-safe)
+export type { Resource, Chunk } from './resources/types';

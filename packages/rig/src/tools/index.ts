@@ -11,7 +11,6 @@ export { ResearchTool } from './research';
 export type { ResearchToolOpts } from './research';
 export { WebSearchTool, TavilyProvider } from './web-search';
 export type { SearchProvider, SearchResult, Reranker, ScoredChunk, ScoredResult } from './types';
-export { FetchPageTool } from './fetch-page';
 export { WebResearchTool } from './web-research';
 export type { WebResearchToolOpts } from './web-research';
 export { PlanTool } from './plan';

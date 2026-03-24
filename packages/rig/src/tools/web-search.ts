@@ -18,10 +18,13 @@ export type { SearchProvider, SearchResult };
  * @category Rig
  */
 export class TavilyProvider implements SearchProvider {
+  readonly returnsFullContentMarkdown = false;
   private _apiKey: string;
+  private _snippetMaxLength: number;
 
-  constructor(apiKey?: string) {
+  constructor(apiKey?: string, opts?: { snippetMaxLength?: number }) {
     this._apiKey = apiKey || process.env.TAVILY_API_KEY || '';
+    this._snippetMaxLength = opts?.snippetMaxLength ?? 500;
   }
 
   async search(query: string, maxResults: number): Promise<SearchResult[]> {
@@ -36,10 +39,13 @@ export class TavilyProvider implements SearchProvider {
     });
     if (!res.ok) throw new Error(`Tavily ${res.status}: ${await res.text()}`);
     const data = await res.json() as { results: { title: string; url: string; content: string }[] };
+    const max = this._snippetMaxLength;
     return data.results.map(r => ({
       title: r.title,
       url: r.url,
-      snippet: r.content,
+      snippet: r.content.length > max
+        ? r.content.slice(0, max) + ' [\u2026]'
+        : r.content,
     }));
   }
 }

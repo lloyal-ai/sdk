@@ -117,6 +117,11 @@ export type TraceEvent =
         | 'maxTurns'
         | 'stop_token';
     }
+  | TraceEventBase & {
+      type: 'pool:agentNudge';
+      agentId: number;
+      reason: 'pressure_softcut' | 'pressure_settle_reject';
+    }
 
   // ── Agent per-turn output ────────────────────
   | TraceEventBase & {
@@ -159,13 +164,22 @@ export type TraceEvent =
     }
 
   // ── Reranker events (rig package) ───────────
-  | TraceEventBase & { type: 'rerank:start'; query: string; chunkCount: number }
+  | TraceEventBase & {
+      type: 'rerank:start';
+      query: string;
+      chunkCount: number;
+      tool?: string;
+      url?: string;
+      chunks?: Array<{ heading: string; textLength: number; startLine: number }>;
+    }
   | TraceEventBase & {
       type: 'rerank:end';
-      topResults: Array<{ file: string; heading: string; score: number }>;
+      topResults: Array<{ file: string; heading: string; score: number; textPreview?: string }>;
       selectedPassageCount: number;
       totalChars: number;
       durationMs: number;
+      tool?: string;
+      url?: string;
     }
 
   // ── Source events (rig package) ─────────────

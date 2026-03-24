@@ -72,6 +72,10 @@ export interface SearchResult {
   url: string;
   /** Excerpt or snippet from the page content */
   snippet: string;
+  /** Full page content — markdown when provider supports it, plain text otherwise */
+  rawContent?: string;
+  /** Provider-side relevance score (higher = more relevant) */
+  score?: number;
 }
 
 /**
@@ -87,4 +91,6 @@ export interface SearchResult {
 export interface SearchProvider {
   /** Execute a web search and return ranked results */
   search(query: string, maxResults: number): Promise<SearchResult[]>;
+  /** When true, rawContent on results is markdown with heading structure suitable for parseMarkdown chunking */
+  readonly returnsFullContentMarkdown: boolean;
 }

@@ -1,20 +1,21 @@
 /**
  * Rig — research infrastructure for the lloyal agent pipeline
  *
- * The default export is RN-safe: no node:fs, no linkedom, no lloyal.node.
- * Platform-specific exports are available via sub-path imports:
+ * The default export is platform-agnostic. linkedom + @mozilla/readability
+ * are pure JS and work in both Node.js and React Native (Hermes).
  *
- * - `@lloyal-labs/rig/node` — Node.js-specific: createReranker, WebSource,
- *   CorpusSource, loadResources, chunkResources, FetchPageTool
+ * Node-specific exports (createReranker, WebSource, CorpusSource,
+ * loadResources, chunkResources) require node:fs and are available
+ * via `@lloyal-labs/rig/node`.
  *
  * @packageDocumentation
  * @category Rig
  */
 
-// Tools (all pure TS + Effection — RN-safe)
+// Tools (pure TS + Effection + linkedom — platform-agnostic)
 export {
   createTools, reportTool,
-  ResearchTool, WebSearchTool, TavilyProvider,
+  ResearchTool, WebSearchTool, TavilyProvider, FetchPageTool,
   WebResearchTool, PlanTool,
 } from './tools';
 export type {
@@ -24,8 +25,8 @@ export type {
   Reranker, ScoredChunk, ScoredResult,
 } from './tools';
 
-// Chunking (pure TS — RN-safe)
-export { chunkFetchedPages } from './sources/chunking';
+// Chunking (platform-agnostic — linkedom is pure JS)
+export { chunkFetchedPages, chunkHtml } from './sources/chunking';
 export type { FetchedPage } from './sources/chunking';
 
 // Source types (pure TS — RN-safe)

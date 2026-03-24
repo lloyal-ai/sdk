@@ -18,6 +18,12 @@ export interface SharedRootOptions {
   tools?: string;
   /** Sampling parameters for the root branch */
   params?: SamplingParams;
+  /**
+   * Set ScratchpadParent context so tools can fork from the shared root
+   * for scratchpad extraction (fork-attend-extract-prune pattern).
+   * @default false
+   */
+  enableScratchpad?: boolean;
 }
 
 /**
@@ -126,7 +132,7 @@ export function* withSharedRoot<T>(
   });
 
   try {
-    yield* ScratchpadParent.set(root);
+    if (opts.enableScratchpad) yield* ScratchpadParent.set(root);
     return yield* body(root, sharedTokens.length);
   } finally {
     if (!root.disposed) {

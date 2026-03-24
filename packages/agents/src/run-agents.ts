@@ -40,6 +40,6 @@ import type { AgentPoolOptions, AgentPoolResult } from './types';
  */
 export function* runAgents(opts: AgentPoolOptions): Operation<AgentPoolResult> {
   return yield* scoped(function*() {
-    return yield* useAgentPool(opts);
+    return yield* useAgentPool({ pruneOnReport: true, ...opts });
   });
 }

@@ -206,6 +206,11 @@ export interface AgentPoolOptions {
    *  lower thresholds than research pools since they complete in a single
    *  terminal tool call. See {@link PressureThresholds} for tuning guidance. */
   pressure?: PressureThresholds;
+  /** Prune agent branches immediately when they call the terminal tool.
+   *  Frees KV for remaining agents mid-pool. Only agents that reported
+   *  findings are pruned — hard-cut agents keep their branches for
+   *  reportPass extraction. @default false */
+  pruneOnReport?: boolean;
 }
 
 /**

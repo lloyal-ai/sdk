@@ -6,54 +6,59 @@ import { traceScope } from './trace-scope';
 import type { GenerateOptions, GenerateResult } from './types';
 
 /**
- * Single-branch grammar-constrained generation as an Effection operation
+ * Prepare a branch for generation — create/fork, set grammar, prefill prompt
  *
- * Creates a fresh branch (or forks from `opts.parent`), prefills the prompt,
- * generates to EOG, and prunes the branch. Uses {@link Branch}'s async
- * iterator — single-branch generation doesn't need batched commit.
+ * Returns the prepared Branch ready for token production. The caller owns the
+ * branch and decides how to consume it:
  *
- * When `parent` is provided, the prompt is prefilled as a delta (with turn
- * separator) on a fork of the parent. This is the attention scratchpad
- * pattern: the fork sees the parent's context, attends to the prompt
- * content, generates a result, and is pruned — zero net KV cost.
+ * - **Manual loop** — call `produceSync()` / `commit()` for per-token control,
+ *   streaming UI updates, or integration into a batched tick loop
+ * - **Async iterator** — `for await (const { text } of branch)` for convenience
+ * - **Pass to `generate()`** — which calls `prepare()` internally
  *
- * The branch is always cleaned up via try/finally, even on error or
- * scope cancellation.
+ * The caller is responsible for pruning the branch when done.
  *
- * @param opts - Generation options (prompt, grammar, params, parse, parent)
- * @returns Generated text, token count, and optionally parsed result
+ * When `parent` is provided, forks from it and prefills the prompt as a delta
+ * (with turn separator). Otherwise creates a fresh root branch.
  *
- * @example Grammar-constrained JSON generation
+ * @param opts - Generation options (prompt, grammar, params, parent)
+ * @returns Prepared Branch with prompt prefilled, ready for produce/commit
+ *
+ * @example Stream tokens to UI
  * ```typescript
- * const plan = yield* generate({
- *   prompt: planPrompt,
- *   grammar: planGrammar,
- *   params: { temperature: 0.3 },
- *   parse: output => JSON.parse(output),
- * });
+ * const branch = yield* prepare({ prompt, grammar });
+ * try {
+ *   let output = '';
+ *   while (true) {
+ *     const { token, text, isStop } = branch.produceSync();
+ *     if (isStop) break;
+ *     yield* call(() => branch.commit(token));
+ *     output += text;
+ *     updateUI(text);  // per-token streaming
+ *   }
+ * } finally {
+ *   if (!branch.disposed) branch.pruneSync();
+ * }
  * ```
  *
- * @example Attention scratchpad — fork, attend, extract, prune
+ * @example Batch multiple prepared branches
  * ```typescript
- * const extracted = yield* generate({
- *   prompt: contentToAttend,
- *   grammar: extractionGrammar,
- *   parse: output => JSON.parse(output),
- *   parent: agentBranch,
- * });
- * // Fork is pruned — parent's KV unchanged
+ * const branches = [];
+ * for (const task of tasks) {
+ *   branches.push(yield* prepare({ prompt: task.prompt, grammar, parent: root }));
+ * }
+ * // Caller batches via BranchStore.commit() for continuous tree batching
  * ```
  *
  * @category Agents
  */
-export function* generate<T = unknown>(opts: GenerateOptions): Operation<GenerateResult<T>> {
+export function* prepare(opts: GenerateOptions): Operation<Branch> {
   const ctx = yield* Ctx.expect();
   const tw = yield* Trace.expect();
   const samplerParams = opts.params ?? {};
   const hasParent = !!opts.parent;
-  const role = hasParent ? 'scratchpad' : 'root';
 
-  const scope = traceScope(tw, null, 'generate', { role, hasGrammar: !!opts.grammar });
+  const scope = traceScope(tw, null, 'prepare', { role: hasParent ? 'scratchpad' : 'root', hasGrammar: !!opts.grammar });
 
   let branch: Branch;
   if (opts.parent) {
@@ -69,38 +74,73 @@ export function* generate<T = unknown>(opts: GenerateOptions): Operation<Generat
     position: 0, role: hasParent ? 'scratchpad' : 'root',
   });
 
+  let prefillCount: number;
+  if (opts.parent) {
+    if (opts.grammar) branch.setGrammar(opts.grammar);
+    const sep = ctx.getTurnSeparator();
+    const delta: number[] = yield* call(() => ctx.tokenize(opts.prompt, false));
+    const tokens = [...sep, ...delta];
+    prefillCount = tokens.length;
+    yield* call(() => branch.prefill(tokens));
+  } else {
+    const tokens = ctx.tokenizeSync(opts.prompt);
+    prefillCount = tokens.length;
+    yield* call(() => branch.prefill(tokens));
+  }
+
+  tw.write({
+    traceId: tw.nextId(), parentTraceId: scope.traceId, ts: performance.now(),
+    type: 'prompt:format', promptText: opts.prompt, tokenCount: prefillCount,
+    messages: '', role: 'generate', grammar: opts.grammar,
+  });
+  tw.write({
+    traceId: tw.nextId(), parentTraceId: scope.traceId, ts: performance.now(),
+    type: 'branch:prefill', branchHandle: branch.handle, tokenCount: prefillCount,
+    role: hasParent ? 'scratchpad' : 'sharedPrefix',
+  });
+
+  scope.close();
+  return branch;
+}
+
+/**
+ * Single-branch grammar-constrained generation as an Effection operation
+ *
+ * Convenience wrapper over {@link prepare} — creates/forks a branch, prefills
+ * the prompt, generates to EOG, parses the output, and prunes the branch.
+ *
+ * For per-token streaming or batched generation, use {@link prepare} directly
+ * and run your own produce/commit loop.
+ *
+ * @param opts - Generation options (prompt, grammar, params, parse, parent)
+ * @returns Generated text, token count, and optionally parsed result
+ *
+ * @example Grammar-constrained JSON generation
+ * ```typescript
+ * const plan = yield* generate({
+ *   prompt: planPrompt,
+ *   grammar: planGrammar,
+ *   params: { temperature: 0.3 },
+ *   parse: output => JSON.parse(output),
+ * });
+ * ```
+ *
+ * @category Agents
+ */
+export function* generate<T = unknown>(opts: GenerateOptions): Operation<GenerateResult<T>> {
+  const tw = yield* Trace.expect();
+  const scope = traceScope(tw, null, 'generate', { hasGrammar: !!opts.grammar, hasParent: !!opts.parent });
+
+  const branch = yield* prepare(opts);
+
+  tw.write({
+    traceId: tw.nextId(), parentTraceId: scope.traceId, ts: performance.now(),
+    type: 'generate:start', branchHandle: branch.handle,
+    hasGrammar: !!opts.grammar, hasParent: !!opts.parent,
+    role: opts.parent ? 'scratchpad' : 'root',
+  });
+
   try {
-    let prefillCount: number;
-    if (opts.parent) {
-      if (opts.grammar) branch.setGrammar(opts.grammar);
-      const sep = ctx.getTurnSeparator();
-      const delta: number[] = yield* call(() => ctx.tokenize(opts.prompt, false));
-      const tokens = [...sep, ...delta];
-      prefillCount = tokens.length;
-      yield* call(() => branch.prefill(tokens));
-    } else {
-      const tokens = ctx.tokenizeSync(opts.prompt);
-      prefillCount = tokens.length;
-      yield* call(() => branch.prefill(tokens));
-    }
-
-    tw.write({
-      traceId: tw.nextId(), parentTraceId: scope.traceId, ts: performance.now(),
-      type: 'prompt:format', promptText: opts.prompt, tokenCount: prefillCount,
-      messages: '', role: 'generate', grammar: opts.grammar,
-    });
-    tw.write({
-      traceId: tw.nextId(), parentTraceId: scope.traceId, ts: performance.now(),
-      type: 'branch:prefill', branchHandle: branch.handle, tokenCount: prefillCount,
-      role: hasParent ? 'scratchpad' : 'sharedPrefix',
-    });
-    tw.write({
-      traceId: tw.nextId(), parentTraceId: scope.traceId, ts: performance.now(),
-      type: 'generate:start', branchHandle: branch.handle,
-      hasGrammar: !!opts.grammar, hasParent, role,
-    });
-
-    // Consume async iterator inside call() — generators can't use for-await
     const { output, tokenCount } = yield* call(async () => {
       let output = '';
       let tokenCount = 0;

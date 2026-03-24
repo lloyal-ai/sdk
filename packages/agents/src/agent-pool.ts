@@ -42,12 +42,15 @@ interface AgentInternal {
   turns: number;
   findings: string | null;
   traceBuffer: TraceToken[];
+  /** Set after injecting a "report now" nudge — second offense kills. */
+  nudged: boolean;
 }
 
 interface SettledTool {
   agentId: number;
   prefillTokens: number[];
   toolName: string;
+  callId: string;
 }
 
 /**
@@ -171,6 +174,7 @@ function* setupAgent(
       turns: 0,
       findings: null,
       traceBuffer: [],
+      nudged: false,
     },
     suffixTokens,
     formattedPrompt: fmt.prompt,
@@ -240,7 +244,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       }
     });
     const tw = yield* Trace.expect();
-    const { tasks, tools, maxTurns = 100, terminalTool, trace = false, pressure: pressureOpts } = opts;
+    const { tasks, tools, maxTurns = 100, terminalTool, trace = false, pressure: pressureOpts, pruneOnReport = false } = opts;
 
     // Tool index map for trace — position in toolkit array
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
@@ -422,6 +426,21 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             && (!terminalTool || tc.name !== terminalTool);
 
           if (overBudget) {
+            // Nudge: inject a fake tool error telling the agent to report.
+            // On second offense (already nudged), kill outright.
+            if (terminalTool && !a.nudged && a.toolCallCount > 0 && !pressure.critical) {
+              a.nudged = true;
+              a.turns++;
+              a.state = 'awaiting_tool';
+              const callId = tc.id || `call_${a.toolCallCount}`;
+              const nudgeMsg = JSON.stringify({ error: 'KV memory pressure — you cannot call more tools. Report your findings now.' });
+              const prefillTokens = buildToolResultDelta(ctx, nudgeMsg, callId);
+              settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc.name, callId });
+              a.rawOutput = '';
+              tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+                type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_softcut' });
+              continue;
+            }
             a.state = 'done';
             tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
               type: 'pool:agentDrop', agentId: a.id,
@@ -438,7 +457,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
               a.turns++;
               a.state = 'awaiting_tool';
               const prefillTokens = buildToolResultDelta(ctx, JSON.stringify({ error: errorMsg }), callId);
-              settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc.name });
+              settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc.name, callId });
               a.rawOutput = '';
               continue;
             }
@@ -449,6 +468,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: tc.name, args: tc.arguments });
             yield* events.send({ type: 'agent:report', agentId: a.id, findings: a.findings! });
             yield* events.send({ type: 'agent:done', agentId: a.id });
+            // Free KV immediately — reported agents don't need their branches
+            // (reportPass only forks from agents that DIDN'T report)
+            if (pruneOnReport && !a.branch.disposed) {
+              a.branch.pruneSync();
+            }
             continue;
           }
 
@@ -506,6 +530,21 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           if (item.prefillTokens.length > headroom) {
             if (trace) {
               try { process.stderr.write(`[SETTLE] REJECT ${item.toolName}:${item.prefillTokens.length} > headroom=${headroom}\n`); } catch {}
+            }
+            // Nudge: replace oversized result with a small "report now" message.
+            // On second offense (already nudged), kill outright.
+            if (terminalTool && !a.nudged && a.toolCallCount > 0) {
+              const nudgeMsg = JSON.stringify({ error: 'Tool result too large for remaining KV. Report your findings now.' });
+              const nudgeTokens = buildToolResultDelta(ctx, nudgeMsg, item.callId);
+              if (nudgeTokens.length <= headroom) {
+                a.nudged = true;
+                prefillPairs.push([a.branch, nudgeTokens]);
+                settledAgents.push(a);
+                headroom -= nudgeTokens.length;
+                tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+                  type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_settle_reject' });
+                continue;
+              }
             }
             tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
               type: 'pool:agentDrop', agentId: a.id, reason: 'pressure_settle_reject' });
@@ -587,7 +626,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr });
 
           const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
-          settledBuffer.push({ agentId: agent.id, prefillTokens, toolName: tc.name });
+          settledBuffer.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId });
 
           tw.write({
             traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
@@ -619,7 +658,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       agents: agents.map(a => ({
         agentId: a.id, tokenCount: a.tokenCount,
         toolCallCount: a.toolCallCount, findings: a.findings,
-        ppl: a.branch.perplexity,
+        ppl: a.branch.disposed ? 0 : a.branch.perplexity,
       })),
       totalTokens: agents.reduce((s, a) => s + a.tokenCount, 0),
       steps, durationMs: performance.now() - poolT0,
@@ -634,8 +673,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           findings: a.findings,
           toolCallCount: a.toolCallCount,
           tokenCount: a.tokenCount,
-          ppl: a.branch.perplexity,
-          samplingPpl: a.branch.samplingPerplexity,
+          ppl: a.branch.disposed ? 0 : a.branch.perplexity,
+          samplingPpl: a.branch.disposed ? 0 : a.branch.samplingPerplexity,
           trace: trace ? a.traceBuffer : undefined,
         })),
       totalTokens: agents.reduce((s, a) => s + a.tokenCount, 0),

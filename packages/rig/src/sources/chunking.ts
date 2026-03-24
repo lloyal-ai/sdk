@@ -1,8 +1,11 @@
 /**
- * Pure-TS chunking utilities for web page content
+ * Chunking utilities for web page content
  *
- * Extracted from web.ts so they can be imported without pulling in
- * node:fs, linkedom, or @mozilla/readability.
+ * Two strategies:
+ * - {@link chunkHtml} — structural splitting on HTML headings/paragraphs
+ *   via linkedom. Used by FetchPageTool for per-tool reranking.
+ * - {@link chunkFetchedPages} — plain-text `\n\n` splitting for buffered
+ *   content. Used for post-research passage reranking.
  *
  * @packageDocumentation
  * @category Rig
@@ -73,5 +76,77 @@ export function chunkFetchedPages(pages: FetchedPage[]): Chunk[] {
       });
     }
   }
+  return chunks;
+}
+
+const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+const TEXT_TAGS = new Set(['P', 'LI', 'BLOCKQUOTE', 'PRE', 'TD', 'TH', 'FIGCAPTION', 'DT', 'DD']);
+
+/**
+ * Split article HTML into heading-delimited section chunks via linkedom
+ *
+ * Same structural strategy as `parseMarkdown` (md4c) uses for corpus files:
+ * headings are section boundaries, content between headings is accumulated
+ * into a single chunk with the heading as metadata.
+ *
+ * Falls back to `<p>`-level chunks for pages without headings.
+ *
+ * @param html - Article HTML from Readability's `article.content`
+ * @param url - Page URL (used as chunk `resource`)
+ * @param title - Page title (used as default heading)
+ * @returns Array of section-level chunks
+ *
+ * @category Rig
+ */
+export async function chunkHtml(html: string, url: string, title: string): Promise<Chunk[]> {
+  const { parseHTML } = await import('linkedom');
+  const { document } = parseHTML(html);
+
+  const chunks: Chunk[] = [];
+  let currentHeading = title;
+  let currentText = '';
+  let chunkIndex = 0;
+
+  function flushSection() {
+    const text = currentText.trim();
+    if (text.length > 40) {
+      chunks.push({
+        resource: url,
+        heading: currentHeading || title || url,
+        text,
+        tokens: [],
+        startLine: chunkIndex + 1,
+        endLine: chunkIndex + 1,
+      });
+      chunkIndex++;
+    }
+    currentText = '';
+  }
+
+  // Walk all elements in the article DOM
+  const elements = document.querySelectorAll('*');
+  for (const el of elements) {
+    const tag = el.tagName;
+
+    if (HEADING_TAGS.has(tag)) {
+      // Close current section, start new one with this heading
+      flushSection();
+      currentHeading = el.textContent?.trim() || title;
+    } else if (TEXT_TAGS.has(tag)) {
+      // Accumulate text content — skip if this element is nested inside
+      // another TEXT_TAG (avoid double-counting nested <li> etc.)
+      const parentTag = el.parentElement?.tagName;
+      if (parentTag && TEXT_TAGS.has(parentTag)) continue;
+
+      const text = el.textContent?.trim();
+      if (text) {
+        currentText += (currentText ? '\n\n' : '') + text;
+      }
+    }
+  }
+
+  // Flush final section
+  flushSection();
+
   return chunks;
 }

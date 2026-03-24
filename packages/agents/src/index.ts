@@ -2,7 +2,7 @@ export { Ctx, Store, Events, Trace, TraceParent, ScratchpadParent } from './cont
 export { Tool } from './Tool';
 export { Source } from './source';
 export { buildUserDelta, buildToolResultDelta } from '@lloyal-labs/sdk';
-export { generate } from './generate';
+export { prepare, generate } from './generate';
 export { diverge } from './diverge';
 export { useAgentPool, ContextPressure } from './agent-pool';
 export { runAgents } from './run-agents';

@@ -10,6 +10,7 @@ import { ReportTool } from './report';
 export { ResearchTool } from './research';
 export type { ResearchToolOpts } from './research';
 export { WebSearchTool, TavilyProvider } from './web-search';
+export { FetchPageTool } from './fetch-page';
 export type { SearchProvider, SearchResult, Reranker, ScoredChunk, ScoredResult } from './types';
 export { WebResearchTool } from './web-research';
 export type { WebResearchToolOpts } from './web-research';

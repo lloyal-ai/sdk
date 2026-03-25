@@ -66,14 +66,18 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
 
     // Step 1: Fetch + readability (async)
     const fetched = yield* call(async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
       let res: Response;
       try {
         res = await fetch(url, {
           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; lloyal-agents/1.0)' },
-          signal: AbortSignal.timeout(10_000),
+          signal: controller.signal,
         });
       } catch (err) {
         return { error: `Fetch failed: ${(err as Error).message}`, url } as const;
+      } finally {
+        clearTimeout(timer);
       }
 
       if (!res.ok) return { error: `HTTP ${res.status} ${res.statusText}`, url } as const;

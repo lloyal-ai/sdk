@@ -375,7 +375,7 @@ export type AgentEvent =
   | { type: 'agent:spawn'; agentId: number; parentAgentId: number }
   | { type: 'agent:produce'; agentId: number; text: string; tokenCount: number; entropy?: number; surprisal?: number }
   | { type: 'agent:tool_call'; agentId: number; tool: string; args: string }
-  | { type: 'agent:tool_result'; agentId: number; tool: string; result: string }
+  | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }
   | { type: 'agent:tool_progress'; agentId: number; tool: string; filled: number; total: number }
   | { type: 'agent:report'; agentId: number; findings: string }
   | { type: 'agent:done'; agentId: number }

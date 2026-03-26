@@ -622,8 +622,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             );
           });
 
+          // Inject context availability into tool result so agent can make pressure-aware decisions
+          const postToolPressure = ctx._storeKvPressure();
+          const contextAvailablePercent = postToolPressure.nCtx > 0
+            ? Math.max(0, Math.round((postToolPressure.remaining / postToolPressure.nCtx) * 100))
+            : 100;
+          if (result && typeof result === 'object' && !Array.isArray(result)) {
+            (result as Record<string, unknown>)._contextAvailablePercent = contextAvailablePercent;
+          }
+
           const resultStr = JSON.stringify(result);
-          yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr });
+          yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr, contextAvailablePercent });
 
           const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
           settledBuffer.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId });

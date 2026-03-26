@@ -125,6 +125,7 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
           })),
           tools: toolkit.toolMap,
           terminalTool: "report",
+          pruneOnReport: true,
           maxTurns,
           trace,
           pressure,

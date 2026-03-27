@@ -607,16 +607,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           if (result && typeof result === 'object' && !Array.isArray(result)) {
             (result as Record<string, unknown>)._contextAvailablePercent = contextAvailablePercent;
 
-            // Collect inner findings from recursive tool results
+            // Collect nested results from recursive tool returns
             const resultObj = result as Record<string, unknown>;
-            if (Array.isArray(resultObj.findings)) {
-              agent.addChildFindings(
-                (resultObj.findings as unknown[]).filter((f): f is string => typeof f === 'string')
+            if (Array.isArray(resultObj.results)) {
+              agent.addNestedResults(
+                (resultObj.results as unknown[]).filter((f): f is string => typeof f === 'string')
               );
             }
-            if (Array.isArray(resultObj.supportingFindings)) {
-              agent.addChildFindings(
-                (resultObj.supportingFindings as unknown[]).filter((f): f is string => typeof f === 'string')
+            if (Array.isArray(resultObj.nestedResults)) {
+              agent.addNestedResults(
+                (resultObj.nestedResults as unknown[]).filter((f): f is string => typeof f === 'string')
               );
             }
           }
@@ -732,7 +732,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           ppl: a.branch.disposed ? 0 : a.branch.perplexity,
           samplingPpl: a.branch.disposed ? 0 : a.branch.samplingPerplexity,
           trace: trace ? a.traceBuffer : undefined,
-          childFindings: [...a.childFindings],
+          nestedResults: [...a.nestedResults],
         })),
       totalTokens: agents.reduce((s, a) => s + a.tokenCount, 0),
       totalToolCalls,

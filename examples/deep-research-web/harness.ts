@@ -12,6 +12,7 @@ import {
   withSharedRoot,
   createToolkit,
   renderTemplate,
+  spawnAgents,
 } from "@lloyal-labs/lloyal-agents";
 import type { Source } from "@lloyal-labs/lloyal-agents";
 import type { AgentPoolResult } from "@lloyal-labs/lloyal-agents";
@@ -43,6 +44,8 @@ function loadEtaTemplate(name: string): string {
 const PLAN = loadTask("plan");
 const ROOT = loadTask("root");
 const BRIDGE = loadTask("bridge");
+const WEB_RESEARCH = loadTask("web-research");
+const CORPUS_RESEARCH = loadTask("corpus-research");
 const SYNTHESIZE_TEMPLATE = loadEtaTemplate("synthesize");
 const VERIFY = loadTask("verify");
 const EVAL = loadTask("eval");
@@ -101,11 +104,18 @@ function* rerankChunks(
   return passages.join("\n\n---\n\n");
 }
 
+// ── Source prompt mapping ─────────────────────────────────────
+
+const SOURCE_PROMPTS: Record<string, { system: string; user: string }> = {
+  web: WEB_RESEARCH,
+  corpus: CORPUS_RESEARCH,
+};
+
 // ── Source research result ────────────────────────────────────
 
 interface SourceResearchResult {
-  findings: string[];
-  supportingFindings?: string[];
+  results: string[];
+  nestedResults?: string[];
   agentCount: number;
   totalTokens: number;
   totalToolCalls: number;
@@ -143,25 +153,44 @@ function* research(
     { systemPrompt: ROOT.system },
     function* (root) {
       for (const source of opts.sources)
-        yield* source.bind({
-          reranker: opts.reranker,
-          reporterPrompt: REPORT,
-          reportTool,
-          maxTurns: effectiveMaxTurns,
-          trace: opts.trace,
-        });
+        yield* source.bind({ reranker: opts.reranker });
 
       let activeQuestions = questions;
 
       for (let i = 0; i < opts.sources.length; i++) {
         const source = opts.sources[i];
-        const result = (yield* source.researchTool.execute({
-          questions: activeQuestions,
-        })) as SourceResearchResult;
+        const sourcePrompt = SOURCE_PROMPTS[source.name] ?? ROOT;
+        const pool = yield* spawnAgents({
+          tools: source.tools,
+          systemPrompt: sourcePrompt.system,
+          tasks: activeQuestions,
+          terminalTool: { name: "report", tool: reportTool },
+          maxTurns: effectiveMaxTurns,
+          recursive: {
+            name: source.name === "web" ? "web_research" : "research",
+            description: "Spawn parallel sub-agents to investigate sub-questions.",
+            argsSchema: {
+              type: "object",
+              properties: { questions: { type: "array", items: { type: "string" }, description: "Sub-questions to investigate in parallel" } },
+              required: ["questions"],
+            },
+            extractTasks: (args) => args.questions as string[],
+          },
+          reportPrompt: REPORT,
+          pruneOnReport: true,
+          trace: opts.trace,
+        });
+        const result: SourceResearchResult = {
+          results: pool.agents.map((a) => a.findings).filter(Boolean) as string[],
+          nestedResults: pool.agents.flatMap((a) => a.nestedResults ?? []),
+          agentCount: pool.agents.length,
+          totalTokens: pool.totalTokens,
+          totalToolCalls: pool.totalToolCalls,
+        };
         totalTokens += result.totalTokens;
         totalToolCalls += result.totalToolCalls;
 
-        const sectionFindings = result.findings
+        const sectionFindings = result.results
           .filter(Boolean)
           .map((f, j) => `### Agent ${j + 1}\n${f}`)
           .join("\n\n");
@@ -170,7 +199,7 @@ function* research(
             `## ${source.name} research\n\n${sectionFindings}`,
           );
 
-        const supporting = (result.supportingFindings ?? [])
+        const supporting = (result.nestedResults ?? [])
           .filter(Boolean)
           .map((f, j) => `### Supporting finding ${j + 1}\n${f}`)
           .join("\n\n");
@@ -277,13 +306,7 @@ function* warmResearch(
 }> {
   const effectiveMaxTurns = maxTurns ?? opts.maxTurns;
   for (const source of opts.sources)
-    yield* source.bind({
-      reranker: opts.reranker,
-      reporterPrompt: REPORT,
-      reportTool,
-      maxTurns: effectiveMaxTurns,
-      trace: opts.trace,
-    });
+    yield* source.bind({ reranker: opts.reranker });
 
   yield* opts.events.send({
     type: "research:start",
@@ -298,20 +321,45 @@ function* warmResearch(
 
   for (let i = 0; i < opts.sources.length; i++) {
     const source = opts.sources[i];
-    const result = (yield* source.researchTool.execute({
-      questions: activeQuestions,
-    })) as SourceResearchResult;
+    const sourcePrompt = SOURCE_PROMPTS[source.name] ?? ROOT;
+    const pool = yield* spawnAgents({
+      tools: source.tools,
+      systemPrompt: sourcePrompt.system,
+      tasks: activeQuestions,
+      terminalTool: { name: "report", tool: reportTool },
+      maxTurns: effectiveMaxTurns,
+      recursive: {
+        name: source.name === "web" ? "web_research" : "research",
+        description: "Spawn parallel sub-agents to investigate sub-questions.",
+        argsSchema: {
+          type: "object",
+          properties: { questions: { type: "array", items: { type: "string" }, description: "Sub-questions to investigate in parallel" } },
+          required: ["questions"],
+        },
+        extractTasks: (args) => args.questions as string[],
+      },
+      reportPrompt: REPORT,
+      pruneOnReport: true,
+      trace: opts.trace,
+    });
+    const result: SourceResearchResult = {
+      results: pool.agents.map((a) => a.findings).filter(Boolean) as string[],
+      nestedResults: pool.agents.flatMap((a) => a.nestedResults ?? []),
+      agentCount: pool.agents.length,
+      totalTokens: pool.totalTokens,
+      totalToolCalls: pool.totalToolCalls,
+    };
     totalTokens += result.totalTokens;
     totalToolCalls += result.totalToolCalls;
 
-    const sectionFindings = result.findings
+    const sectionFindings = result.results
       .filter(Boolean)
       .map((f, j) => `### Agent ${j + 1}\n${f}`)
       .join("\n\n");
     if (sectionFindings)
       findingSections.push(`## ${source.name} research\n\n${sectionFindings}`);
 
-    const supporting = (result.supportingFindings ?? [])
+    const supporting = (result.nestedResults ?? [])
       .filter(Boolean)
       .map((f, j) => `### Supporting finding ${j + 1}\n${f}`)
       .join("\n\n");
@@ -436,7 +484,7 @@ function* synthesize(
 
   // Tools: grounding tools only when conflicts need resolution
   const groundingTools = conflicts && conflicts.length > 0
-    ? opts.sources.flatMap((s) => s.groundingTools)
+    ? opts.sources.flatMap((s) => s.tools)
     : [];
   const synthToolkit = createToolkit([...groundingTools, reportTool]);
 

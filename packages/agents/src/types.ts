@@ -264,7 +264,7 @@ export interface AgentResult {
   /** Per-token trace data (present only when {@link AgentPoolOptions.trace} is true) */
   trace?: TraceToken[];
   /** Findings collected from recursive tool results (inner sub-agent findings) */
-  childFindings: readonly string[];
+  nestedResults: readonly string[];
 }
 
 /**

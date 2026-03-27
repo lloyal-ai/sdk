@@ -1,5 +1,5 @@
 /**
- * Source implementations for the research pipeline
+ * Source implementations — data backends for agent pipelines
  *
  * @packageDocumentation
  * @category Rig

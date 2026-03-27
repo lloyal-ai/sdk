@@ -215,7 +215,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     }
 
     // Check declarative guards against full lineage
-    const lineageHistory = agent.walkLineage(a => a.toolHistory);
+    const lineageHistory = agent.walkAncestors(a => a.toolHistory);
     let toolArgs: Record<string, unknown>;
     try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
 

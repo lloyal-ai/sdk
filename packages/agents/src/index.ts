@@ -17,6 +17,8 @@ export { initAgents } from './init';
 export { withSharedRoot } from './shared-root';
 export { NullTraceWriter, JsonlTraceWriter } from './trace-writer';
 export { traceScope } from './trace-scope';
+export { spawnAgents } from './spawn-agents';
+export type { SpawnAgentsOpts, RecursiveOpts } from './spawn-agents';
 export { composePrompt, renderPrompt, renderTemplate } from './prompt';
 export type { PromptState, PromptSection, PromptStep } from './prompt';
 

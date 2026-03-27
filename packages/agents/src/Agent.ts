@@ -114,7 +114,7 @@ export class Agent {
   private _findings: string | null = null;
   private _findingsSource: FindingsSource | null = null;
   private _toolHistory: ToolHistoryEntry[] = [];
-  private _childFindings: string[] = [];
+  private _nestedResults: string[] = [];
   private _traceBuffer: TraceToken[] = [];
 
   /** The agent that called the tool which spawned this agent's pool (null for top-level) */
@@ -207,11 +207,11 @@ export class Agent {
   // ── Child findings ─────────────────────────────────────────
 
   /** Findings collected from recursive tool results (inner sub-agent findings) */
-  get childFindings(): readonly string[] { return this._childFindings; }
+  get nestedResults(): readonly string[] { return this._nestedResults; }
 
   /** Collect inner findings from a recursive tool's result */
-  addChildFindings(findings: string[]): void {
-    this._childFindings.push(...findings);
+  addNestedResults(findings: string[]): void {
+    this._nestedResults.push(...findings);
   }
 
   /**
@@ -223,11 +223,11 @@ export class Agent {
    *
    * @example Check if any ancestor fetched a URL
    * ```typescript
-   * const fetched = agent.walkLineage(a => a.toolHistory)
+   * const fetched = agent.walkAncestors(a => a.toolHistory)
    *   .some(h => h.name === 'fetch_page' && h.args === url);
    * ```
    */
-  walkLineage<T>(fn: (agent: Agent) => readonly T[]): T[] {
+  walkAncestors<T>(fn: (agent: Agent) => readonly T[]): T[] {
     const result: T[] = [...fn(this)];
     let current = this.parent;
     while (current) {

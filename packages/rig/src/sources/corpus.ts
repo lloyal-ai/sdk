@@ -1,39 +1,13 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { call } from "effection";
 import type { Operation } from "effection";
-import { Source, Trace, createToolkit } from "@lloyal-labs/lloyal-agents";
-import type { Tool, PressureThresholds } from "@lloyal-labs/lloyal-agents";
+import { Source, Trace } from "@lloyal-labs/lloyal-agents";
+import type { Tool } from "@lloyal-labs/lloyal-agents";
 import type { Resource, Chunk } from "../resources/types";
-import type { SourceContext } from "./types";
+import type { Reranker } from "../tools/types";
 import { SearchTool } from "../tools/search";
 import { ReadFileTool } from "../tools/read-file";
 import { GrepTool } from "../tools/grep";
-import { ResearchTool } from "../tools/research";
 
-function readTask(name: string): { system: string; user: string } {
-  const raw = fs
-    .readFileSync(path.resolve(__dirname, `${name}.md`), "utf8")
-    .trim();
-  const sep = raw.indexOf("\n---\n");
-  if (sep === -1) return { system: raw, user: "" };
-  return { system: raw.slice(0, sep).trim(), user: raw.slice(sep + 5).trim() };
-}
-
-/**
- * Corpus-backed research source using local file search, read, and grep
- *
- * Provides grounding tools (`search`, `read_file`, `grep`) over a set of
- * loaded {@link Resource} / {@link Chunk} pairs. On {@link bind}, tokenizes
- * chunks via the reranker and prepends a reranker-backed `search` tool to
- * the tool list. The `search` tool is ordered first so the model prefers
- * semantic search before falling back to `read_file` or `grep`.
- *
- * The research tool is a self-referential {@link ResearchTool} that spawns
- * sub-agents with corpus-specific prompts and the full grounding toolkit.
- *
- * @category Rig
- */
 /**
  * Configuration for {@link CorpusSource}.
  *
@@ -52,19 +26,24 @@ export interface CorpusSourceOpts {
     /** Default max lines when no range specified. @default 100 */
     defaultMaxLines?: number;
   };
-  /** ResearchTool overrides */
-  research?: {
-    /** Override pressure thresholds for inner research pool */
-    pressure?: PressureThresholds;
-  };
 }
 
-export class CorpusSource extends Source<SourceContext, Chunk> {
+/**
+ * Corpus-backed data source using local file search, read, and grep
+ *
+ * Provides three tools: semantic search (via reranker), file reading,
+ * and regex grep. On {@link bind}, tokenizes chunks through the reranker
+ * and prepends a reranker-backed search tool.
+ *
+ * No orchestration, no prompts, no node:fs. Use {@link spawnAgents}
+ * from your harness to orchestrate agents with these tools.
+ *
+ * @category Rig
+ */
+export class CorpusSource extends Source<{ reranker: Reranker }, Chunk> {
   private _chunks: Chunk[];
-  private _tools: Tool[] = [];
-  private _researchTool: ResearchTool | null = null;
+  private _tools: Tool[];
   private _bound = false;
-  private _researchOpts?: CorpusSourceOpts['research'];
 
   /** @inheritDoc */
   readonly name = "corpus";
@@ -72,7 +51,7 @@ export class CorpusSource extends Source<SourceContext, Chunk> {
   /**
    * @param resources - Loaded file resources for read_file and grep tools
    * @param chunks - Pre-split chunks for reranker-backed search
-   * @param opts - Configuration for grep, read_file, and research tools
+   * @param opts - Configuration for grep and read_file tools
    */
   constructor(resources: Resource[], chunks: Chunk[], opts?: CorpusSourceOpts) {
     super();
@@ -81,48 +60,23 @@ export class CorpusSource extends Source<SourceContext, Chunk> {
       new ReadFileTool(resources, opts?.readFile),
       new GrepTool(resources, opts?.grep),
     ];
-    this._researchOpts = opts?.research;
   }
 
   /** @inheritDoc */
-  get researchTool(): Tool {
-    if (!this._researchTool)
-      throw new Error("CorpusSource: bind() must be called first");
-    return this._researchTool;
-  }
-
-  /** @inheritDoc */
-  get groundingTools(): Tool[] { return this._tools; }
+  get tools(): Tool[] { return this._tools; }
 
   /**
-   * Late-bind reranker and build the research toolkit
-   *
-   * Tokenizes all chunks through the reranker, prepends a {@link SearchTool}
-   * to the tool list, then constructs the self-referential
-   * {@link ResearchTool} with corpus-specific prompts. Idempotent — skips
-   * if already bound.
-   *
+   * Late-bind reranker: tokenize chunks and prepend SearchTool.
+   * Idempotent — skips if already bound.
    * @inheritDoc
    */
-  *bind(ctx: SourceContext): Operation<void> {
+  *bind(ctx: { reranker: Reranker }): Operation<void> {
     if (this._bound) return;
     const tw = yield* Trace.expect();
     tw.write({ traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
       type: 'source:bind', sourceName: this.name });
     yield* call(() => ctx.reranker.tokenizeChunks(this._chunks));
     this._tools.unshift(new SearchTool(this._chunks, ctx.reranker));
-
-    const researchPrompt = readTask("corpus-research");
-    const research = new ResearchTool({
-      systemPrompt: researchPrompt.system,
-      reporterPrompt: ctx.reporterPrompt,
-      maxTurns: ctx.maxTurns,
-      trace: ctx.trace,
-      pressure: this._researchOpts?.pressure,
-    });
-    const toolkit = createToolkit([...this._tools, ctx.reportTool, research]);
-    research.setToolkit(toolkit);
-    this._researchTool = research;
     this._bound = true;
   }
 }

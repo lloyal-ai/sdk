@@ -7,13 +7,10 @@ import { ReadFileTool } from './read-file';
 import { GrepTool } from './grep';
 import { ReportTool } from './report';
 
-export { ResearchTool } from './research';
-export type { ResearchToolOpts } from './research';
 export { WebSearchTool, TavilyProvider } from './web-search';
 export { FetchPageTool } from './fetch-page';
+export { ReportTool } from './report';
 export type { SearchProvider, SearchResult, Reranker, ScoredChunk, ScoredResult } from './types';
-export { WebResearchTool } from './web-research';
-export type { WebResearchToolOpts } from './web-research';
 export { PlanTool } from './plan';
 export type { PlanResult, PlanQuestion, PlanToolOpts } from './plan';
 
@@ -27,14 +24,11 @@ export type { PlanResult, PlanQuestion, PlanToolOpts } from './plan';
 export const reportTool = new ReportTool();
 
 /**
- * Build the standard corpus-research toolkit.
+ * Build the standard corpus toolkit.
  *
  * Returns a {@link Toolkit} containing {@link SearchTool},
  * {@link ReadFileTool}, {@link GrepTool}, and {@link ReportTool}
  * wired to the provided resources, chunks, and reranker.
- *
- * @param opts - Resources, chunks, and reranker to bind into the tools.
- * @returns A ready-to-use toolkit for corpus research agents.
  *
  * @category Rig
  */

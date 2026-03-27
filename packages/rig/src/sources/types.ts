@@ -1,25 +1,16 @@
-import type { Tool } from '@lloyal-labs/lloyal-agents';
 import type { Reranker } from '../tools/types';
 
 /**
- * Runtime context passed to {@link Source.bind} during pipeline setup
+ * Runtime context passed to {@link Source.bind} during pipeline setup.
  *
- * Carries shared dependencies that are not available at source construction
- * time — the reranker instance, reporter prompt/tool, and pipeline-level
- * configuration. Each source receives the same context so research and
- * grounding tools share a consistent environment.
+ * Carries the reranker instance needed by corpus sources to tokenize
+ * chunks and by web sources for fetch-page chunk scoring. Orchestration
+ * config (prompts, maxTurns, tools) belongs in {@link spawnAgents} opts,
+ * not in the source context.
  *
  * @category Rig
  */
 export interface SourceContext {
-  /** Reranker instance used by corpus sources to tokenize chunks and score results */
+  /** Reranker instance for chunk tokenization and scoring */
   reranker: Reranker;
-  /** System/user prompt pair for the report-writing pass inside research tools */
-  reporterPrompt: { system: string; user: string };
-  /** Shared report tool instance injected into every source's research toolkit */
-  reportTool: Tool;
-  /** Maximum tool-use turns for research sub-agents before forced termination */
-  maxTurns: number;
-  /** Whether to emit structured trace events during research execution */
-  trace: boolean;
 }

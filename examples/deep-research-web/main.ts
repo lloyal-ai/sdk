@@ -158,14 +158,24 @@ main(function* () {
   if (corpusDir) {
     const resources = loadResources(corpusDir);
     const chunks = chunkResources(resources);
-    sources.push(new CorpusSource(resources, chunks));
+    sources.push(
+      new CorpusSource(resources, chunks, {
+        grep: { maxResults: 50, lineMaxChars: 200 },
+        readFile: { defaultMaxLines: 100 },
+      }),
+    );
     log(
       `  ${c.dim}  Corpus: ${resources.length} files, ${chunks.length} chunks${c.reset}`,
     );
   }
 
   if (hasTavily) {
-    sources.push(new WebSource(new TavilyProvider(), { topN: 3 }));
+    sources.push(
+      new WebSource(new TavilyProvider(), {
+        topN: 5,
+        fetch: { maxChars: 6000, topK: 5, timeout: 10_000 },
+      }),
+    );
     log(`  ${c.dim}  Tavily web search enabled${c.reset}`);
   }
 

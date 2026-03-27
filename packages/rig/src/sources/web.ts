@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Operation } from "effection";
 import { Source, Trace, createToolkit } from "@lloyal-labs/lloyal-agents";
-import type { Tool } from "@lloyal-labs/lloyal-agents";
+import type { Tool, PressureThresholds } from "@lloyal-labs/lloyal-agents";
 import type { Chunk } from "../resources/types";
 import type { SourceContext } from "./types";
 import type { SearchProvider } from "../tools/types";
@@ -40,8 +40,8 @@ function readTask(name: string): { system: string; user: string } {
 class BufferingFetchPage extends FetchPageTool {
   private _buffer: FetchedPage[];
 
-  constructor(buffer: FetchedPage[], maxChars?: number) {
-    super(maxChars);
+  constructor(buffer: FetchedPage[], opts?: { maxChars?: number; topK?: number; timeout?: number; tokenBudget?: number }) {
+    super(opts);
     this._buffer = buffer;
   }
 
@@ -74,24 +74,57 @@ class BufferingFetchPage extends FetchPageTool {
  *
  * @category Rig
  */
+/**
+ * Configuration for {@link WebSource}.
+ *
+ * @category Rig
+ */
+export interface WebSourceOpts {
+  /** Max search results returned to agents. @default 8 */
+  topN?: number;
+  /** FetchPageTool configuration */
+  fetch?: {
+    /** Max chars for full-content fallback (no reranker). @default 6000 */
+    maxChars?: number;
+    /** Top-K reranked chunks returned. @default 5 */
+    topK?: number;
+    /** Fetch timeout in ms. @default 10000 */
+    timeout?: number;
+    /** Reranker token budget for chunk selection. @default 2048 */
+    tokenBudget?: number;
+  };
+  /** WebResearchTool overrides (applied on top of SourceContext) */
+  research?: {
+    /** Override tool name. @default "web_research" */
+    name?: string;
+    /** Override tool description */
+    description?: string;
+    /** Override pressure thresholds for inner research pool */
+    pressure?: PressureThresholds;
+  };
+}
+
 export class WebSource extends Source<SourceContext, Chunk> {
   private _buffer: FetchedPage[] = [];
   private _fetchPage: BufferingFetchPage;
   private _webSearch: WebSearchTool;
   private _researchPrompt: { system: string; user: string };
   private _researchTool: WebResearchTool | null = null;
+  private _researchOpts?: WebSourceOpts['research'];
 
   /** @inheritDoc */
   readonly name = "web";
 
   /**
    * @param provider - Search backend (e.g. {@link TavilyProvider}) for web_search calls
+   * @param opts - Configuration for search, fetch, and research tools
    */
-  constructor(provider: SearchProvider, opts?: { topN?: number }) {
+  constructor(provider: SearchProvider, opts?: WebSourceOpts) {
     super();
     this._researchPrompt = readTask("web-research");
-    this._fetchPage = new BufferingFetchPage(this._buffer);
+    this._fetchPage = new BufferingFetchPage(this._buffer, opts?.fetch);
     this._webSearch = new WebSearchTool(provider, opts?.topN);
+    this._researchOpts = opts?.research;
   }
 
   /** @inheritDoc */
@@ -127,14 +160,16 @@ export class WebSource extends Source<SourceContext, Chunk> {
     });
 
     if (!this._researchTool) {
+      const ro = this._researchOpts;
       const webResearch = new WebResearchTool({
-        name: "web_research",
-        description:
+        name: ro?.name ?? "web_research",
+        description: ro?.description ??
           "Spawn parallel web research agents that search the web, fetch pages, and report findings.",
         systemPrompt: this._researchPrompt.system,
         reporterPrompt: ctx.reporterPrompt,
         maxTurns: ctx.maxTurns,
         trace: ctx.trace,
+        pressure: ro?.pressure,
       });
       const toolkit = createToolkit([
         this._webSearch,

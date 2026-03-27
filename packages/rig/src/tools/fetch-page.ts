@@ -38,11 +38,15 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
   private _maxChars: number;
   private _reranker: Reranker | null = null;
   private _topK: number;
+  private _timeout: number;
+  private _tokenBudget: number;
 
-  constructor(maxChars = 6000, topK = 5) {
+  constructor(opts?: { maxChars?: number; topK?: number; timeout?: number; tokenBudget?: number }) {
     super();
-    this._maxChars = maxChars;
-    this._topK = topK;
+    this._maxChars = opts?.maxChars ?? 6000;
+    this._topK = opts?.topK ?? 5;
+    this._timeout = opts?.timeout ?? 10_000;
+    this._tokenBudget = opts?.tokenBudget ?? 2048;
   }
 
   /** Inject reranker for chunk scoring. Call from Source.bind(). */
@@ -63,11 +67,13 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     const maxChars = this._maxChars;
     const reranker = this._reranker;
     const topK = this._topK;
+    const timeout = this._timeout;
+    const tokenBudget = this._tokenBudget;
 
     // Step 1: Fetch + readability (async)
     const fetched = yield* call(async () => {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10_000);
+      const timer = setTimeout(() => controller.abort(), timeout);
       let res: Response;
       try {
         res = await fetch(url, {
@@ -148,7 +154,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
         });
 
         // Select top-K within token budget (tokens populated by tokenizeChunks)
-        const TOKEN_BUDGET = 2048;
+        const TOKEN_BUDGET = tokenBudget;
         const topChunks: Array<{ text: string; heading: string; score: number }> = [];
         let tokenTotal = 0;
         for (const sc of scored.slice(0, topK)) {

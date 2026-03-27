@@ -80,10 +80,12 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
 
   private _resources: Resource[];
   private _readRanges = new Map<string, [number, number][]>();
+  private _defaultMaxLines: number;
 
-  constructor(resources: Resource[]) {
+  constructor(resources: Resource[], opts?: { defaultMaxLines?: number }) {
     super();
     this._resources = resources;
+    this._defaultMaxLines = opts?.defaultMaxLines ?? 100;
     this.parameters = {
       type: 'object',
       properties: {
@@ -111,7 +113,7 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
 
     const lines = file.content.split('\n');
     const s = Math.max(0, (args.startLine ?? 1) - 1);
-    const e = Math.min(lines.length, args.endLine ?? Math.min(100, lines.length));
+    const e = Math.min(lines.length, args.endLine ?? Math.min(this._defaultMaxLines, lines.length));
 
     const key = context ? `${context.agentId}:${filename}` : filename;
     const prev = this._readRanges.get(key) ?? [];

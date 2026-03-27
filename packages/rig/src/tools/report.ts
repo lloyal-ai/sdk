@@ -14,12 +14,30 @@ import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
  */
 export class ReportTool extends Tool<{ findings: string }> {
   readonly name = 'report';
-  readonly description = 'Submit your final research findings with specific evidence, direct quotes, data points, and source URLs from the pages you read. State what you found AND what you checked but could not find. Do not summarize — preserve detail.';
-  readonly parameters: JsonSchema = {
-    type: 'object',
-    properties: { findings: { type: 'string', description: 'Detailed findings with direct quotes, data points, and source URLs. Include what was found and what was not found.' } },
-    required: ['findings'],
-  };
+  readonly description: string;
+  readonly parameters: JsonSchema;
+
+  constructor(opts?: {
+    /** Override the tool description shown in the agent's tool schema. */
+    description?: string;
+    /** Override the findings parameter description. */
+    findingsDescription?: string;
+  }) {
+    super();
+    this.description = opts?.description ??
+      'Submit your final research findings with specific evidence, direct quotes, data points, and source URLs from the pages you read. State what you found AND what you checked but could not find. Do not summarize — preserve detail.';
+    this.parameters = {
+      type: 'object',
+      properties: {
+        findings: {
+          type: 'string',
+          description: opts?.findingsDescription ??
+            'Detailed findings with direct quotes, data points, and source URLs. Include what was found and what was not found.',
+        },
+      },
+      required: ['findings'],
+    };
+  }
 
   *execute(): Operation<unknown> { return {}; }
 }

@@ -241,7 +241,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     // in its registry — passing the full tool map makes this flag true and
     // traps reporters in an infinite rejection loop.
     const hasNonTerminalTools = terminalTool ? [...tools.keys()].some(k => k !== terminalTool) : tools.size > 0;
-    const policy = new DefaultAgentPolicy();
+    const policy = opts.policy ?? new DefaultAgentPolicy();
     const policyConfig: PolicyConfig = { maxTurns, terminalTool, hasNonTerminalTools };
 
     // ── Setup: fork branches, collect suffix tokens ──────────
@@ -680,7 +680,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         if (a.status !== 'idle' || a.findings || a.branch.disposed) continue;
 
         // Confabulation guard: skip agents that barely ran
-        if (a.tokenCount < 100 || a.toolCallCount < 2) {
+        const minTokens = opts.reportPrompt?.minTokens ?? 100;
+        const minToolCalls = opts.reportPrompt?.minToolCalls ?? 2;
+        if (a.tokenCount < minTokens || a.toolCallCount < minToolCalls) {
           if (!a.branch.disposed) a.branch.pruneSync();
           continue;
         }

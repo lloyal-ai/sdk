@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { call } from "effection";
 import type { Operation } from "effection";
 import { Source, Trace, createToolkit } from "@lloyal-labs/lloyal-agents";
-import type { Tool } from "@lloyal-labs/lloyal-agents";
+import type { Tool, PressureThresholds } from "@lloyal-labs/lloyal-agents";
 import type { Resource, Chunk } from "../resources/types";
 import type { SourceContext } from "./types";
 import { SearchTool } from "../tools/search";
@@ -34,11 +34,37 @@ function readTask(name: string): { system: string; user: string } {
  *
  * @category Rig
  */
+/**
+ * Configuration for {@link CorpusSource}.
+ *
+ * @category Rig
+ */
+export interface CorpusSourceOpts {
+  /** GrepTool configuration */
+  grep?: {
+    /** Max matches returned. @default 50 */
+    maxResults?: number;
+    /** Max chars per matched line. @default 200 */
+    lineMaxChars?: number;
+  };
+  /** ReadFileTool configuration */
+  readFile?: {
+    /** Default max lines when no range specified. @default 100 */
+    defaultMaxLines?: number;
+  };
+  /** ResearchTool overrides */
+  research?: {
+    /** Override pressure thresholds for inner research pool */
+    pressure?: PressureThresholds;
+  };
+}
+
 export class CorpusSource extends Source<SourceContext, Chunk> {
   private _chunks: Chunk[];
   private _tools: Tool[] = [];
   private _researchTool: ResearchTool | null = null;
   private _bound = false;
+  private _researchOpts?: CorpusSourceOpts['research'];
 
   /** @inheritDoc */
   readonly name = "corpus";
@@ -46,11 +72,16 @@ export class CorpusSource extends Source<SourceContext, Chunk> {
   /**
    * @param resources - Loaded file resources for read_file and grep tools
    * @param chunks - Pre-split chunks for reranker-backed search
+   * @param opts - Configuration for grep, read_file, and research tools
    */
-  constructor(resources: Resource[], chunks: Chunk[]) {
+  constructor(resources: Resource[], chunks: Chunk[], opts?: CorpusSourceOpts) {
     super();
     this._chunks = chunks;
-    this._tools = [new ReadFileTool(resources), new GrepTool(resources)];
+    this._tools = [
+      new ReadFileTool(resources, opts?.readFile),
+      new GrepTool(resources, opts?.grep),
+    ];
+    this._researchOpts = opts?.research;
   }
 
   /** @inheritDoc */
@@ -87,6 +118,7 @@ export class CorpusSource extends Source<SourceContext, Chunk> {
       reporterPrompt: ctx.reporterPrompt,
       maxTurns: ctx.maxTurns,
       trace: ctx.trace,
+      pressure: this._researchOpts?.pressure,
     });
     const toolkit = createToolkit([...this._tools, ctx.reportTool, research]);
     research.setToolkit(toolkit);

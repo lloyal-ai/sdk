@@ -17,6 +17,8 @@ export interface PlanToolOpts {
   session: Session;
   /** Maximum number of sub-questions the planner may produce. */
   maxQuestions: number;
+  /** Sampling temperature for plan generation. @default 0.3 */
+  temperature?: number;
 }
 
 /**
@@ -75,10 +77,12 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
   private _prompt: { system: string; user: string };
   private _session: Session;
   private _maxQuestions: number;
+  private _temperature: number;
 
   constructor(opts: PlanToolOpts) {
     super();
     this._prompt = opts.prompt;
+    this._temperature = opts.temperature ?? 0.3;
     this._session = opts.session;
     this._maxQuestions = opts.maxQuestions;
   }
@@ -124,7 +128,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     const result = yield* generate({
       prompt,
       grammar,
-      params: { temperature: 0.3 },
+      params: { temperature: this._temperature },
       parent,
     });
     const { output, tokenCount } = result;

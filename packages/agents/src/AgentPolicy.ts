@@ -148,7 +148,31 @@ export interface PolicyConfig {
  *
  * @category Agents
  */
+/**
+ * Configuration for {@link DefaultAgentPolicy}.
+ * @category Agents
+ */
+export interface DefaultAgentPolicyOpts {
+  /** Min non-terminal tool calls before report is accepted without nudge. @default 2 */
+  minToolCallsBeforeReport?: number;
+  /** Replace default tool guards entirely. */
+  guards?: ToolGuard[];
+  /** Append additional guards to the defaults. */
+  extraGuards?: ToolGuard[];
+}
+
 export class DefaultAgentPolicy implements AgentPolicy {
+  private _minToolCalls: number;
+  private _guards: ToolGuard[];
+
+  constructor(opts?: DefaultAgentPolicyOpts) {
+    this._minToolCalls = opts?.minToolCallsBeforeReport ?? 2;
+    this._guards = opts?.guards ?? [
+      ...defaultToolGuards,
+      ...(opts?.extraGuards ?? []),
+    ];
+  }
+
   onProduced(
     agent: Agent,
     parsed: { content: string | null; toolCalls: ParsedToolCall[] },
@@ -182,7 +206,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     if (config.terminalTool && tc.name === config.terminalTool) {
       // Prevent reporting without sufficient research (minimum 2 non-report tool calls).
       // Nudged agents bypass — they may have only 1 tool call but were told to report.
-      if (agent.toolCallCount < 2 && config.hasNonTerminalTools && !agent.nudged) {
+      if (agent.toolCallCount < this._minToolCalls && config.hasNonTerminalTools && !agent.nudged) {
         return { type: 'nudge', message: 'You must conduct research before reporting. Use web_search or fetch_page to find evidence first.' };
       }
       let findings: string;
@@ -195,7 +219,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     let toolArgs: Record<string, unknown>;
     try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
 
-    for (const guard of defaultToolGuards) {
+    for (const guard of this._guards) {
       if (guard.tools.includes(tc.name) && guard.reject(toolArgs, lineageHistory, agent)) {
         return { type: 'nudge', message: guard.message };
       }

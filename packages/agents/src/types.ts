@@ -1,5 +1,6 @@
 import type { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
+import type { AgentPolicy } from './AgentPolicy';
 
 // ── Tool base class types ──────────────────────────────────────
 
@@ -226,7 +227,16 @@ export interface AgentPoolOptions {
    * Format: `{ system: string; user: string }` — system prompt describes
    * the extraction task, user prompt triggers the report.
    */
-  reportPrompt?: { system: string; user: string };
+  reportPrompt?: {
+    system: string;
+    user: string;
+    /** Min tokens generated before scratchpad extraction is attempted. @default 100 */
+    minTokens?: number;
+    /** Min tool calls before scratchpad extraction is attempted. @default 2 */
+    minToolCalls?: number;
+  };
+  /** Custom agent policy. @default DefaultAgentPolicy with default opts */
+  policy?: AgentPolicy;
 }
 
 /**
@@ -337,6 +347,8 @@ export interface DivergeOptions {
   parent?: Branch;
   /** Sampling parameters for all attempts */
   params?: SamplingParams;
+  /** Base seed for sampler diversity across attempts. @default 2000 */
+  seedBase?: number;
 }
 
 /**

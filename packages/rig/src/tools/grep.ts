@@ -27,10 +27,14 @@ export class GrepTool extends Tool<{ pattern: string; ignoreCase?: boolean }> {
   };
 
   private _resources: Resource[];
+  private _maxResults: number;
+  private _lineMaxChars: number;
 
-  constructor(resources: Resource[]) {
+  constructor(resources: Resource[], opts?: { maxResults?: number; lineMaxChars?: number }) {
     super();
     this._resources = resources;
+    this._maxResults = opts?.maxResults ?? 50;
+    this._lineMaxChars = opts?.lineMaxChars ?? 200;
   }
 
   *execute(args: { pattern: string; ignoreCase?: boolean }): Operation<unknown> {
@@ -52,12 +56,13 @@ export class GrepTool extends Tool<{ pattern: string; ignoreCase?: boolean }> {
           totalMatches += hits.length;
           const raw = lines[i].trim();
           let text: string;
-          if (raw.length <= 200) {
+          const maxChars = this._lineMaxChars;
+          if (raw.length <= maxChars) {
             text = raw;
           } else {
             const idx = raw.search(re);
             const start = Math.max(0, idx - 40);
-            const end = Math.min(raw.length, start + 200);
+            const end = Math.min(raw.length, start + maxChars);
             text = (start > 0 ? '\u2026' : '') + raw.slice(start, end) + (end < raw.length ? '\u2026' : '');
           }
           matches.push({ file: res.name, line: i + 1, text });
@@ -72,7 +77,7 @@ export class GrepTool extends Tool<{ pattern: string; ignoreCase?: boolean }> {
       };
     }
 
-    const limit = 50;
+    const limit = this._maxResults;
     const truncated = matches.length > limit;
     return { totalMatches, matchingLines: matches.length, truncated, matches: matches.slice(0, limit) };
   }

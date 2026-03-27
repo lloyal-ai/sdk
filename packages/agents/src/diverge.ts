@@ -77,7 +77,7 @@ export function* diverge(opts: DivergeOptions): Operation<DivergeResult> {
         try { branch.pruneSync(); } catch { /* already gone */ }
       }
     });
-    branch.reseedSampler(2000 + i);
+    branch.reseedSampler((opts.seedBase ?? 2000) + i);
     live.push({ branch, output: '', done: false, tokenCount: 0, ppl: Infinity });
   }
 

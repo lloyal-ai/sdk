@@ -32,7 +32,8 @@
   },
   "dependencies": {
     "@lloyal-labs/sdk": "*",
-    "effection": "^4.0.2"
+    "effection": "^4.0.2",
+    "eta": "^4.5.1"
   },
   "files": [
     "dist/"

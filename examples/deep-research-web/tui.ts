@@ -31,6 +31,7 @@ export type StepEvent =
   | { type: 'bridge:done'; findings: string; timeMs: number }
   | { type: 'synthesize:start' }
   | { type: 'synthesize:done'; pool: AgentPoolResult; timeMs: number }
+  | { type: 'findings:eval'; converged: boolean | null; conflicts: string[]; tokenCount: number; timeMs: number }
   | { type: 'eval:done'; converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }
   | { type: 'answer'; text: string }
   | { type: 'stats'; timings: OpTiming[]; kvLine?: string; ctxPct: number; ctxPos: number; ctxTotal: number }
@@ -84,6 +85,20 @@ function researchSummaryHandler(state: ViewState): ViewHandler {
         statusClear();
         log(`    ${c.dim}${ev.totalTokens} tok \u00b7 ${ev.totalToolCalls} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
         break;
+      }
+    }
+  };
+}
+
+function findingsEvalHandler(): ViewHandler {
+  return (ev) => {
+    if (ev.type !== 'findings:eval') return;
+    if (ev.converged) {
+      log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Findings Eval${c.reset} ${c.dim}converged \u00b7 ${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+    } else {
+      log(`\n  ${c.yellow}\u25cf${c.reset} ${c.bold}Findings Eval${c.reset} ${c.dim}${ev.conflicts.length} conflicts \u00b7 ${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+      for (const conflict of ev.conflicts) {
+        log(`    ${c.dim}\u2502${c.reset} ${conflict}`);
       }
     }
   };
@@ -167,6 +182,7 @@ export function createView(opts: ViewOpts) {
     gaugeHandler(gauge),       // update pressure before agentHandler reads it
     agentHandler(state, gauge),
     researchSummaryHandler(state),
+    findingsEvalHandler(),
     bridgeHandler(state),
     synthesizeHandler(state),
     evalHandler(),

@@ -5,6 +5,7 @@ import type { Channel } from 'effection';
 import type { AgentEvent } from './types';
 import type { TraceWriter } from './trace-writer';
 import type { TraceId } from './trace-types';
+import type { Agent } from './Agent';
 
 /**
  * Effection context holding the active {@link SessionContext}
@@ -69,3 +70,18 @@ export const TraceParent = createContext<TraceId>('lloyal.traceParent');
  * @category Agents
  */
 export const ScratchpadParent = createContext<Branch>('lloyal.scratchpadParent');
+
+/**
+ * Effection context holding the calling agent during DISPATCH
+ *
+ * Set by the pool before each tool execution in `scoped()`. Tools and
+ * recursive `withSharedRoot` calls read this to access the calling
+ * agent's branch (for Continuous Context forking) and tool history
+ * (for deduplication guards).
+ *
+ * Scope-isolated: each `scoped()` DISPATCH sees only its own agent.
+ * Nested pools (web_research) shadow the parent's context correctly.
+ *
+ * @category Agents
+ */
+export const CallingAgent = createContext<Agent>('lloyal.callingAgent');

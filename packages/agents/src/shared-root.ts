@@ -24,42 +24,39 @@ export interface SharedRootOptions {
    * @default false
    */
   enableScratchpad?: boolean;
+  /**
+   * Fork root from this branch instead of creating at position 0.
+   *
+   * When provided, the root inherits the parent's full KV state —
+   * every tool call, tool result, and generated token the parent
+   * accumulated. The system prompt is prefilled as a delta on top.
+   * Sub-agents forking from this root attend over the parent's
+   * complete attention state (Continuous Context).
+   *
+   * When omitted, creates a fresh root at position 0 (cold start).
+   */
+  parent?: Branch;
 }
 
 /**
  * Scoped shared root branch with guaranteed cleanup
  *
- * Creates a root branch, prefills the system prompt, and passes it to
- * the body function. The root is pruned via try/finally when the body
+ * Creates (or forks) a root branch, prefills the system prompt, and passes
+ * it to the body function. The root is pruned via try/finally when the body
  * returns or throws, regardless of whether children still exist.
  *
- * Use this for the cold-path pattern where multiple agents share a
- * tokenized system prompt prefix. The `sharedPrefixLength` passed to
- * the body enables KV savings calculation.
+ * **Cold path** (no `parent`): creates root at position 0, prefills system
+ * prompt. Use for top-level research where no prior context exists.
  *
- * @param opts - System prompt, tools, and sampling parameters
+ * **Warm path** (`parent` provided): forks from parent branch, prefills
+ * system prompt as a delta. Sub-agents inherit the parent's full KV state.
+ * Use for recursive tools (web_research, research) where sub-agents should
+ * attend over the calling agent's accumulated evidence.
+ *
+ * @param opts - System prompt, tools, sampling parameters, and optional parent branch
  * @param body - Operation that receives the root branch and prefix length.
  *   Typically calls {@link runAgents} or {@link useAgentPool} inside.
  * @returns The body's return value
- *
- * @example Cold-path research with shared prefix
- * ```typescript
- * const { result, prefixLen } = yield* withSharedRoot(
- *   { systemPrompt: RESEARCH_PROMPT, tools: toolsJson },
- *   function*(root, prefixLen) {
- *     const result = yield* runAgents({
- *       tasks: questions.map(q => ({
- *         systemPrompt: RESEARCH_PROMPT,
- *         content: q,
- *         tools: toolsJson,
- *         parent: root,
- *       })),
- *       tools: toolMap,
- *     });
- *     return { result, prefixLen };
- *   },
- * );
- * ```
  *
  * @category Agents
  */
@@ -82,6 +79,7 @@ export function* withSharedRoot<T>(
   const scope = traceScope(tw, parentTraceId, "withSharedRoot", {
     hasTools: !!opts.tools,
     systemPromptLength: opts.systemPrompt.length,
+    hasParent: !!opts.parent,
   });
 
   const messages = [{ role: "system", content: opts.systemPrompt }];
@@ -106,7 +104,22 @@ export function* withSharedRoot<T>(
     role: "sharedRoot",
   });
 
-  const root = Branch.create(ctx, 0, opts.params ?? { temperature: 0.5 });
+  // Warm path: fork from parent branch (inherits full KV state)
+  // Cold path: create fresh root at position 0
+  let root: Branch;
+  let prefillTokens: number[];
+
+  if (opts.parent) {
+    root = opts.parent.forkSync();
+    // Warm path: parent already has system prompt + tools in KV.
+    // Only prefill turn separator — the prompt is inherited via fork.
+    // This saves ~760 tokens per recursive fork.
+    const sep = ctx.getTurnSeparator();
+    prefillTokens = sep;
+  } else {
+    root = Branch.create(ctx, 0, opts.params ?? { temperature: 0.5 });
+    prefillTokens = sharedTokens;
+  }
 
   tw.write({
     traceId: tw.nextId(),
@@ -114,12 +127,12 @@ export function* withSharedRoot<T>(
     ts: performance.now(),
     type: "branch:create",
     branchHandle: root.handle,
-    parentHandle: null,
-    position: 0,
+    parentHandle: opts.parent?.handle ?? null,
+    position: opts.parent ? opts.parent.position : 0,
     role: "sharedRoot",
   });
 
-  yield* call(() => root.prefill(sharedTokens));
+  yield* call(() => root.prefill(prefillTokens));
 
   tw.write({
     traceId: tw.nextId(),
@@ -127,13 +140,13 @@ export function* withSharedRoot<T>(
     ts: performance.now(),
     type: "branch:prefill",
     branchHandle: root.handle,
-    tokenCount: sharedTokens.length,
+    tokenCount: prefillTokens.length,
     role: "sharedPrefix",
   });
 
   try {
     if (opts.enableScratchpad) yield* ScratchpadParent.set(root);
-    return yield* body(root, sharedTokens.length);
+    return yield* body(root, prefillTokens.length);
   } finally {
     if (!root.disposed) {
       tw.write({

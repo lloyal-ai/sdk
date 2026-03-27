@@ -3,11 +3,14 @@ import type { Operation, Channel } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Events, Trace, TraceParent } from './context';
+import { Ctx, Store, Events, Trace, TraceParent, CallingAgent } from './context';
 import { buildToolResultDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
+import { generate } from './generate';
+import { Agent } from './Agent';
+import { DefaultAgentPolicy } from './AgentPolicy';
+import type { PolicyConfig } from './AgentPolicy';
 import type {
-  TraceToken,
   PressureThresholds,
   AgentTaskSpec,
   AgentPoolOptions,
@@ -15,36 +18,13 @@ import type {
   AgentEvent,
 } from './types';
 
-// ── Internal agent state machine ───────────────────────────────
-// generating → awaiting_tool → generating  (tool result prefilled)
-// generating → done                         (stop + no tool call, or report)
-// awaiting_tool → done                      (tool error)
-
-type AgentInternalState = 'generating' | 'awaiting_tool' | 'done';
-
-interface AgentInternal {
-  id: number;           // = branch.handle
-  parentId: number;     // = parent.handle
-  branch: Branch;
-  state: AgentInternalState;
-  fmt: {
-    format: number;
-    reasoningFormat: number;
-    thinkingForcedOpen: boolean;
-    parser: string;
-    grammar: string;
-    grammarLazy: boolean;
-    grammarTriggers: GrammarTrigger[];
-  };
-  rawOutput: string;
-  tokenCount: number;
-  toolCallCount: number;
-  turns: number;
-  findings: string | null;
-  traceBuffer: TraceToken[];
-  /** Set after injecting a "report now" nudge — second offense kills. */
-  nudged: boolean;
-}
+// ── Agent state transitions ────────────────────────────────────
+// idle → active         (first produce)
+// active → awaiting_tool (tool call parsed)
+// active → idle          (stop token, report, or kill)
+// awaiting_tool → active (tool result settled)
+// awaiting_tool → idle   (settle reject + kill)
+// idle → disposed        (branch pruned)
 
 interface SettledTool {
   agentId: number;
@@ -135,7 +115,7 @@ function* setupAgent(
   parent: Branch,
   task: AgentTaskSpec,
   ctx: SessionContext,
-): Operation<{ agent: AgentInternal; suffixTokens: number[]; formattedPrompt: string }> {
+): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
   const messages = [
     { role: 'system', content: task.systemPrompt },
     { role: 'user', content: task.content },
@@ -153,32 +133,27 @@ function* setupAgent(
   const suffixTokens = [...sep, ...ctx.tokenizeSync(fmt.prompt, false)];
   if (task.seed != null) branch.reseedSampler(task.seed);
 
-  return {
-    agent: {
-      id: branch.handle,
-      parentId: parent.handle,
-      branch,
-      state: 'generating',
-      fmt: {
-        format: fmt.format,
-        reasoningFormat: fmt.reasoningFormat,
-        thinkingForcedOpen: fmt.thinkingForcedOpen,
-        parser: fmt.parser,
-        grammar: fmt.grammar,
-        grammarLazy: fmt.grammarLazy,
-        grammarTriggers: fmt.grammarTriggers,
-      },
-      rawOutput: '',
-      tokenCount: 0,
-      toolCallCount: 0,
-      turns: 0,
-      findings: null,
-      traceBuffer: [],
-      nudged: false,
+  // Read calling agent from Effection context (set during outer pool's DISPATCH)
+  let callingAgent: Agent | null = null;
+  try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
+
+  const agent = new Agent({
+    id: branch.handle,
+    parentId: parent.handle,
+    branch,
+    parent: callingAgent,
+    fmt: {
+      format: fmt.format,
+      reasoningFormat: fmt.reasoningFormat,
+      thinkingForcedOpen: fmt.thinkingForcedOpen,
+      parser: fmt.parser,
+      grammar: fmt.grammar,
+      grammarLazy: fmt.grammarLazy,
+      grammarTriggers: fmt.grammarTriggers,
     },
-    suffixTokens,
-    formattedPrompt: fmt.prompt,
-  };
+  });
+
+  return { agent, suffixTokens, formattedPrompt: fmt.prompt };
 }
 
 /**
@@ -266,11 +241,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     // in its registry — passing the full tool map makes this flag true and
     // traps reporters in an infinite rejection loop.
     const hasNonTerminalTools = terminalTool ? [...tools.keys()].some(k => k !== terminalTool) : tools.size > 0;
+    const policy = new DefaultAgentPolicy();
+    const policyConfig: PolicyConfig = { maxTurns, terminalTool, hasNonTerminalTools };
 
     // ── Setup: fork branches, collect suffix tokens ──────────
     // setupAgent is now a generator — each branch registers its own ensure()
     // for cleanup. No manual try/finally needed here.
-    const agents: AgentInternal[] = [];
+    const agents: Agent[] = [];
     const prefillSetup: [Branch, number[]][] = [];
 
     for (const task of tasks) {
@@ -312,7 +289,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         if (initPressure.canFit(needed)) break;
         prefillSetup.pop();
         const dropped = agents.pop()!;
-        dropped.state = 'done';
+        dropped.dispose();
         tw.write({
           traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
           type: 'pool:agentDrop', agentId: dropped.id, reason: 'pressure_init',
@@ -330,13 +307,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       pressure: { remaining: initPressure.remaining, softLimit: initPressure.softLimit, headroom: initPressure.headroom },
     });
 
-    // Emit spawn events — TUI uses parentAgentId to detect sub-agents
+    // Emit spawn events and activate agents
     for (const a of agents) {
+      a.transition('active');
       yield* events.send({ type: 'agent:spawn', agentId: a.id, parentAgentId: a.parentId });
     }
 
     // ── Lazy grammar setup ───────────────────────────────────
-    const applyLazyGrammar = (a: AgentInternal): void => {
+    const applyLazyGrammar = (a: Agent): void => {
       if (a.fmt.grammar && a.fmt.grammarLazy && a.fmt.grammarTriggers.length > 0) {
         const triggers = a.fmt.grammarTriggers.map(t => {
           if (t.type === GrammarTriggerType.WORD) {
@@ -377,13 +355,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       }
 
       const entries: [Branch, number][] = [];
-      const toolCalls: { agent: AgentInternal; tc: ParsedToolCall }[] = [];
+      const toolCalls: { agent: Agent; tc: ParsedToolCall }[] = [];
 
       for (const a of agents) {
-        if (a.state !== 'generating') continue;
+        if (a.status !== 'active') continue;
 
         if (pressure.critical) {
-          a.state = 'done';
+          a.transition('idle');
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: 'pressure_critical' });
           yield* events.send({ type: 'agent:done', agentId: a.id });
@@ -406,95 +384,81 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             parsedToolCalls: parsed.toolCalls.map(tc => ({ name: tc.name, arguments: tc.arguments })),
           });
 
-          const tc = parsed.toolCalls[0];
-          if (!tc) {
-            a.state = 'done';
-            if (!a.findings && a.toolCallCount > 0 && parsed.content) {
-              a.findings = parsed.content;
-              yield* events.send({ type: 'agent:report', agentId: a.id, findings: a.findings });
-            }
-            yield* events.send({ type: 'agent:done', agentId: a.id });
-            continue;
-          }
+          // Policy decides what to do with the parsed output
+          const action = policy.onProduced(a, parsed, pressure, policyConfig);
 
-          // Over budget: deny non-terminal tool calls when the agent has
-          // exceeded maxTurns or KV headroom is negative. Terminal tools
-          // (e.g. `report()`) are always allowed through — an agent that has
-          // done research and wants to report should never be blocked by
-          // pressure, since the report call itself consumes minimal KV.
-          const overBudget = (a.turns >= maxTurns || pressure.headroom < 0)
-            && (!terminalTool || tc.name !== terminalTool);
+          switch (action.type) {
+            case 'free_text_report':
+              a.reportFindings(action.content, 'free_text');
+              a.transition('idle');
+              yield* events.send({ type: 'agent:report', agentId: a.id, findings: a.findings! });
+              yield* events.send({ type: 'agent:done', agentId: a.id });
+              continue;
 
-          if (overBudget) {
-            // Nudge: inject a fake tool error telling the agent to report.
-            // On second offense (already nudged), kill outright.
-            if (terminalTool && !a.nudged && a.toolCallCount > 0 && !pressure.critical) {
-              a.nudged = true;
-              a.turns++;
-              a.state = 'awaiting_tool';
-              const callId = tc.id || `call_${a.toolCallCount}`;
-              const nudgeMsg = JSON.stringify({ error: 'KV memory pressure — you cannot call more tools. Report your findings now.' });
+            case 'idle':
+              a.transition('idle');
+              if (action.reason !== 'free_text_stop') {
+                tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+                  type: 'pool:agentDrop', agentId: a.id,
+                  reason: action.reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut' });
+              }
+              yield* events.send({ type: 'agent:done', agentId: a.id });
+              continue;
+
+            case 'nudge': {
+              const tc = parsed.toolCalls[0];
+              const callId = tc?.id || `call_${a.toolCallCount}`;
+              const isResearchFirst = terminalTool && tc?.name === terminalTool && a.toolCallCount === 0 && hasNonTerminalTools;
+              const nudgeMsg = action.message
+                ? JSON.stringify({ error: action.message })
+                : isResearchFirst
+                  ? JSON.stringify({ error: 'You must perform research before reporting. Call at least one tool first.' })
+                  : JSON.stringify({ error: 'KV memory pressure — you cannot call more tools. Report your findings now.' });
+              if (!isResearchFirst) a.markNudged();
+              a.incrementTurns();
+              a.transition('awaiting_tool');
               const prefillTokens = buildToolResultDelta(ctx, nudgeMsg, callId);
-              settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc.name, callId });
-              a.rawOutput = '';
-              tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-                type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_softcut' });
+              settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc?.name || '', callId });
+              a.resetTurn();
+              if (!isResearchFirst) {
+                tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+                  type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_softcut' });
+              }
               continue;
             }
-            a.state = 'done';
-            tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-              type: 'pool:agentDrop', agentId: a.id,
-              reason: a.turns >= maxTurns ? 'maxTurns' : 'pressure_softcut' });
-            yield* events.send({ type: 'agent:done', agentId: a.id });
-            continue;
-          }
 
-          // Terminal tool — intercept, extract findings, mark done.
-          if (terminalTool && tc.name === terminalTool) {
-            if (a.toolCallCount === 0 && hasNonTerminalTools) {
-              const callId = tc.id || `call_${a.toolCallCount}`;
-              const errorMsg = 'You must perform research before reporting. Call at least one tool first.';
-              a.turns++;
-              a.state = 'awaiting_tool';
-              const prefillTokens = buildToolResultDelta(ctx, JSON.stringify({ error: errorMsg }), callId);
-              settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc.name, callId });
-              a.rawOutput = '';
+            case 'report':
+              a.reportFindings(action.findings, 'report_tool');
+              a.transition('idle');
+              a.incrementToolCalls();
+              totalToolCalls++;
+              yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: terminalTool!, args: parsed.toolCalls[0].arguments });
+              yield* events.send({ type: 'agent:report', agentId: a.id, findings: a.findings! });
+              yield* events.send({ type: 'agent:done', agentId: a.id });
+              if (pruneOnReport && !a.branch.disposed) {
+                a.branch.pruneSync();
+              }
               continue;
-            }
-            try { a.findings = JSON.parse(tc.arguments).findings; } catch { a.findings = tc.arguments; }
-            a.state = 'done';
-            a.toolCallCount++;
-            totalToolCalls++;
-            yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: tc.name, args: tc.arguments });
-            yield* events.send({ type: 'agent:report', agentId: a.id, findings: a.findings! });
-            yield* events.send({ type: 'agent:done', agentId: a.id });
-            // Free KV immediately — reported agents don't need their branches
-            // (reportPass only forks from agents that DIDN'T report)
-            if (pruneOnReport && !a.branch.disposed) {
-              a.branch.pruneSync();
-            }
-            continue;
-          }
 
-          // Collect tool call — dispatched in Phase 4 after decode phases
-          a.state = 'awaiting_tool';
-          toolCalls.push({ agent: a, tc });
-          a.rawOutput = '';
-          continue;
+            case 'tool_call':
+              a.transition('awaiting_tool');
+              toolCalls.push({ agent: a, tc: action.tc });
+              a.resetTurn();
+              continue;
+          }
         }
 
         entries.push([a.branch, token]);
-        a.rawOutput += text;
-        a.tokenCount++;
         if (trace) {
           const entropy = a.branch.modelEntropy();
           const surprisal = a.branch.modelSurprisal(token);
-          a.traceBuffer.push({ text, entropy, surprisal });
+          a.accumulateTokenWithTrace(text, entropy, surprisal);
           yield* events.send({
             type: 'agent:produce', agentId: a.id, text, tokenCount: a.tokenCount,
             entropy, surprisal,
           });
         } else {
+          a.accumulateToken(text);
           yield* events.send({ type: 'agent:produce', agentId: a.id, text, tokenCount: a.tokenCount });
         }
       }
@@ -521,23 +485,22 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         }
 
         const prefillPairs: [Branch, number[]][] = [];
-        const settledAgents: AgentInternal[] = [];
+        const settledAgents: Agent[] = [];
 
         for (const item of settled) {
           const a = agentById.get(item.agentId);
-          if (!a || a.state === 'done') continue;
+          if (!a || a.status === 'idle') continue;
 
           if (item.prefillTokens.length > headroom) {
             if (trace) {
               try { process.stderr.write(`[SETTLE] REJECT ${item.toolName}:${item.prefillTokens.length} > headroom=${headroom}\n`); } catch {}
             }
-            // Nudge: replace oversized result with a small "report now" message.
-            // On second offense (already nudged), kill outright.
-            if (terminalTool && !a.nudged && a.toolCallCount > 0) {
+            const settleAction = policy.onSettleReject(a, item.prefillTokens.length, settlePressure, policyConfig);
+            if (settleAction.type === 'nudge') {
               const nudgeMsg = JSON.stringify({ error: 'Tool result too large for remaining KV. Report your findings now.' });
               const nudgeTokens = buildToolResultDelta(ctx, nudgeMsg, item.callId);
               if (nudgeTokens.length <= headroom) {
-                a.nudged = true;
+                a.markNudged();
                 prefillPairs.push([a.branch, nudgeTokens]);
                 settledAgents.push(a);
                 headroom -= nudgeTokens.length;
@@ -546,9 +509,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
                 continue;
               }
             }
+            // Nudge failed (tokens don't fit) or policy said kill
             tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
               type: 'pool:agentDrop', agentId: a.id, reason: 'pressure_settle_reject' });
-            a.state = 'done';
+            a.transition('idle');
             yield* events.send({ type: 'agent:done', agentId: a.id });
             continue;
           }
@@ -556,6 +520,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           prefillPairs.push([a.branch, item.prefillTokens]);
           settledAgents.push(a);
           headroom -= item.prefillTokens.length;
+          // Record tool history for policy decisions
+          const postSettle = ctx._storeKvPressure();
+          a.recordToolResult({
+            name: item.toolName,
+            args: item.callId,
+            resultTokenCount: item.prefillTokens.length,
+            contextAfterPercent: postSettle.nCtx > 0
+              ? Math.max(0, Math.round((postSettle.remaining / postSettle.nCtx) * 100))
+              : 100,
+            timestamp: performance.now(),
+          });
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'branch:prefill', branchHandle: a.id,
             tokenCount: item.prefillTokens.length, role: 'toolResult' });
@@ -572,8 +547,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
           // Only NOW transition state + reset grammar
           for (const a of settledAgents) {
-            a.state = 'generating';
-            a.rawOutput = '';
+            a.transition('active');
+            a.resetTurn();
             applyLazyGrammar(a);
           }
         }
@@ -589,9 +564,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
         const callId = tc.id || `call_${agent.toolCallCount}`;
 
-        agent.toolCallCount++;
+        agent.incrementToolCalls();
         totalToolCalls++;
-        agent.turns++;
+        agent.incrementTurns();
 
         yield* events.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
 
@@ -607,14 +582,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         const tool = tools.get(tc.name);
         const toolContext = {
           agentId: agent.id,
+          branch: agent.branch,
           onProgress: (p: { filled: number; total: number }) => {
             progressBridge.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });
           },
         };
 
         try {
-          // Set TraceParent so inner pools (research/web_research) link to this dispatch
+          // Set TraceParent + CallingAgent so inner pools inherit lineage
           yield* TraceParent.set(dispatchTraceId);
+          yield* CallingAgent.set(agent);
 
           const result: unknown = yield* scoped(function*() {
             return yield* call(() =>
@@ -629,6 +606,19 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             : 100;
           if (result && typeof result === 'object' && !Array.isArray(result)) {
             (result as Record<string, unknown>)._contextAvailablePercent = contextAvailablePercent;
+
+            // Collect inner findings from recursive tool results
+            const resultObj = result as Record<string, unknown>;
+            if (Array.isArray(resultObj.findings)) {
+              agent.addChildFindings(
+                (resultObj.findings as unknown[]).filter((f): f is string => typeof f === 'string')
+              );
+            }
+            if (Array.isArray(resultObj.supportingFindings)) {
+              agent.addChildFindings(
+                (resultObj.supportingFindings as unknown[]).filter((f): f is string => typeof f === 'string')
+              );
+            }
           }
 
           const resultStr = JSON.stringify(result);
@@ -644,8 +634,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             durationMs: performance.now() - toolT0,
           });
         } catch (err) {
-          agent.state = 'done';
-          agent.findings = `Tool error: ${(err as Error).message}`;
+          agent.transition('idle');
+          agent.reportFindings(`Tool error: ${(err as Error).message}`, 'tool_error');
           tw.write({
             traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
             type: 'tool:error', agentId: agent.id, tool: tc.name,
@@ -655,7 +645,62 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       }
 
       // -- Termination
-      if (agents.every(a => a.state === 'done')) break;
+      if (agents.every(a => a.status === 'idle' || a.status === 'disposed')) break;
+    }
+
+    // ── Idle processing: scratchpad extraction ────────────────
+    // Replaces harness-level reportPass. Agents in 'idle' without findings
+    // get scratchpad extraction if they did enough work. This runs BEFORE
+    // pool:close trace so findings are populated in the trace.
+    if (opts.reportPrompt) {
+      // Free KV from agents that already reported — gives room for extraction
+      for (const a of agents) {
+        if (a.findings && !a.branch.disposed) {
+          a.branch.pruneSync();
+        }
+      }
+
+      const reportSchema = {
+        type: 'object',
+        properties: { findings: { type: 'string' } },
+        required: ['findings'],
+      };
+      const reportGrammar: string = yield* call(() =>
+        ctx.jsonSchemaToGrammar(JSON.stringify(reportSchema)),
+      );
+      const reportMessages = [
+        { role: 'system', content: opts.reportPrompt.system },
+        { role: 'user', content: opts.reportPrompt.user },
+      ];
+      const { prompt: reportPromptStr } = ctx.formatChatSync(
+        JSON.stringify(reportMessages), { enableThinking: false },
+      );
+
+      for (const a of agents) {
+        if (a.status !== 'idle' || a.findings || a.branch.disposed) continue;
+
+        // Confabulation guard: skip agents that barely ran
+        if (a.tokenCount < 100 || a.toolCallCount < 2) {
+          if (!a.branch.disposed) a.branch.pruneSync();
+          continue;
+        }
+
+        try {
+          const result = yield* generate<{ findings: string }>({
+            prompt: reportPromptStr,
+            grammar: reportGrammar,
+            parse: (o: string) => JSON.parse(o),
+            parent: a.branch,
+          });
+          if (result.parsed?.findings) {
+            a.reportFindings(result.parsed.findings, 'scratchpad');
+            yield* events.send({ type: 'agent:report', agentId: a.id, findings: a.findings! });
+          }
+        } catch {
+          /* extraction failure non-fatal */
+        }
+        if (!a.branch.disposed) a.branch.pruneSync();
+      }
     }
 
     // ── Provide result — suspends, branches stay alive ───────
@@ -685,6 +730,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           ppl: a.branch.disposed ? 0 : a.branch.perplexity,
           samplingPpl: a.branch.disposed ? 0 : a.branch.samplingPerplexity,
           trace: trace ? a.traceBuffer : undefined,
+          childFindings: [...a.childFindings],
         })),
       totalTokens: agents.reduce((s, a) => s + a.tokenCount, 0),
       totalToolCalls,

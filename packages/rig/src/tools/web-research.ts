@@ -1,10 +1,7 @@
-import { call } from "effection";
 import type { Operation } from "effection";
 import {
   Tool,
-  Ctx,
   Trace,
-  generate,
   useAgentPool,
   withSharedRoot,
   traceScope,
@@ -12,6 +9,7 @@ import {
 import type {
   JsonSchema,
   Toolkit,
+  ToolContext,
   PressureThresholds,
 } from "@lloyal-labs/lloyal-agents";
 
@@ -90,7 +88,7 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
     this._toolkit = toolkit;
   }
 
-  *execute(args: { questions: string[] }): Operation<unknown> {
+  *execute(args: { questions: string[] }, context?: ToolContext): Operation<unknown> {
     const questions = args?.questions;
     if (!Array.isArray(questions) || questions.length === 0) {
       return {
@@ -114,7 +112,7 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
     const pressure = this._pressure;
 
     return yield* withSharedRoot(
-      { systemPrompt, tools: toolkit.toolsJson },
+      { systemPrompt, tools: toolkit.toolsJson, parent: context?.branch },
       function* (root) {
         const pool = yield* useAgentPool({
           tasks: questions.map((q) => ({
@@ -129,50 +127,12 @@ export class WebResearchTool extends Tool<{ questions: string[] }> {
           maxTurns,
           trace,
           pressure,
+          reportPrompt: reporterPrompt,
         });
-
-        // Scratchpad extraction for hard-cut agents — works under pressure
-        const hardCut = pool.agents.filter(
-          (a) => !a.findings && !a.branch.disposed,
-        );
-        if (hardCut.length > 0) {
-          for (const a of pool.agents) {
-            if (a.findings && !a.branch.disposed) a.branch.pruneSync();
-          }
-
-          const ctx = yield* Ctx.expect();
-          const schema = {
-            type: "object",
-            properties: { findings: { type: "string" } },
-            required: ["findings"],
-          };
-          const grammar: string = yield* call(() =>
-            ctx.jsonSchemaToGrammar(JSON.stringify(schema)),
-          );
-          const msgs = [
-            { role: "system", content: reporterPrompt.system },
-            { role: "user", content: reporterPrompt.user },
-          ];
-          const { prompt } = ctx.formatChatSync(JSON.stringify(msgs), { enableThinking: false });
-
-          for (const a of hardCut) {
-            try {
-              const result = yield* generate<{ findings: string }>({
-                prompt,
-                grammar,
-                parse: (o: string) => JSON.parse(o),
-                parent: a.branch,
-              });
-              if (result.parsed?.findings) a.findings = result.parsed.findings;
-            } catch {
-              /* extraction failure non-fatal */
-            }
-            if (!a.branch.disposed) a.branch.pruneSync();
-          }
-        }
 
         const result = {
           findings: pool.agents.map((a) => a.findings).filter(Boolean),
+          supportingFindings: pool.agents.flatMap((a) => a.childFindings ?? []),
           agentCount: pool.agents.length,
           totalTokens: pool.totalTokens,
           totalToolCalls: pool.totalToolCalls,

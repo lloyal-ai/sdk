@@ -1,6 +1,6 @@
 import type { Operation } from 'effection';
-import { Tool, Trace, useAgentPool, runAgents, withSharedRoot, traceScope } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema, Toolkit, PressureThresholds } from '@lloyal-labs/lloyal-agents';
+import { Tool, Trace, useAgentPool, withSharedRoot, traceScope } from '@lloyal-labs/lloyal-agents';
+import type { JsonSchema, Toolkit, ToolContext, PressureThresholds } from '@lloyal-labs/lloyal-agents';
 
 /**
  * Configuration for {@link ResearchTool}
@@ -70,7 +70,7 @@ export class ResearchTool extends Tool<{ questions: string[] }> {
     this._toolkit = toolkit;
   }
 
-  *execute(args: { questions: string[] }): Operation<unknown> {
+  *execute(args: { questions: string[] }, context?: ToolContext): Operation<unknown> {
     const questions = args?.questions;
     if (!Array.isArray(questions) || questions.length === 0) {
       return { error: 'questions must be a non-empty array of strings', example: '{"questions": ["q1", "q2"]}' };
@@ -87,7 +87,7 @@ export class ResearchTool extends Tool<{ questions: string[] }> {
     const pressure = this._pressure;
 
     return yield* withSharedRoot(
-      { systemPrompt, tools: toolkit.toolsJson },
+      { systemPrompt, tools: toolkit.toolsJson, parent: context?.branch },
       function*(root) {
         const pool = yield* useAgentPool({
           tasks: questions.map(q => ({
@@ -102,34 +102,12 @@ export class ResearchTool extends Tool<{ questions: string[] }> {
           maxTurns,
           trace,
           pressure,
+          reportPrompt: reporterPrompt,
         });
-
-        // Force hard-cut agents to report — same pattern as prior harness reportPass
-        const hardCut = pool.agents.filter(a => !a.findings && !a.branch.disposed);
-        if (hardCut.length > 0) {
-          for (const a of pool.agents) {
-            if (a.findings && !a.branch.disposed) a.branch.pruneSync();
-          }
-          const reportTool = toolkit.toolMap.get('report')!;
-          const reporters = yield* runAgents({
-            tasks: hardCut.map(a => ({
-              systemPrompt: reporterPrompt.system,
-              content: reporterPrompt.user,
-              tools: JSON.stringify([reportTool.schema]),
-              parent: a.branch,
-            })),
-            tools: new Map([['report', reportTool]]),
-            terminalTool: 'report',
-            trace,
-            pressure: { softLimit: 200, hardLimit: 64 },
-          });
-          hardCut.forEach((a, i) => {
-            if (reporters.agents[i]?.findings) a.findings = reporters.agents[i].findings;
-          });
-        }
 
         const result = {
           findings: pool.agents.map(a => a.findings).filter(Boolean),
+          supportingFindings: pool.agents.flatMap(a => a.childFindings ?? []),
           agentCount: pool.agents.length,
           totalTokens: pool.totalTokens,
           totalToolCalls: pool.totalToolCalls,

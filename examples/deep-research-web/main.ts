@@ -26,13 +26,23 @@ import { createContext } from "@lloyal-labs/lloyal.node";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import { initAgents, JsonlTraceWriter } from "@lloyal-labs/lloyal-agents";
 import type { Source } from "@lloyal-labs/lloyal-agents";
-import { c, log, setJsonlMode, setVerboseMode, fmtSize, createView } from "./tui";
+import {
+  c,
+  log,
+  setJsonlMode,
+  setVerboseMode,
+  fmtSize,
+  createView,
+} from "./tui";
 import type { WorkflowEvent } from "./tui";
 import { TavilyProvider } from "@lloyal-labs/rig";
 import type { SourceContext, Chunk } from "@lloyal-labs/rig";
 import {
-  createReranker, WebSource, CorpusSource,
-  loadResources, chunkResources,
+  createReranker,
+  WebSource,
+  CorpusSource,
+  loadResources,
+  chunkResources,
 } from "@lloyal-labs/rig/node";
 import { handleQuery } from "./harness";
 import type { WorkflowOpts } from "./harness";
@@ -67,7 +77,9 @@ const flagIndices = new Set(
 
 const rerankModelPath = argVal("--reranker") || DEFAULT_RERANKER;
 const initialQuery = argVal("--query");
-const findingsMaxChars = argVal("--findings-budget") ? parseInt(argVal("--findings-budget")!, 10) : undefined;
+const findingsMaxChars = argVal("--findings-budget")
+  ? parseInt(argVal("--findings-budget")!, 10)
+  : undefined;
 const modelPath =
   args.find((a, i) => !a.startsWith("--") && !flagIndices.has(i)) ||
   DEFAULT_MODEL;
@@ -78,9 +90,9 @@ const hasTavily = !!process.env.TAVILY_API_KEY;
 if (!hasTavily && !corpusDir) {
   process.stdout.write(
     `At least one source required.\n\n` +
-    `  Web:    TAVILY_API_KEY=tvly-... npx tsx examples/deep-research-web/main.ts\n` +
-    `  Corpus: npx tsx examples/deep-research-web/main.ts --corpus <dir>\n` +
-    `  Both:   TAVILY_API_KEY=tvly-... npx tsx examples/deep-research-web/main.ts --corpus <dir>\n`,
+      `  Web:    TAVILY_API_KEY=tvly-... npx tsx examples/deep-research-web/main.ts\n` +
+      `  Corpus: npx tsx examples/deep-research-web/main.ts --corpus <dir>\n` +
+      `  Both:   TAVILY_API_KEY=tvly-... npx tsx examples/deep-research-web/main.ts --corpus <dir>\n`,
   );
   process.exit(1);
 }
@@ -105,7 +117,8 @@ const MAX_TOOL_TURNS = 20;
 main(function* () {
   const modelName = path.basename(modelPath).replace(/-Q\w+\.gguf$/, "");
 
-  const mode = hasTavily && corpusDir ? 'Web + Corpus' : hasTavily ? 'Web' : 'Corpus';
+  const mode =
+    hasTavily && corpusDir ? "Web + Corpus" : hasTavily ? "Web" : "Corpus";
   log();
   log(
     `${c.bold}  Deep Research${c.reset} ${c.dim}\u2014 ${mode} + Structured Concurrency${c.reset}`,
@@ -146,19 +159,23 @@ main(function* () {
     const resources = loadResources(corpusDir);
     const chunks = chunkResources(resources);
     sources.push(new CorpusSource(resources, chunks));
-    log(`  ${c.dim}  Corpus: ${resources.length} files, ${chunks.length} chunks${c.reset}`);
+    log(
+      `  ${c.dim}  Corpus: ${resources.length} files, ${chunks.length} chunks${c.reset}`,
+    );
   }
 
   if (hasTavily) {
-    sources.push(new WebSource(new TavilyProvider()));
+    sources.push(new WebSource(new TavilyProvider(), { topN: 3 }));
     log(`  ${c.dim}  Tavily web search enabled${c.reset}`);
   }
 
   const traceWriter = trace
-    ? new JsonlTraceWriter(fs.openSync(`trace-${Date.now()}.jsonl`, 'w'))
+    ? new JsonlTraceWriter(fs.openSync(`trace-${Date.now()}.jsonl`, "w"))
     : undefined;
   if (traceWriter) log(`  ${c.dim}  Trace: trace-*.jsonl${c.reset}`);
-  const { session, events } = yield* initAgents<WorkflowEvent>(ctx, { traceWriter });
+  const { session, events } = yield* initAgents<WorkflowEvent>(ctx, {
+    traceWriter,
+  });
 
   // View subscriber — all presentation lives here
   const view = createView({
@@ -186,8 +203,10 @@ main(function* () {
   // Initial query — clarify falls through to passthrough in non-interactive mode
   if (initialQuery) {
     const result = yield* handleQuery(initialQuery, harnessOpts);
-    if (result.type === 'clarify' && !jsonlMode) {
-      log(`  ${c.dim}Clarification needed but running in --query mode, treating as passthrough${c.reset}`);
+    if (result.type === "clarify" && !jsonlMode) {
+      log(
+        `  ${c.dim}Clarification needed but running in --query mode, treating as passthrough${c.reset}`,
+      );
     }
     if (jsonlMode) return;
   }
@@ -225,9 +244,10 @@ main(function* () {
       const result = pendingClarify
         ? yield* handleQuery(pendingClarify.query, harnessOpts, input)
         : yield* handleQuery(input, harnessOpts);
-      pendingClarify = result.type === 'clarify'
-        ? { query: pendingClarify?.query || input }
-        : null;
+      pendingClarify =
+        result.type === "clarify"
+          ? { query: pendingClarify?.query || input }
+          : null;
     } catch (err) {
       pendingClarify = null;
       log(`  ${c.red}Error: ${(err as Error).message}${c.reset}`);

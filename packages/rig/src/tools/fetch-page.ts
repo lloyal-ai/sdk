@@ -155,7 +155,17 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
           const chunk = chunks.find(c => c.resource === sc.file && c.startLine === sc.startLine);
           if (!chunk?.text) continue;
           const chunkTokens = chunk.tokens.length || Math.ceil(chunk.text.length / 4);
-          if (topChunks.length > 0 && tokenTotal + chunkTokens > TOKEN_BUDGET) break;
+          if (tokenTotal + chunkTokens > TOKEN_BUDGET) {
+            if (topChunks.length === 0) {
+              // First chunk exceeds budget — truncate to budget on paragraph boundary
+              const charLimit = TOKEN_BUDGET * 4; // ~4 chars per token estimate
+              let truncated = chunk.text.slice(0, charLimit);
+              const lastBreak = Math.max(truncated.lastIndexOf('\n\n'), truncated.lastIndexOf('. '));
+              if (lastBreak > charLimit * 0.4) truncated = truncated.slice(0, lastBreak + 1);
+              topChunks.push({ text: truncated + '\n\n[truncated]', heading: sc.heading, score: sc.score });
+            }
+            break;
+          }
           topChunks.push({ text: chunk.text, heading: sc.heading, score: sc.score });
           tokenTotal += chunkTokens;
         }

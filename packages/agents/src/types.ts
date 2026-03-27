@@ -56,6 +56,13 @@ export interface ToolSchema {
 export interface ToolContext {
   /** Stable agent identifier — branch handle at creation time */
   agentId: number;
+  /**
+   * The calling agent's branch — use for recursive tools that spawn
+   * sub-agents via {@link withSharedRoot} with `parent` option.
+   * Sub-agents forking from this branch inherit the agent's full
+   * KV state (Continuous Context).
+   */
+  branch?: Branch;
   /** Progress callback for long-running operations */
   onProgress?: (p: { filled: number; total: number }) => void;
 }
@@ -211,6 +218,15 @@ export interface AgentPoolOptions {
    *  findings are pruned — hard-cut agents keep their branches for
    *  reportPass extraction. @default false */
   pruneOnReport?: boolean;
+  /**
+   * Report prompt for scratchpad extraction of agents that were killed
+   * without findings. When provided, the pool extracts findings inline
+   * (idle processing) instead of requiring the harness to call reportPass.
+   *
+   * Format: `{ system: string; user: string }` — system prompt describes
+   * the extraction task, user prompt triggers the report.
+   */
+  reportPrompt?: { system: string; user: string };
 }
 
 /**
@@ -237,6 +253,8 @@ export interface AgentResult {
   samplingPpl: number;
   /** Per-token trace data (present only when {@link AgentPoolOptions.trace} is true) */
   trace?: TraceToken[];
+  /** Findings collected from recursive tool results (inner sub-agent findings) */
+  childFindings: readonly string[];
 }
 
 /**

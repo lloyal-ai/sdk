@@ -40,11 +40,11 @@
     "build": "tsc -b && mkdir -p dist/sources && cp src/sources/*.md dist/sources/"
   },
   "dependencies": {
-    "@lloyal-labs/sdk": "*",
     "@lloyal-labs/lloyal-agents": "*",
+    "@lloyal-labs/sdk": "*",
+    "@mozilla/readability": "^0.6.0",
     "effection": "^4.0.2",
-    "linkedom": "^0.18.12",
-    "@mozilla/readability": "^0.6.0"
+    "linkedom": "^0.18.12"
   },
   "peerDependencies": {
     "@lloyal-labs/lloyal.node": "^2.0.2"

@@ -1,5 +1,11 @@
 export { Ctx, Store, Events, Trace, TraceParent, ScratchpadParent } from './context';
 export { Tool } from './Tool';
+export { Agent } from './Agent';
+export type { AgentStatus, FindingsSource, FormatConfig, ToolHistoryEntry } from './Agent';
+export { DefaultAgentPolicy } from './AgentPolicy';
+export type { AgentPolicy, ProduceAction, SettleAction, IdleReason, PolicyConfig, ToolGuard } from './AgentPolicy';
+export { defaultToolGuards } from './AgentPolicy';
+export { CallingAgent } from './context';
 export { Source } from './source';
 export { buildUserDelta, buildToolResultDelta } from '@lloyal-labs/sdk';
 export { prepare, generate } from './generate';
@@ -11,6 +17,8 @@ export { initAgents } from './init';
 export { withSharedRoot } from './shared-root';
 export { NullTraceWriter, JsonlTraceWriter } from './trace-writer';
 export { traceScope } from './trace-scope';
+export { composePrompt, renderPrompt, renderTemplate } from './prompt';
+export type { PromptState, PromptSection, PromptStep } from './prompt';
 
 export type { Toolkit } from './toolkit';
 export type { TraceWriter } from './trace-writer';

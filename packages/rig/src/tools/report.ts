@@ -14,10 +14,10 @@ import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
  */
 export class ReportTool extends Tool<{ findings: string }> {
   readonly name = 'report';
-  readonly description = 'Submit your final research findings. Call this when you have gathered enough information to answer the question.';
+  readonly description = 'Submit your final research findings with specific evidence, direct quotes, data points, and source URLs from the pages you read. State what you found AND what you checked but could not find. Do not summarize — preserve detail.';
   readonly parameters: JsonSchema = {
     type: 'object',
-    properties: { findings: { type: 'string', description: 'Your research findings and answer' } },
+    properties: { findings: { type: 'string', description: 'Detailed findings with direct quotes, data points, and source URLs. Include what was found and what was not found.' } },
     required: ['findings'],
   };
 

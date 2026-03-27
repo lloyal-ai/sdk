@@ -11,6 +11,7 @@ import {
   useAgentPool,
   withSharedRoot,
   createToolkit,
+  renderTemplate,
 } from "@lloyal-labs/lloyal-agents";
 import type { Source } from "@lloyal-labs/lloyal-agents";
 import type { AgentPoolResult } from "@lloyal-labs/lloyal-agents";
@@ -34,12 +35,18 @@ function loadTask(name: string): { system: string; user: string } {
   return { system: raw.slice(0, sep).trim(), user: raw.slice(sep + 5).trim() };
 }
 
+/** Load a raw Eta template file. Rendered at call time via renderTemplate(). */
+function loadEtaTemplate(name: string): string {
+  return fs.readFileSync(path.resolve(__dirname, `tasks/${name}.eta`), "utf8");
+}
+
 const PLAN = loadTask("plan");
 const ROOT = loadTask("root");
 const BRIDGE = loadTask("bridge");
-const SYNTHESIZE = loadTask("synthesize");
+const SYNTHESIZE_TEMPLATE = loadEtaTemplate("synthesize");
 const VERIFY = loadTask("verify");
 const EVAL = loadTask("eval");
+const FINDINGS_EVAL = loadTask("findings-eval");
 const REPORT = loadTask("report");
 
 // ── Options ──────────────────────────────────────────────────────
@@ -98,67 +105,10 @@ function* rerankChunks(
 
 interface SourceResearchResult {
   findings: string[];
+  supportingFindings?: string[];
   agentCount: number;
   totalTokens: number;
   totalToolCalls: number;
-}
-
-function* reportPass(
-  pool: AgentPoolResult,
-  opts: WorkflowOpts,
-): Operation<void> {
-  const hardCut = pool.agents.filter((a) => !a.findings && !a.branch.disposed);
-  if (hardCut.length === 0) return;
-
-  // Free KV from agents that already reported
-  for (const a of pool.agents) {
-    if (a.findings && !a.branch.disposed) a.branch.pruneSync();
-  }
-
-  // Scratchpad extraction: fork, grammar-extract findings, prune — works under pressure
-  const ctx: SessionContext = yield* Ctx.expect();
-  const schema = {
-    type: "object",
-    properties: { findings: { type: "string" } },
-    required: ["findings"],
-  };
-  const grammar: string = yield* call(() =>
-    ctx.jsonSchemaToGrammar(JSON.stringify(schema)),
-  );
-  const messages = [
-    { role: "system", content: REPORT.system },
-    { role: "user", content: REPORT.user },
-  ];
-  const { prompt } = ctx.formatChatSync(JSON.stringify(messages), {
-    enableThinking: false,
-  });
-
-  for (const a of hardCut) {
-    // Guard: skip extraction for agents that barely ran. An agent with <100
-    // tokens or <2 tool calls has insufficient retrieved evidence in its KV
-    // context. Extracting from it produces hallucinated findings — the model
-    // confabulates confident-sounding citations from training data because
-    // there's nothing real in context to ground on. These fabricated findings
-    // then flow into the outer agent's context as if they were researched
-    // evidence, poisoning downstream synthesis. Better to return no findings
-    // than fabricated ones.
-    if (a.tokenCount < 100 || a.toolCallCount < 2) {
-      if (!a.branch.disposed) a.branch.pruneSync();
-      continue;
-    }
-    try {
-      const result = yield* generate<{ findings: string }>({
-        prompt,
-        grammar,
-        parse: (o: string) => JSON.parse(o),
-        parent: a.branch,
-      });
-      if (result.parsed?.findings) a.findings = result.parsed.findings;
-    } catch {
-      /* extraction failure non-fatal */
-    }
-    if (!a.branch.disposed) a.branch.pruneSync();
-  }
 }
 
 // ── Operations ───────────────────────────────────────────────────
@@ -220,6 +170,15 @@ function* research(
             `## ${source.name} research\n\n${sectionFindings}`,
           );
 
+        const supporting = (result.supportingFindings ?? [])
+          .filter(Boolean)
+          .map((f, j) => `### Supporting finding ${j + 1}\n${f}`)
+          .join("\n\n");
+        if (supporting)
+          findingSections.push(
+            `## ${source.name} supporting research\n\n${supporting}`,
+          );
+
         // Exit gate: structure discoveries as durable context for the next source
         if (i < opts.sources.length - 1 && sectionFindings) {
           const sourceChunks = source.getChunks();
@@ -257,8 +216,8 @@ function* research(
                 maxTurns: effectiveMaxTurns,
                 trace: opts.trace,
                 pressure: { softLimit: 1024 },
+                reportPrompt: REPORT,
               });
-              yield* reportPass(pool, opts);
               totalTokens += pool.totalTokens;
               totalToolCalls += pool.totalToolCalls;
               return pool.agents[0]?.findings || "";
@@ -352,6 +311,15 @@ function* warmResearch(
     if (sectionFindings)
       findingSections.push(`## ${source.name} research\n\n${sectionFindings}`);
 
+    const supporting = (result.supportingFindings ?? [])
+      .filter(Boolean)
+      .map((f, j) => `### Supporting finding ${j + 1}\n${f}`)
+      .join("\n\n");
+    if (supporting)
+      findingSections.push(
+        `## ${source.name} supporting research\n\n${supporting}`,
+      );
+
     // Exit gate: structure discoveries as durable context for the next source
     if (i < opts.sources.length - 1 && sectionFindings) {
       const sourceChunks = source.getChunks();
@@ -389,8 +357,8 @@ function* warmResearch(
             maxTurns: effectiveMaxTurns,
             trace: opts.trace,
             pressure: { softLimit: 1024 },
+            reportPrompt: REPORT,
           });
-          yield* reportPass(pool, opts);
           totalTokens += pool.totalTokens;
           totalToolCalls += pool.totalToolCalls;
           return pool.agents[0]?.findings || "";
@@ -439,6 +407,7 @@ function* synthesize(
   sourcePassages: string,
   query: string,
   opts: WorkflowOpts,
+  conflicts?: string[],
 ): Operation<{
   pool: AgentPoolResult;
   eval: {
@@ -449,27 +418,37 @@ function* synthesize(
   };
   timeMs: number;
 }> {
-  const content = SYNTHESIZE.user
-    .replace("{{agentFindings}}", agentFindings || "(none)")
-    .replace("{{sourcePassages}}", sourcePassages || "(none)")
-    .replace("{{query}}", query);
-
   yield* opts.events.send({ type: "synthesize:start" });
   const t = performance.now();
 
-  // Grounding tools from all sources + report — synthesis can independently verify
-  const groundingTools = opts.sources.flatMap((s) => s.groundingTools);
-  const synthToolkit = createToolkit([reportTool]);
+  // Render Eta template — conditionals in the template control which sections appear
+  const rendered = renderTemplate(SYNTHESIZE_TEMPLATE, {
+    agentFindings,
+    sourcePassages: sourcePassages || null,
+    conflicts: conflicts && conflicts.length > 0 ? conflicts : null,
+    query,
+  });
+
+  // Split rendered output on first --- into system prompt and user content
+  const sepIdx = rendered.indexOf("\n---\n");
+  const system = sepIdx >= 0 ? rendered.slice(0, sepIdx).trim() : rendered.trim();
+  const content = sepIdx >= 0 ? rendered.slice(sepIdx + 5).trim() : "";
+
+  // Tools: grounding tools only when conflicts need resolution
+  const groundingTools = conflicts && conflicts.length > 0
+    ? opts.sources.flatMap((s) => s.groundingTools)
+    : [];
+  const synthToolkit = createToolkit([...groundingTools, reportTool]);
 
   // Synthesis runs inside withSharedRoot; verify+eval run outside so that
   // pruning the shared root frees KV (via fork_head decrement) before diverge.
   const synthPool = yield* withSharedRoot(
-    { systemPrompt: SYNTHESIZE.system, tools: synthToolkit.toolsJson },
+    { systemPrompt: system, tools: synthToolkit.toolsJson },
     function* (root) {
       const pool = yield* useAgentPool({
         tasks: [
           {
-            systemPrompt: SYNTHESIZE.system,
+            systemPrompt: system,
             content,
             tools: synthToolkit.toolsJson,
             parent: root,
@@ -480,9 +459,8 @@ function* synthesize(
         maxTurns: opts.maxTurns,
         trace: opts.trace,
         pressure: { softLimit: 1024 },
+        reportPrompt: REPORT,
       });
-
-      yield* reportPass(pool, opts);
       return pool;
     },
   );
@@ -586,6 +564,72 @@ function* evaluate(
     converged: result.parsed as boolean | null,
     tokenCount: result.tokenCount,
     sampleCount,
+    timeMs,
+  };
+}
+
+function* evaluateFindings(
+  agentFindings: string,
+  opts: WorkflowOpts,
+): Operation<{
+  converged: boolean | null;
+  conflicts: string[];
+  tokenCount: number;
+  timeMs: number;
+}> {
+  const ctx: SessionContext = yield* Ctx.expect();
+  const userContent = FINDINGS_EVAL.user.replace("{{findings}}", agentFindings);
+  const messages = [
+    { role: "system", content: FINDINGS_EVAL.system },
+    { role: "user", content: userContent },
+  ];
+
+  const findingsEvalSchema = {
+    type: "object",
+    properties: {
+      converged: { type: "boolean" },
+      conflicts: {
+        type: "array",
+        items: { type: "string" },
+      },
+    },
+    required: ["converged", "conflicts"],
+  };
+  const grammar: string = yield* call(() =>
+    ctx.jsonSchemaToGrammar(JSON.stringify(findingsEvalSchema)),
+  );
+  const { prompt }: { prompt: string } = yield* call(() =>
+    ctx.formatChat(JSON.stringify(messages), { enableThinking: false }),
+  );
+
+  const t = performance.now();
+  const result = yield* generate<{ converged: boolean; conflicts: string[] } | null>({
+    prompt,
+    grammar,
+    params: { temperature: 0 },
+    parse: (output: string) => {
+      try {
+        return JSON.parse(output) as { converged: boolean; conflicts: string[] };
+      } catch {
+        return null;
+      }
+    },
+  });
+  const timeMs = performance.now() - t;
+  const parsed = result.parsed;
+
+  yield* opts.events.send({
+    type: "findings:eval",
+    converged: parsed?.converged ?? null,
+    conflicts: parsed?.conflicts ?? [],
+    tokenCount: result.tokenCount,
+    timeMs,
+  });
+
+  return {
+    converged: parsed?.converged ?? null,
+    conflicts: parsed?.conflicts ?? [],
+    tokenCount: result.tokenCount,
     timeMs,
   };
 }
@@ -701,17 +745,26 @@ export function* handleQuery(
 
   if (r.type === "clarify") return { type: "clarify", questions: r.questions };
 
-  // Research → Synthesize → Eval → Finalize
+  // Research → Findings Eval → Synthesize (with grounding if diverged) → Eval → Finalize
   const warm = !!opts.session.trunk;
   const res = warm
     ? yield* warmResearch(r.questions, query, opts, r.maxTurns)
     : yield* research(r.questions, query, opts, r.maxTurns);
+
+  // Evaluate findings convergence before synthesis
+  const findingsEval = yield* evaluateFindings(res.agentFindings, opts);
+
+  // When diverged, pass conflicts to synthesize — it gets grounding tools to verify
+  const conflicts = !findingsEval.converged && findingsEval.conflicts.length > 0
+    ? findingsEval.conflicts
+    : undefined;
 
   const s = yield* synthesize(
     res.agentFindings,
     res.sourcePassages,
     query,
     opts,
+    conflicts,
   );
 
   const findings = s.pool.agents[0]?.findings || "";
@@ -733,6 +786,14 @@ export function* handleQuery(
       tokens: res.totalTokens,
       detail: `${res.totalToolCalls} tools`,
       timeMs: res.timeMs,
+    },
+    {
+      label: "Findings Eval",
+      tokens: findingsEval.tokenCount,
+      detail: findingsEval.converged
+        ? "converged"
+        : `${findingsEval.conflicts.length} conflicts`,
+      timeMs: findingsEval.timeMs,
     },
     {
       label: "Synthesize",

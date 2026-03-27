@@ -87,11 +87,11 @@ export class WebSource extends Source<SourceContext, Chunk> {
   /**
    * @param provider - Search backend (e.g. {@link TavilyProvider}) for web_search calls
    */
-  constructor(provider: SearchProvider) {
+  constructor(provider: SearchProvider, opts?: { topN?: number }) {
     super();
     this._researchPrompt = readTask("web-research");
     this._fetchPage = new BufferingFetchPage(this._buffer);
-    this._webSearch = new WebSearchTool(provider);
+    this._webSearch = new WebSearchTool(provider, opts?.topN);
   }
 
   /** @inheritDoc */

@@ -158,6 +158,38 @@ export class Rerank {
     return ch.iterable;
   }
 
+  /**
+   * Score raw text strings against a query in one batch.
+   *
+   * Tokenizes texts synchronously, builds reranker prompt arrays, and
+   * dispatches via `_scoreGroup` for parallel cross-encoder scoring.
+   * Up to `nSeqMax` texts are scored per batch call.
+   *
+   * @param query - Reference query to score against
+   * @param texts - Raw text strings to score
+   * @returns Scores (0–1) in input order
+   */
+  async scoreBatch(query: string, texts: string[]): Promise<number[]> {
+    if (this._disposed) throw new Error('Rerank disposed');
+    if (texts.length === 0) return [];
+
+    const queryTokens = this._ctx.tokenizeSync(query, false);
+    const shared = [...this._prefixTokens, ...queryTokens, ...this._midTokens];
+    const maxDoc = Math.floor(this._nCtx / this._nSeqMax) - shared.length - this._suffixTokens.length;
+
+    const tokenArrays = texts.map((text) => {
+      const doc = this._ctx.tokenizeSync(text, false);
+      return [...shared, ...(doc.length > maxDoc ? doc.slice(0, maxDoc) : doc), ...this._suffixTokens];
+    });
+
+    const scores: number[] = [];
+    for (let i = 0; i < tokenArrays.length; i += this._nSeqMax) {
+      const logits = await this._ctx._scoreGroup(tokenArrays.slice(i, i + this._nSeqMax));
+      scores.push(...logits.map((l) => this._rerankScore(l)));
+    }
+    return scores;
+  }
+
   async tokenize(text: string): Promise<number[]> {
     return this._ctx.tokenize(text, false);
   }

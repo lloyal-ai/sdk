@@ -22,14 +22,16 @@ import type { Reranker, ScoredResult } from "./tools/types";
  */
 export async function createReranker(
   modelPath: string,
-  opts?: { nSeqMax?: number; nCtx?: number },
+  opts?: { nSeqMax?: number; nCtx?: number; nBatch?: number },
 ): Promise<Reranker> {
   const nSeqMax = opts?.nSeqMax ?? 8;
   const nCtx = opts?.nCtx ?? 4096;
+  const nBatch = opts?.nBatch ?? Math.floor(nCtx / nSeqMax);
   const ctx = await createContext({
     modelPath,
     nCtx,
     nSeqMax,
+    nBatch,
     typeK: 'q4_0',
     typeV: 'q4_0',
   });
@@ -71,6 +73,10 @@ export async function createReranker(
           };
         },
       };
+    },
+
+    scoreBatch(query: string, texts: string[]): Promise<number[]> {
+      return rerank.scoreBatch(query, texts);
     },
 
     async tokenizeChunks(chunks: Chunk[]): Promise<void> {

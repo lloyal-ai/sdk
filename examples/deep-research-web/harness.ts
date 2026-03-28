@@ -160,6 +160,7 @@ function* research(
       for (let i = 0; i < opts.sources.length; i++) {
         const source = opts.sources[i];
         const sourcePrompt = SOURCE_PROMPTS[source.name] ?? ROOT;
+        const scorer = source.createScorer(query);
         const pool = yield* spawnAgents({
           tools: source.tools,
           systemPrompt: sourcePrompt.system,
@@ -179,6 +180,7 @@ function* research(
           reportPrompt: REPORT,
           pruneOnReport: true,
           trace: opts.trace,
+          scorer,
         });
         const result: SourceResearchResult = {
           results: pool.agents.map((a) => a.findings).filter(Boolean) as string[],
@@ -322,6 +324,7 @@ function* warmResearch(
   for (let i = 0; i < opts.sources.length; i++) {
     const source = opts.sources[i];
     const sourcePrompt = SOURCE_PROMPTS[source.name] ?? ROOT;
+    const scorer = source.createScorer(query);
     const pool = yield* spawnAgents({
       tools: source.tools,
       systemPrompt: sourcePrompt.system,
@@ -341,6 +344,7 @@ function* warmResearch(
       reportPrompt: REPORT,
       pruneOnReport: true,
       trace: opts.trace,
+      scorer,
     });
     const result: SourceResearchResult = {
       results: pool.agents.map((a) => a.findings).filter(Boolean) as string[],

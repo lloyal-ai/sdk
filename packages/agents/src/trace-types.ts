@@ -185,4 +185,9 @@ export type TraceEvent =
   // ── Source events (rig package) ─────────────
   | TraceEventBase & { type: 'source:bind'; sourceName: string }
   | TraceEventBase & { type: 'source:research'; sourceName: string; questions: string[] }
-  | TraceEventBase & { type: 'source:chunks'; sourceName: string; chunkCount: number };
+  | TraceEventBase & { type: 'source:chunks'; sourceName: string; chunkCount: number }
+
+  // ── Entailment scoring events ──────────────
+  | TraceEventBase & { type: 'entailment:search'; tool: string; query: string; [key: string]: unknown }
+  | TraceEventBase & { type: 'entailment:search:reordered'; tool: string; after: Array<{ title: string; url: string }> }
+  | TraceEventBase & { type: 'entailment:delegate'; tool: string; tasks: Array<{ text: string; score: number; kept: boolean }> };

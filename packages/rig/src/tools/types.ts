@@ -52,6 +52,8 @@ export interface ScoredResult {
 export interface Reranker {
   /** Score chunks against a query, streaming progressive results */
   score(query: string, chunks: Chunk[]): AsyncIterable<ScoredResult>;
+  /** Score raw text strings against a query in one batch. Returns scores (0–1) in input order. */
+  scoreBatch(query: string, texts: string[]): Promise<number[]>;
   /** Pre-tokenize chunks for subsequent scoring calls */
   tokenizeChunks(chunks: Chunk[]): Promise<void>;
   /** Release reranker resources */

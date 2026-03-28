@@ -72,6 +72,7 @@ export class CorpusSource extends Source<{ reranker: Reranker }, Chunk> {
    */
   *bind(ctx: { reranker: Reranker }): Operation<void> {
     if (this._bound) return;
+    this._reranker = ctx.reranker;
     const tw = yield* Trace.expect();
     tw.write({ traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
       type: 'source:bind', sourceName: this.name });

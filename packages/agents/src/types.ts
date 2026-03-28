@@ -1,6 +1,7 @@
 import type { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from './AgentPolicy';
+import type { EntailmentScorer } from './source';
 
 // ── Tool base class types ──────────────────────────────────────
 
@@ -66,6 +67,12 @@ export interface ToolContext {
   branch?: Branch;
   /** Progress callback for long-running operations */
   onProgress?: (p: { filled: number; total: number }) => void;
+  /**
+   * Entailment scorer for maintaining semantic coherence with the
+   * original query across recursive depths. Tools use this to score
+   * results against the root intent before returning to the agent.
+   */
+  scorer?: EntailmentScorer;
 }
 
 // ── Trace types ───────────────────────────────────────────────
@@ -237,6 +244,9 @@ export interface AgentPoolOptions {
   };
   /** Custom agent policy. @default DefaultAgentPolicy with default opts */
   policy?: AgentPolicy;
+  /** Entailment scorer for semantic coherence across recursive depths.
+   *  Passed to every tool via {@link ToolContext.scorer}. */
+  scorer?: EntailmentScorer;
 }
 
 /**

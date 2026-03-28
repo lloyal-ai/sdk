@@ -51,7 +51,7 @@ export class SearchTool extends Tool<{ query: string }> {
       type: 'rerank:start', query, chunkCount: chunks.length,
     });
 
-    const results: ScoredChunk[] = yield* call(async () => {
+    let results: ScoredChunk[] = yield* call(async () => {
       let last: ScoredChunk[] = [];
       for await (const { results, filled, total } of reranker.score(query, chunks)) {
         if (context?.onProgress) context.onProgress({ filled, total });
@@ -59,6 +59,11 @@ export class SearchTool extends Tool<{ query: string }> {
       }
       return last;
     });
+
+    // Corpus search: agent-local scoring only. No entailment check —
+    // agents need to discover bridging content (adjacent sections that
+    // connect the agent's investigation to the answer). Scoring against
+    // the original query would demote exactly that content.
 
     tw.write({
       traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),

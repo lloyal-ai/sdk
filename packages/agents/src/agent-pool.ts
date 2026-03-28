@@ -16,6 +16,7 @@ import type {
   AgentPoolOptions,
   AgentPoolResult,
   AgentEvent,
+  ToolContext,
 } from './types';
 
 // ── Agent state transitions ────────────────────────────────────
@@ -580,12 +581,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         });
 
         const tool = tools.get(tc.name);
-        const toolContext = {
+        const toolContext: ToolContext = {
           agentId: agent.id,
           branch: agent.branch,
           onProgress: (p: { filled: number; total: number }) => {
             progressBridge.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });
           },
+          scorer: opts.scorer,
         };
 
         try {

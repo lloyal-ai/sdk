@@ -1,6 +1,6 @@
 import type { Operation } from "effection";
 import { Source, Trace } from "@lloyal-labs/lloyal-agents";
-import type { Tool, PressureThresholds } from "@lloyal-labs/lloyal-agents";
+import type { Tool, ToolContext } from "@lloyal-labs/lloyal-agents";
 import type { Chunk } from "../resources/types";
 import type { SearchProvider } from "../tools/types";
 import type { Reranker } from "../tools/types";
@@ -22,25 +22,36 @@ export { chunkFetchedPages, type FetchedPage } from "./chunking";
  */
 class BufferingFetchPage extends FetchPageTool {
   private _buffer: FetchedPage[];
+  private _urlCache = new Map<string, unknown>();
 
   constructor(buffer: FetchedPage[], opts?: { maxChars?: number; topK?: number; timeout?: number; tokenBudget?: number }) {
     super(opts);
     this._buffer = buffer;
   }
 
-  *execute(args: { url: string; query?: string }): Operation<unknown> {
-    const result = yield* super.execute(args);
+  clearCache(): void {
+    this._urlCache.clear();
+  }
+
+  *execute(args: { url: string; query?: string }, context?: ToolContext): Operation<unknown> {
+    const cached = this._urlCache.get(args.url);
+    if (cached) return cached;
+
+    const result = yield* super.execute(args, context);
+
+    this._urlCache.set(args.url, result);
+
     const r = result as Record<string, unknown>;
-    if (
-      typeof r?.content === "string" &&
-      r.content !== "[Could not extract article content]"
-    ) {
+    const hasContent = typeof r?.content === "string"
+      && r.content !== "[Could not extract article content]";
+    if (hasContent) {
       this._buffer.push({
         url: (r.url as string) || args.url,
         title: (r.title as string) || "",
         text: r.content as string,
       });
     }
+
     return result;
   }
 }
@@ -111,6 +122,8 @@ export class WebSource extends Source<{ reranker: Reranker }, Chunk> {
    */
   *bind(ctx: { reranker: Reranker }): Operation<void> {
     this._buffer.length = 0;
+    this._fetchPage.clearCache();
+    this._reranker = ctx.reranker;
     this._fetchPage.setReranker(ctx.reranker);
 
     const tw = yield* Trace.expect();

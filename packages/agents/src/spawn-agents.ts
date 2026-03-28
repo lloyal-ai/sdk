@@ -1,9 +1,11 @@
 import type { Operation } from 'effection';
+import { call } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { Tool } from './Tool';
 import type { JsonSchema, ToolContext } from './types';
 import type { AgentPoolResult, PressureThresholds } from './types';
 import type { AgentPolicy } from './AgentPolicy';
+import type { EntailmentScorer } from './source';
 import { Trace } from './context';
 import { traceScope } from './trace-scope';
 import { createToolkit } from './toolkit';
@@ -80,6 +82,9 @@ export interface SpawnAgentsOpts {
   trace?: boolean;
   /** Parent branch for warm path (Continuous Context). Sub-agents inherit full attention state. */
   parent?: Branch;
+  /** Entailment scorer for semantic coherence across recursive depths.
+   *  Created via {@link Source.createScorer}. Propagated to all inner pools. */
+  scorer?: EntailmentScorer;
 }
 
 // ── Recursive tool ───────────────────────────────────────────
@@ -144,11 +149,47 @@ class DelegateTool extends Tool<Record<string, unknown>> {
       throw new Error(`${this.name}: toolkit not wired. Internal error.`);
     }
 
+    const tw = yield* Trace.expect();
+
+    // Entailment gate: filter drifted/echoed tasks before spawning
+    const scorer = context?.scorer;
+    let filtered: Array<{ task: string; score: number }> | undefined;
+    if (scorer) {
+      const allTasks = [...tasks];
+      const scores: number[] = yield* call(() => scorer.scoreEntailmentBatch(tasks));
+      const surviving: string[] = [];
+      const rejected: Array<{ task: string; score: number }> = [];
+      for (let i = 0; i < tasks.length; i++) {
+        if (scorer.shouldProceed(scores[i])) {
+          surviving.push(tasks[i]);
+        } else {
+          rejected.push({ task: tasks[i], score: scores[i] });
+        }
+      }
+      if (rejected.length > 0) filtered = rejected;
+
+      tw.write({
+        traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
+        type: 'entailment:delegate',
+        tool: this.name,
+        tasks: allTasks.map((text, i) => ({
+          text: text.slice(0, 200),
+          score: scores[i],
+          kept: scorer.shouldProceed(scores[i]),
+        })),
+      });
+
+      if (surviving.length === 0) {
+        return { filtered, error: 'All proposed tasks drifted from the original query.' };
+      }
+      tasks = surviving;
+    }
+
     const opts = this._spawnOpts;
     const toolkit = this._toolkit;
-    const tw = yield* Trace.expect();
-    const scope = traceScope(tw, null, `delegate:${this.name}`, { taskCount: tasks.length });
+    const scope = traceScope(tw, null, `delegate:${this.name}`, { taskCount: tasks.length, filtered: filtered?.length ?? 0 });
 
+    // Scorer propagation: same immutable scorer reaches all descendant pools
     const pool = yield* withSharedRoot(
       { systemPrompt: opts.systemPrompt, tools: toolkit.toolsJson, parent: context?.branch },
       function* (root) {
@@ -167,6 +208,7 @@ class DelegateTool extends Tool<Record<string, unknown>> {
           pressure: opts.pressure,
           reportPrompt: opts.reportPrompt,
           policy: opts.policy,
+          scorer: context?.scorer,
         });
       },
     );
@@ -177,6 +219,7 @@ class DelegateTool extends Tool<Record<string, unknown>> {
       agentCount: pool.agents.length,
       totalTokens: pool.totalTokens,
       totalToolCalls: pool.totalToolCalls,
+      ...(filtered ? { filtered } : {}),
     };
     scope.close();
     return result;
@@ -256,6 +299,7 @@ export function* spawnAgents(opts: SpawnAgentsOpts): Operation<AgentPoolResult> 
         pressure: opts.pressure,
         reportPrompt: opts.reportPrompt,
         policy: opts.policy,
+        scorer: opts.scorer,
       });
     },
   );

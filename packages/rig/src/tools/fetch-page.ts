@@ -3,7 +3,43 @@ import type { Operation } from 'effection';
 import { Tool, Trace } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import { chunkHtml } from '../sources/chunking';
+import type { Chunk } from '../resources/types';
 import type { Reranker, ScoredChunk } from './types';
+
+/** Select top-K scored chunks within a token budget. */
+function selectTopChunks(
+  scored: ScoredChunk[],
+  chunks: Chunk[],
+  topK: number,
+  tokenBudget: number,
+): Array<{ text: string; heading: string; score: number }> {
+  const selected: Array<{ text: string; heading: string; score: number }> = [];
+  let tokenTotal = 0;
+
+  for (const sc of scored.slice(0, topK)) {
+    const chunk = chunks.find(c => c.resource === sc.file && c.startLine === sc.startLine);
+    if (!chunk?.text) continue;
+
+    const chunkTokens = chunk.tokens.length || Math.ceil(chunk.text.length / 4);
+
+    if (tokenTotal + chunkTokens > tokenBudget) {
+      // First chunk exceeds budget — truncate on paragraph boundary
+      if (selected.length === 0) {
+        const charLimit = tokenBudget * 4;
+        let truncated = chunk.text.slice(0, charLimit);
+        const lastBreak = Math.max(truncated.lastIndexOf('\n\n'), truncated.lastIndexOf('. '));
+        if (lastBreak > charLimit * 0.4) truncated = truncated.slice(0, lastBreak + 1);
+        selected.push({ text: truncated + '\n\n[truncated]', heading: sc.heading, score: sc.score });
+      }
+      break;
+    }
+
+    selected.push({ text: chunk.text, heading: sc.heading, score: sc.score });
+    tokenTotal += chunkTokens;
+  }
+
+  return selected;
+}
 
 /**
  * Fetch a web page and extract readable article content.
@@ -145,6 +181,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
       if (chunks.length > 0) {
         yield* call(() => reranker.tokenizeChunks(chunks));
 
+        // Score chunks against agent's local query
         let scored: ScoredChunk[] = [];
         yield* call(async () => {
           for await (const batch of reranker.score(args.query!, chunks)) {
@@ -153,28 +190,14 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
           }
         });
 
+        // Fetch page: agent-local scoring only. No entailment check —
+        // the agent already chose to read this page. Content should be
+        // scored against what the agent asked for. Filtering against the
+        // original query removes bridging content that produces hypothesis
+        // greps. The alsoOnPage field provides discovery signals instead.
+
         // Select top-K within token budget (tokens populated by tokenizeChunks)
-        const TOKEN_BUDGET = tokenBudget;
-        const topChunks: Array<{ text: string; heading: string; score: number }> = [];
-        let tokenTotal = 0;
-        for (const sc of scored.slice(0, topK)) {
-          const chunk = chunks.find(c => c.resource === sc.file && c.startLine === sc.startLine);
-          if (!chunk?.text) continue;
-          const chunkTokens = chunk.tokens.length || Math.ceil(chunk.text.length / 4);
-          if (tokenTotal + chunkTokens > TOKEN_BUDGET) {
-            if (topChunks.length === 0) {
-              // First chunk exceeds budget — truncate to budget on paragraph boundary
-              const charLimit = TOKEN_BUDGET * 4; // ~4 chars per token estimate
-              let truncated = chunk.text.slice(0, charLimit);
-              const lastBreak = Math.max(truncated.lastIndexOf('\n\n'), truncated.lastIndexOf('. '));
-              if (lastBreak > charLimit * 0.4) truncated = truncated.slice(0, lastBreak + 1);
-              topChunks.push({ text: truncated + '\n\n[truncated]', heading: sc.heading, score: sc.score });
-            }
-            break;
-          }
-          topChunks.push({ text: chunk.text, heading: sc.heading, score: sc.score });
-          tokenTotal += chunkTokens;
-        }
+        const topChunks = selectTopChunks(scored, chunks, topK, tokenBudget);
 
         if (tw) {
           tw.write({
@@ -197,11 +220,20 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
         }
 
         if (topChunks.length > 0) {
+          // Discovery signal: headings of chunks that didn't make the cut.
+          // Lightweight (~50 tokens) but gives the agent topics to explore.
+          const selectedHeadings = new Set(topChunks.map(c => c.heading));
+          const alsoOnPage = scored
+            .filter((sc) => !selectedHeadings.has(sc.heading))
+            .map((sc) => sc.heading)
+            .filter((h, i, arr) => arr.indexOf(h) === i);
+
           return {
             url,
             title: fetched.title,
             content: topChunks.map(c => c.text).join('\n\n---\n\n'),
             chunks: topChunks.length,
+            ...(alsoOnPage.length > 0 ? { alsoOnPage } : {}),
           };
         }
       }

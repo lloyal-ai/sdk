@@ -1,7 +1,7 @@
 import { call } from 'effection';
 import type { Operation } from 'effection';
-import { Tool } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
+import { Tool, Trace } from '@lloyal-labs/lloyal-agents';
+import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { SearchProvider, SearchResult } from './types';
 
 export type { SearchProvider, SearchResult };
@@ -79,16 +79,53 @@ export class WebSearchTool extends Tool<{ query: string }> {
     this._topN = topN;
   }
 
-  *execute(args: { query: string }): Operation<unknown> {
+  *execute(args: { query: string }, context?: ToolContext): Operation<unknown> {
     const query = args.query?.trim();
     if (!query) return { error: 'query must not be empty' };
 
     const provider = this._provider;
     const topN = this._topN;
+
+    let results: SearchResult[];
     try {
-      return yield* call(() => provider.search(query, topN));
+      results = yield* call(() => provider.search(query, topN));
     } catch (err) {
       return { error: `Search failed: ${(err as Error).message}` };
     }
+
+    // Rerank by entailment against original query when scorer is available
+    const scorer = context?.scorer;
+    if (scorer && results.length > 1) {
+      const snippets = results.map((r) => `${r.title}. ${r.snippet}`);
+      const scores: number[] = yield* call(() => scorer.scoreEntailmentBatch(snippets));
+
+      let tw;
+      try { tw = yield* Trace.expect(); } catch { /* no trace */ }
+      if (tw) {
+        tw.write({
+          traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
+          type: 'entailment:search',
+          tool: 'web_search',
+          query,
+          before: results.map((r, i) => ({ title: r.title, url: r.url, score: scores[i] })),
+        });
+      }
+
+      results = results
+        .map((r, i) => ({ result: r, score: scores[i] }))
+        .sort((a, b) => b.score - a.score)
+        .map((entry) => entry.result);
+
+      if (tw) {
+        tw.write({
+          traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
+          type: 'entailment:search:reordered',
+          tool: 'web_search',
+          after: results.map((r) => ({ title: r.title, url: r.url })),
+        });
+      }
+    }
+
+    return results;
   }
 }

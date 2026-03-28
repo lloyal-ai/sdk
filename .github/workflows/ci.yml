@@ -26,6 +26,18 @@ jobs:
           test -f packages/agents/dist/index.js
           test -f packages/agents/dist/index.d.ts
 
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm install
+      - run: npm run test:unit
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

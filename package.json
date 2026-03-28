@@ -8,6 +8,8 @@
     "clean": "rm -rf packages/*/dist",
     "docs": "npx typedoc",
     "test": "npm run build && npx tsx test/sdk.ts && npx tsx test/agents.ts",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
     "examples:deep-research": "npx tsx examples/deep-research/main.ts",
     "examples:react": "npx tsx examples/react-agent/main.ts",
     "examples:reflect": "npx tsx examples/reflection/main.ts",
@@ -19,7 +21,8 @@
     "tsx": "^4.21.0",
     "typedoc": "^0.28.0",
     "typedoc-rhineai-theme": "^1.0.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.2"
   },
   "version": "1.1.0"
 }

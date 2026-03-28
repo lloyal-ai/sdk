@@ -5,7 +5,7 @@ import type { Tool } from './Tool';
  * Entailment scorer — scores texts against an original query to
  * maintain semantic coherence across recursive agent pipelines.
  *
- * Created per research invocation via {@link Source.createScorer}.
+ * Created per invocation via {@link Source.createScorer}.
  * Immutable once created — safe to share across concurrent pools.
  *
  * @category Agents
@@ -57,7 +57,7 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
   protected _entailmentFloor: number = 0.25;
 
   /**
-   * Create an immutable entailment scorer scoped to one research invocation.
+   * Create an immutable entailment scorer scoped to one invocation.
    *
    * The returned scorer captures `originalQuery` in a closure — no mutable
    * state on Source. Safe to use across concurrent pools within the same

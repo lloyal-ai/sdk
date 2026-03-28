@@ -93,7 +93,7 @@ export type TraceEvent =
         agentId: number;
         tokenCount: number;
         toolCallCount: number;
-        findings: string | null;
+        result: string | null;
         ppl: number;
       }>;
       totalTokens: number;

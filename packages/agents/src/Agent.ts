@@ -22,7 +22,7 @@ export type AgentStatus = 'idle' | 'active' | 'awaiting_tool' | 'disposed';
  *
  * @category Agents
  */
-export type FindingsSource =
+export type ResultSource =
   | 'report_tool'   // agent voluntarily called report()
   | 'free_text'     // agent emitted prose without tool call
   | 'scratchpad'    // extracted post-idle via fork+generate
@@ -111,8 +111,8 @@ export class Agent {
   private _toolCallCount = 0;
   private _turns = 0;
   private _nudged = false;
-  private _findings: string | null = null;
-  private _findingsSource: FindingsSource | null = null;
+  private _result: string | null = null;
+  private _resultSource: ResultSource | null = null;
   private _toolHistory: ToolHistoryEntry[] = [];
   private _nestedResults: string[] = [];
   private _traceBuffer: TraceToken[] = [];
@@ -210,8 +210,8 @@ export class Agent {
   get nestedResults(): readonly string[] { return this._nestedResults; }
 
   /** Collect inner findings from a recursive tool's result */
-  addNestedResults(findings: string[]): void {
-    this._nestedResults.push(...findings);
+  addNestedResults(results: string[]): void {
+    this._nestedResults.push(...results);
   }
 
   /**
@@ -239,13 +239,13 @@ export class Agent {
 
   // ── Findings ────────────────────────────────────────────
 
-  get findings(): string | null { return this._findings; }
-  get findingsSource(): FindingsSource | null { return this._findingsSource; }
+  get result(): string | null { return this._result; }
+  get resultSource(): ResultSource | null { return this._resultSource; }
 
   /** Set findings with provenance tracking — single write path */
-  reportFindings(content: string, source: FindingsSource): void {
-    this._findings = content;
-    this._findingsSource = source;
+  reportResult(content: string, source: ResultSource): void {
+    this._result = content;
+    this._resultSource = source;
   }
 
   // ── Branch-derived readings ─────────────────────────────

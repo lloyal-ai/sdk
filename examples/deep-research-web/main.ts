@@ -147,7 +147,7 @@ main(function* () {
   );
 
   const reranker = yield* call(() =>
-    createReranker(rerankModelPath, { nSeqMax: 8, nCtx: 8192 }),
+    createReranker(rerankModelPath, { nSeqMax: 8, nCtx: 16384 }),
   );
   yield* ensure(() => {
     reranker.dispose();

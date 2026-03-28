@@ -66,7 +66,7 @@ export interface SpawnAgentsOpts {
    */
   recursive?: boolean | RecursiveOpts;
   /** Scratchpad extraction for agents killed before reporting. */
-  reportPrompt?: {
+  extractionPrompt?: {
     system: string;
     user: string;
     minTokens?: number;
@@ -206,7 +206,7 @@ class DelegateTool extends Tool<Record<string, unknown>> {
           maxTurns: opts.maxTurns,
           trace: opts.trace,
           pressure: opts.pressure,
-          reportPrompt: opts.reportPrompt,
+          extractionPrompt: opts.extractionPrompt,
           policy: opts.policy,
           scorer: context?.scorer,
         });
@@ -214,7 +214,7 @@ class DelegateTool extends Tool<Record<string, unknown>> {
     );
 
     const result = {
-      results: pool.agents.map((a) => a.findings).filter(Boolean),
+      results: pool.agents.map((a) => a.result).filter(Boolean),
       nestedResults: pool.agents.flatMap((a) => a.nestedResults ?? []),
       agentCount: pool.agents.length,
       totalTokens: pool.totalTokens,
@@ -297,7 +297,7 @@ export function* spawnAgents(opts: SpawnAgentsOpts): Operation<AgentPoolResult> 
         maxTurns: opts.maxTurns,
         trace: opts.trace,
         pressure: opts.pressure,
-        reportPrompt: opts.reportPrompt,
+        extractionPrompt: opts.extractionPrompt,
         policy: opts.policy,
         scorer: opts.scorer,
       });

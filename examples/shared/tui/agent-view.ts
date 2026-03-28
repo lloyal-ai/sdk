@@ -237,7 +237,7 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
         log(`${rptInd}${c.dim}\u2502${c.reset}`);
         log(`${rptInd}${c.dim}\u251c\u2500\u2500${c.reset} ${rptLbl} ${c.bold}findings${c.reset}`);
 
-        for (const para of ev.findings.split('\n')) {
+        for (const para of ev.result.split('\n')) {
           if (!para.trim()) { log(prefix); continue; }
           const words = para.split(/\s+/);
           let line = '';

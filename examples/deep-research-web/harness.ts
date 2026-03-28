@@ -177,13 +177,13 @@ function* research(
             },
             extractTasks: (args) => args.questions as string[],
           },
-          reportPrompt: REPORT,
+          extractionPrompt: REPORT,
           pruneOnReport: true,
           trace: opts.trace,
           scorer,
         });
         const result: SourceResearchResult = {
-          results: pool.agents.map((a) => a.findings).filter(Boolean) as string[],
+          results: pool.agents.map((a) => a.result).filter(Boolean) as string[],
           nestedResults: pool.agents.flatMap((a) => a.nestedResults ?? []),
           agentCount: pool.agents.length,
           totalTokens: pool.totalTokens,
@@ -247,11 +247,11 @@ function* research(
                 maxTurns: effectiveMaxTurns,
                 trace: opts.trace,
                 pressure: { softLimit: 1024 },
-                reportPrompt: REPORT,
+                extractionPrompt: REPORT,
               });
               totalTokens += pool.totalTokens;
               totalToolCalls += pool.totalToolCalls;
-              return pool.agents[0]?.findings || "";
+              return pool.agents[0]?.result || "";
             },
           );
 
@@ -341,13 +341,13 @@ function* warmResearch(
         },
         extractTasks: (args) => args.questions as string[],
       },
-      reportPrompt: REPORT,
+      extractionPrompt: REPORT,
       pruneOnReport: true,
       trace: opts.trace,
       scorer,
     });
     const result: SourceResearchResult = {
-      results: pool.agents.map((a) => a.findings).filter(Boolean) as string[],
+      results: pool.agents.map((a) => a.result).filter(Boolean) as string[],
       nestedResults: pool.agents.flatMap((a) => a.nestedResults ?? []),
       agentCount: pool.agents.length,
       totalTokens: pool.totalTokens,
@@ -409,11 +409,11 @@ function* warmResearch(
             maxTurns: effectiveMaxTurns,
             trace: opts.trace,
             pressure: { softLimit: 1024 },
-            reportPrompt: REPORT,
+            extractionPrompt: REPORT,
           });
           totalTokens += pool.totalTokens;
           totalToolCalls += pool.totalToolCalls;
-          return pool.agents[0]?.findings || "";
+          return pool.agents[0]?.result || "";
         },
       );
 
@@ -511,7 +511,7 @@ function* synthesize(
         maxTurns: opts.maxTurns,
         trace: opts.trace,
         pressure: { softLimit: 1024 },
-        reportPrompt: REPORT,
+        extractionPrompt: REPORT,
       });
       return pool;
     },
@@ -526,7 +526,7 @@ function* synthesize(
   });
 
   const agent = synthPool.agents[0];
-  yield* opts.events.send({ type: "answer", text: agent?.findings || "" });
+  yield* opts.events.send({ type: "answer", text: agent?.result || "" });
 
   // N cheap text-only samples for entropy check — runs with freed KV
   const ctx: SessionContext = yield* Ctx.expect();
@@ -819,7 +819,7 @@ export function* handleQuery(
     conflicts,
   );
 
-  const findings = s.pool.agents[0]?.findings || "";
+  const findings = s.pool.agents[0]?.result || "";
   if (warm) {
     yield* appendTurn(query, findings, opts);
   } else if (findings) {

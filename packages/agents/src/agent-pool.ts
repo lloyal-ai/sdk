@@ -390,9 +390,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
           switch (action.type) {
             case 'free_text_report':
-              a.reportFindings(action.content, 'free_text');
+              a.reportResult(action.content, 'free_text');
               a.transition('idle');
-              yield* events.send({ type: 'agent:report', agentId: a.id, findings: a.findings! });
+              yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
               yield* events.send({ type: 'agent:done', agentId: a.id });
               continue;
 
@@ -429,12 +429,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             }
 
             case 'report':
-              a.reportFindings(action.findings, 'report_tool');
+              a.reportResult(action.result, 'report_tool');
               a.transition('idle');
               a.incrementToolCalls();
               totalToolCalls++;
               yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: terminalTool!, args: parsed.toolCalls[0].arguments });
-              yield* events.send({ type: 'agent:report', agentId: a.id, findings: a.findings! });
+              yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
               yield* events.send({ type: 'agent:done', agentId: a.id });
               if (pruneOnReport && !a.branch.disposed) {
                 a.branch.pruneSync();
@@ -637,7 +637,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           });
         } catch (err) {
           agent.transition('idle');
-          agent.reportFindings(`Tool error: ${(err as Error).message}`, 'tool_error');
+          agent.reportResult(`Tool error: ${(err as Error).message}`, 'tool_error');
           tw.write({
             traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
             type: 'tool:error', agentId: agent.id, tool: tc.name,
@@ -654,51 +654,51 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     // Replaces harness-level reportPass. Agents in 'idle' without findings
     // get scratchpad extraction if they did enough work. This runs BEFORE
     // pool:close trace so findings are populated in the trace.
-    if (opts.reportPrompt) {
+    if (opts.extractionPrompt) {
       // Free KV from agents that already reported — gives room for extraction
       for (const a of agents) {
-        if (a.findings && !a.branch.disposed) {
+        if (a.result && !a.branch.disposed) {
           a.branch.pruneSync();
         }
       }
 
       const reportSchema = {
         type: 'object',
-        properties: { findings: { type: 'string' } },
-        required: ['findings'],
+        properties: { result: { type: 'string' } },
+        required: ['result'],
       };
       const reportGrammar: string = yield* call(() =>
         ctx.jsonSchemaToGrammar(JSON.stringify(reportSchema)),
       );
       const reportMessages = [
-        { role: 'system', content: opts.reportPrompt.system },
-        { role: 'user', content: opts.reportPrompt.user },
+        { role: 'system', content: opts.extractionPrompt.system },
+        { role: 'user', content: opts.extractionPrompt.user },
       ];
-      const { prompt: reportPromptStr } = ctx.formatChatSync(
+      const { prompt: extractionPromptStr } = ctx.formatChatSync(
         JSON.stringify(reportMessages), { enableThinking: false },
       );
 
       for (const a of agents) {
-        if (a.status !== 'idle' || a.findings || a.branch.disposed) continue;
+        if (a.status !== 'idle' || a.result || a.branch.disposed) continue;
 
         // Confabulation guard: skip agents that barely ran
-        const minTokens = opts.reportPrompt?.minTokens ?? 100;
-        const minToolCalls = opts.reportPrompt?.minToolCalls ?? 2;
+        const minTokens = opts.extractionPrompt?.minTokens ?? 100;
+        const minToolCalls = opts.extractionPrompt?.minToolCalls ?? 2;
         if (a.tokenCount < minTokens || a.toolCallCount < minToolCalls) {
           if (!a.branch.disposed) a.branch.pruneSync();
           continue;
         }
 
         try {
-          const result = yield* generate<{ findings: string }>({
-            prompt: reportPromptStr,
+          const result = yield* generate<{ result: string }>({
+            prompt: extractionPromptStr,
             grammar: reportGrammar,
             parse: (o: string) => JSON.parse(o),
             parent: a.branch,
           });
-          if (result.parsed?.findings) {
-            a.reportFindings(result.parsed.findings, 'scratchpad');
-            yield* events.send({ type: 'agent:report', agentId: a.id, findings: a.findings! });
+          if (result.parsed?.result) {
+            a.reportResult(result.parsed.result, 'scratchpad');
+            yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
           }
         } catch {
           /* extraction failure non-fatal */
@@ -715,7 +715,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       type: 'pool:close',
       agents: agents.map(a => ({
         agentId: a.id, tokenCount: a.tokenCount,
-        toolCallCount: a.toolCallCount, findings: a.findings,
+        toolCallCount: a.toolCallCount, result: a.result,
         ppl: a.branch.disposed ? 0 : a.branch.perplexity,
       })),
       totalTokens: agents.reduce((s, a) => s + a.tokenCount, 0),
@@ -728,7 +728,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           agentId: a.id,
           parentAgentId: a.parentId,
           branch: a.branch,
-          findings: a.findings,
+          result: a.result,
           toolCallCount: a.toolCallCount,
           tokenCount: a.tokenCount,
           ppl: a.branch.disposed ? 0 : a.branch.perplexity,

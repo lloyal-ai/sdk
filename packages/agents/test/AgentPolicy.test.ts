@@ -48,9 +48,9 @@ describe('DefaultAgentPolicy', () => {
   describe('onProduced — terminal tool', () => {
     it('extracts findings from report', () => {
       const a = makeAgent({ toolCallCount: 3 });
-      const tc = { name: 'report', arguments: JSON.stringify({ findings: 'my findings' }), id: 'c1' };
+      const tc = { name: 'report', arguments: JSON.stringify({ result: 'my result' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action).toEqual({ type: 'report', findings: 'my findings' });
+      expect(action).toEqual({ type: 'report', result: 'my result' });
     });
 
     it('nudges premature report (< 2 tool calls)', () => {
@@ -62,7 +62,7 @@ describe('DefaultAgentPolicy', () => {
 
     it('bypasses nudge for previously nudged agents', () => {
       const a = makeAgent({ toolCallCount: 1, nudged: true });
-      const tc = { name: 'report', arguments: JSON.stringify({ findings: 'f' }), id: 'c1' };
+      const tc = { name: 'report', arguments: JSON.stringify({ result: 'r' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('report');
     });

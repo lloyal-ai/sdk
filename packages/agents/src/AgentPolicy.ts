@@ -73,7 +73,7 @@ export type IdleReason =
  */
 export type ProduceAction =
   | { type: 'tool_call'; tc: ParsedToolCall }
-  | { type: 'report'; findings: string }
+  | { type: 'report'; result: string }
   | { type: 'nudge'; message?: string }
   | { type: 'idle'; reason: IdleReason }
   | { type: 'free_text_report'; content: string };
@@ -90,7 +90,7 @@ export type SettleAction =
 
 /**
  * Agent lifecycle policy — injected strategy for pressure, nudge,
- * recursion, report timing, and findings quality decisions.
+ * recursion, report timing, and result quality decisions.
  *
  * The pool consults the policy at PRODUCE and SETTLE boundaries.
  * Policy sees the agent's full state (status, tool history, pressure,
@@ -183,7 +183,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
 
     // No tool call — natural stop
     if (!tc) {
-      if (!agent.findings && agent.toolCallCount > 0 && parsed.content) {
+      if (!agent.result && agent.toolCallCount > 0 && parsed.content) {
         return { type: 'free_text_report', content: parsed.content };
       }
       return { type: 'idle', reason: 'free_text_stop' };
@@ -207,11 +207,11 @@ export class DefaultAgentPolicy implements AgentPolicy {
       // Prevent reporting without sufficient research (minimum 2 non-report tool calls).
       // Nudged agents bypass — they may have only 1 tool call but were told to report.
       if (agent.toolCallCount < this._minToolCalls && config.hasNonTerminalTools && !agent.nudged) {
-        return { type: 'nudge', message: 'You must conduct research before reporting. Use web_search or fetch_page to find evidence first.' };
+        return { type: 'nudge', message: 'You must use tools before submitting results.' };
       }
-      let findings: string;
-      try { findings = JSON.parse(tc.arguments).findings; } catch { findings = tc.arguments; }
-      return { type: 'report', findings };
+      let result: string;
+      try { result = JSON.parse(tc.arguments).result; } catch { result = tc.arguments; }
+      return { type: 'report', result };
     }
 
     // Check declarative guards against full lineage

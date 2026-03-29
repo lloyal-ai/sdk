@@ -119,4 +119,44 @@ describe('NULL_SCORER', () => {
     expect(NULL_SCORER.shouldProceed(0)).toBe(true);
     expect(NULL_SCORER.shouldProceed(-1)).toBe(true);
   });
+
+  it('scoreSimilarityBatch returns 0 (guard never fires)', async () => {
+    const results = await NULL_SCORER.scoreSimilarityBatch('any ref', ['a', 'b']);
+    expect(results).toEqual([0, 0]);
+  });
+});
+
+describe('scoreSimilarityBatch', () => {
+  it('scores texts against an arbitrary reference', async () => {
+    const scores = new Map([
+      ['speculative decoding on M3 Max', 0.92],
+      ['unified memory architecture for inference', 0.35],
+    ]);
+    const reranker = createMockReranker(scores);
+    const source = new TestSource();
+    (source as any)._reranker = reranker;
+
+    const scorer = source.createScorer('original query');
+    const results = await scorer.scoreSimilarityBatch(
+      'speculative decoding benchmarks on Apple Silicon',
+      ['speculative decoding on M3 Max', 'unified memory architecture for inference'],
+    );
+
+    expect(results[0]).toBe(0.92);
+    expect(results[1]).toBe(0.35);
+  });
+
+  it('uses the reference argument, not originalQuery', async () => {
+    const scoreBatch = vi.fn(async (q: string, _texts: string[]) =>
+      [q === 'custom ref' ? 0.99 : 0.01],
+    );
+    const source = new TestSource();
+    (source as any)._reranker = { scoreBatch };
+
+    const scorer = source.createScorer('original query');
+    const result = await scorer.scoreSimilarityBatch('custom ref', ['t']);
+
+    expect(scoreBatch).toHaveBeenCalledWith('custom ref', ['t']);
+    expect(result[0]).toBe(0.99);
+  });
 });

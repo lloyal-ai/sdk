@@ -6,7 +6,8 @@ import type { JsonSchema, ToolContext } from './types';
 import type { AgentPoolResult, PressureThresholds } from './types';
 import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
-import { Trace } from './context';
+import type { Agent } from './Agent';
+import { Trace, CallingAgent } from './context';
 import { traceScope } from './trace-scope';
 import { createToolkit } from './toolkit';
 import type { Toolkit } from './toolkit';
@@ -85,6 +86,14 @@ export interface SpawnAgentsOpts {
   /** Entailment scorer for semantic coherence across recursive depths.
    *  Created via {@link Source.createScorer}. Propagated to all inner pools. */
   scorer?: EntailmentScorer;
+  /** Similarity threshold for echo detection. If all proposed sub-questions
+   *  score above this against the agent's own task, the delegation is rejected
+   *  as a paraphrase rather than a decomposition. @default 0.8 */
+  echoThreshold?: number;
+  /** When true, also check proposed questions against ancestor tasks via
+   *  walkAncestors(). Disabled by default to avoid false positives on
+   *  genuine narrowing. Enable after observing local echo check behaviour. */
+  checkAncestorEcho?: boolean;
 }
 
 // ── Recursive tool ───────────────────────────────────────────
@@ -183,6 +192,62 @@ class DelegateTool extends Tool<Record<string, unknown>> {
         return { filtered, error: 'All proposed tasks drifted from the original query.' };
       }
       tasks = surviving;
+
+      // Echo guard: reject if all surviving questions are paraphrases of the agent's task
+      const echoThreshold = this._spawnOpts.echoThreshold ?? 0.8;
+      let callingAgent: Agent | undefined;
+      try { callingAgent = yield* CallingAgent.get(); } catch { /* top-level */ }
+
+      if (callingAgent?.task) {
+        const echoScores: number[] = yield* call(() =>
+          scorer.scoreSimilarityBatch(callingAgent!.task, tasks),
+        );
+        const minEchoScore = Math.min(...echoScores);
+
+        if (minEchoScore > echoThreshold) {
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
+            type: 'entailment:delegate:echo',
+            tool: this.name,
+            agentTask: callingAgent.task.slice(0, 200),
+            tasks: tasks.map((text, i) => ({ text: text.slice(0, 200), echoScore: echoScores[i] })),
+            threshold: echoThreshold,
+            rejected: true,
+          });
+          return {
+            filtered,
+            echoRejected: true,
+            error: 'Your sub-questions are too similar to your own task. You have already searched and read content on this topic. Call report() with what you found, including what you checked but could not find.',
+          };
+        }
+
+        // Optional: check ancestor tasks
+        if (this._spawnOpts.checkAncestorEcho) {
+          const ancestorTasks = callingAgent.walkAncestors(a => a.task ? [a.task] : [])
+            .filter(t => t !== callingAgent!.task);
+          for (const ancestorTask of ancestorTasks) {
+            const ancestorScores: number[] = yield* call(() =>
+              scorer.scoreSimilarityBatch(ancestorTask, tasks),
+            );
+            if (Math.min(...ancestorScores) > echoThreshold) {
+              tw.write({
+                traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
+                type: 'entailment:delegate:echo',
+                tool: this.name,
+                agentTask: ancestorTask.slice(0, 200),
+                tasks: tasks.map((text, i) => ({ text: text.slice(0, 200), echoScore: ancestorScores[i] })),
+                threshold: echoThreshold,
+                rejected: true,
+              });
+              return {
+                filtered,
+                echoRejected: true,
+                error: 'Your sub-questions echo an ancestor task. Report what you found instead of re-delegating.',
+              };
+            }
+          }
+        }
+      }
     }
 
     const opts = this._spawnOpts;

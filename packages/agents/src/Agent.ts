@@ -103,6 +103,9 @@ export class Agent {
   /** Immutable prompt format configuration */
   readonly fmt: FormatConfig;
 
+  /** The task text this agent was assigned — used by echo detection guard */
+  readonly task: string;
+
   // ── Mutable state ───────────────────────────────────────
 
   private _status: AgentStatus = 'idle';
@@ -128,11 +131,13 @@ export class Agent {
     branch: Branch;
     fmt: FormatConfig;
     parent?: Agent | null;
+    task?: string;
   }) {
     this.id = opts.id;
     this.parentId = opts.parentId;
     this.branch = opts.branch;
     this.fmt = opts.fmt;
+    this.task = opts.task ?? '';
     this.parent = opts.parent ?? null;
   }
 

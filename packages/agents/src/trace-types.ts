@@ -190,4 +190,5 @@ export type TraceEvent =
   // ── Entailment scoring events ──────────────
   | TraceEventBase & { type: 'entailment:search'; tool: string; query: string; [key: string]: unknown }
   | TraceEventBase & { type: 'entailment:search:reordered'; tool: string; after: Array<{ title: string; url: string }> }
-  | TraceEventBase & { type: 'entailment:delegate'; tool: string; tasks: Array<{ text: string; score: number; kept: boolean }> };
+  | TraceEventBase & { type: 'entailment:delegate'; tool: string; tasks: Array<{ text: string; score: number; kept: boolean }> }
+  | TraceEventBase & { type: 'entailment:delegate:echo'; tool: string; agentTask: string; tasks: Array<{ text: string; echoScore: number }>; threshold: number; rejected: boolean };

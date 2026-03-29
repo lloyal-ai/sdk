@@ -13,6 +13,8 @@ import type { Tool } from './Tool';
 export interface EntailmentScorer {
   /** Score texts against the original query. Returns 0–1 per text. */
   scoreEntailmentBatch(texts: string[]): Promise<number[]>;
+  /** Score texts against an arbitrary reference string. Returns 0–1 per text. */
+  scoreSimilarityBatch(reference: string, texts: string[]): Promise<number[]>;
   /** Threshold gate — returns true if the score is high enough to proceed. */
   shouldProceed(score: number): boolean;
 }
@@ -20,6 +22,7 @@ export interface EntailmentScorer {
 /** No-op scorer — all scores 1.0, all proceed. Used when no reranker is available. */
 export const NULL_SCORER: EntailmentScorer = {
   scoreEntailmentBatch: async (texts) => texts.map(() => 1),
+  scoreSimilarityBatch: async (_ref, texts) => texts.map(() => 0),
   shouldProceed: () => true,
 };
 
@@ -74,6 +77,9 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
     return {
       async scoreEntailmentBatch(texts: string[]): Promise<number[]> {
         return reranker.scoreBatch(originalQuery, texts);
+      },
+      async scoreSimilarityBatch(reference: string, texts: string[]): Promise<number[]> {
+        return reranker.scoreBatch(reference, texts);
       },
       shouldProceed(score: number): boolean {
         return score >= floor;

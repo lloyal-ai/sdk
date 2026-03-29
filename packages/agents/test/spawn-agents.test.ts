@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createToolkit } from '../src/toolkit';
+import { Agent } from '../src/Agent';
 import { MockTool } from './helpers/mock-tool';
 import { createMockReranker } from './helpers/mock-reranker';
+import { createMockBranch } from './helpers/mock-branch';
 import { Source, NULL_SCORER } from '../src/source';
 import type { EntailmentScorer } from '../src/source';
 
@@ -255,5 +257,107 @@ describe('Local-history recursion guard', () => {
     // This prevents the blind relay chains seen in trace-1774628104830.
 
     expect(true).toBe(true); // tested in AgentPolicy.test.ts
+  });
+});
+
+// ── Echo detection guard ────────────────────────────────────
+
+describe('Echo detection guard', () => {
+  function createScorer(scoreMap: Map<string, number>, floor = 0.25): EntailmentScorer {
+    const reranker = createMockReranker(scoreMap);
+    class TestSource extends Source {
+      readonly name = 'test';
+      get tools() { return []; }
+    }
+    const source = new TestSource();
+    (source as any)._reranker = reranker;
+    (source as any)._entailmentFloor = floor;
+    return source.createScorer('original query');
+  }
+
+  it('detects echo when all questions paraphrase agent task', async () => {
+    // Agent task: "speculative decoding on Apple Silicon"
+    // Proposed: near-verbatim copies → all score >0.8 against task
+    const scores = new Map([
+      ['speculative decoding performance on M1 M2 M3', 0.92],
+      ['benchmarks for speculative decoding Apple Silicon', 0.88],
+      ['Apple Silicon speculative decoding results', 0.91],
+    ]);
+    const scorer = createScorer(scores);
+
+    const agentTask = 'speculative decoding on Apple Silicon';
+    const proposed = [
+      'speculative decoding performance on M1 M2 M3',
+      'benchmarks for speculative decoding Apple Silicon',
+      'Apple Silicon speculative decoding results',
+    ];
+
+    const echoScores = await scorer.scoreSimilarityBatch(agentTask, proposed);
+    const minScore = Math.min(...echoScores);
+    const isEcho = minScore > 0.8;
+
+    expect(isEcho).toBe(true);
+    expect(minScore).toBe(0.88);
+  });
+
+  it('allows delegation when ANY question is novel', async () => {
+    // Agent task: "historical evidence of iPod-era success"
+    // Proposed: 2 paraphrases + 1 discovery (Microsoft antitrust)
+    const scores = new Map([
+      ['iPod success evidence and market dominance', 0.90],
+      ['role of U.S. v. Microsoft in Apple iPod success', 0.52],
+      ['iPod adoption leading to iPhone success', 0.85],
+    ]);
+    const scorer = createScorer(scores);
+
+    const agentTask = 'historical evidence of iPod-era success';
+    const proposed = [
+      'iPod success evidence and market dominance',
+      'role of U.S. v. Microsoft in Apple iPod success',
+      'iPod adoption leading to iPhone success',
+    ];
+
+    const echoScores = await scorer.scoreSimilarityBatch(agentTask, proposed);
+    const minScore = Math.min(...echoScores);
+    const isEcho = minScore > 0.8;
+
+    expect(isEcho).toBe(false);
+    expect(minScore).toBe(0.52); // Microsoft question is novel
+  });
+
+  it('threshold 0.8 separates paraphrase from discovery', async () => {
+    // Boundary test: 0.81 is echo, 0.79 is not
+    const scores = new Map([['q', 0.81]]);
+    const scorer = createScorer(scores);
+    const result = await scorer.scoreSimilarityBatch('task', ['q']);
+    expect(result[0] > 0.8).toBe(true);
+
+    const scores2 = new Map([['q', 0.79]]);
+    const scorer2 = createScorer(scores2);
+    const result2 = await scorer2.scoreSimilarityBatch('task', ['q']);
+    expect(result2[0] > 0.8).toBe(false);
+  });
+});
+
+// ── Agent.task field ────────────────────────────────────────
+
+describe('Agent.task', () => {
+  it('stores task text from construction', () => {
+    const branch = createMockBranch();
+    const a = new Agent({
+      id: 1, parentId: 0, branch: branch as any,
+      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      task: 'investigate speculative decoding on M3',
+    });
+    expect(a.task).toBe('investigate speculative decoding on M3');
+  });
+
+  it('defaults to empty string when not provided', () => {
+    const branch = createMockBranch();
+    const a = new Agent({
+      id: 1, parentId: 0, branch: branch as any,
+      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+    });
+    expect(a.task).toBe('');
   });
 });

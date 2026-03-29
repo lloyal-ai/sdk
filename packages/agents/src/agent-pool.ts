@@ -143,6 +143,7 @@ function* setupAgent(
     parentId: parent.handle,
     branch,
     parent: callingAgent,
+    task: task.content,
     fmt: {
       format: fmt.format,
       reasoningFormat: fmt.reasoningFormat,

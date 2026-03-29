@@ -191,4 +191,17 @@ export type TraceEvent =
   | TraceEventBase & { type: 'entailment:search'; tool: string; query: string; [key: string]: unknown }
   | TraceEventBase & { type: 'entailment:search:reordered'; tool: string; after: Array<{ title: string; url: string }> }
   | TraceEventBase & { type: 'entailment:delegate'; tool: string; tasks: Array<{ text: string; score: number; kept: boolean }> }
-  | TraceEventBase & { type: 'entailment:delegate:echo'; tool: string; agentTask: string; tasks: Array<{ text: string; echoScore: number }>; threshold: number; rejected: boolean };
+  | TraceEventBase & { type: 'entailment:delegate:echo'; tool: string; agentTask: string; tasks: Array<{ text: string; echoScore: number }>; threshold: number; rejected: boolean }
+  | TraceEventBase & {
+      /** Exploit-mode dual scoring at a content boundary (search/fetch_page).
+       *  Emitted when policy.shouldExplore() returns false and the tool
+       *  applies scoreRelevanceBatch to tighten focus. */
+      type: 'entailment:content:exploit';
+      tool: string;
+      /** Pressure snapshot that triggered exploit mode. */
+      pressure: { percentAvailable: number; remaining: number; nCtx: number };
+      /** Top chunks with both score flavors.
+       *  toolQueryScore: reranker score against this tool call's query arg.
+       *  combinedScore: min(toolQueryScore, originalQueryScore). */
+      chunks: Array<{ heading: string; toolQueryScore: number; combinedScore: number }>;
+    };

@@ -124,6 +124,11 @@ describe('NULL_SCORER', () => {
     const results = await NULL_SCORER.scoreSimilarityBatch('any ref', ['a', 'b']);
     expect(results).toEqual([0, 0]);
   });
+
+  it('scoreRelevanceBatch returns 1.0 for all texts', async () => {
+    const results = await NULL_SCORER.scoreRelevanceBatch(['a', 'b'], 'any query');
+    expect(results).toEqual([1, 1]);
+  });
 });
 
 describe('scoreSimilarityBatch', () => {
@@ -158,5 +163,77 @@ describe('scoreSimilarityBatch', () => {
 
     expect(scoreBatch).toHaveBeenCalledWith('custom ref', ['t']);
     expect(result[0]).toBe(0.99);
+  });
+});
+
+describe('scoreRelevanceBatch', () => {
+  it('returns min(localScore, originalScore) per text', async () => {
+    // scoreBatch returns different scores depending on the query
+    const scoreBatch = vi.fn(async (query: string, texts: string[]) =>
+      texts.map((t) => {
+        if (query === 'original query') return t === 'bridging content' ? 0.2 : 0.8;
+        // local query scores everything high
+        return 0.9;
+      }),
+    );
+    const source = new TestSource();
+    (source as any)._reranker = { scoreBatch };
+
+    const scorer = source.createScorer('original query');
+    const results = await scorer.scoreRelevanceBatch(
+      ['relevant content', 'bridging content'],
+      'local tool query',
+    );
+
+    // min(0.9, 0.8) = 0.8, min(0.9, 0.2) = 0.2
+    expect(results[0]).toBe(0.8);
+    expect(results[1]).toBe(0.2);
+  });
+
+  it('calls scoreBatch sequentially with originalQuery then localQuery', async () => {
+    const callOrder: string[] = [];
+    const scoreBatch = vi.fn(async (query: string, _texts: string[]) => {
+      callOrder.push(query);
+      return [0.5];
+    });
+    const source = new TestSource();
+    (source as any)._reranker = { scoreBatch };
+
+    const scorer = source.createScorer('original');
+    await scorer.scoreRelevanceBatch(['t'], 'local');
+
+    expect(callOrder).toEqual(['original', 'local']);
+    expect(scoreBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('when local > orig, result equals orig (min)', async () => {
+    const scoreBatch = vi.fn(async (q: string, _t: string[]) =>
+      [q === 'orig' ? 0.3 : 0.9],
+    );
+    const source = new TestSource();
+    (source as any)._reranker = { scoreBatch };
+    const scorer = source.createScorer('orig');
+    const result = await scorer.scoreRelevanceBatch(['t'], 'local');
+    expect(result[0]).toBe(0.3);
+  });
+
+  it('when local < orig, result equals local (min)', async () => {
+    const scoreBatch = vi.fn(async (q: string, _t: string[]) =>
+      [q === 'orig' ? 0.9 : 0.3],
+    );
+    const source = new TestSource();
+    (source as any)._reranker = { scoreBatch };
+    const scorer = source.createScorer('orig');
+    const result = await scorer.scoreRelevanceBatch(['t'], 'local');
+    expect(result[0]).toBe(0.3);
+  });
+
+  it('when local == orig, result equals both (min)', async () => {
+    const scoreBatch = vi.fn(async (_q: string, _t: string[]) => [0.6]);
+    const source = new TestSource();
+    (source as any)._reranker = { scoreBatch };
+    const scorer = source.createScorer('orig');
+    const result = await scorer.scoreRelevanceBatch(['t'], 'local');
+    expect(result[0]).toBe(0.6);
   });
 });

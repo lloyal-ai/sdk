@@ -125,6 +125,15 @@ export interface AgentPolicy {
     pressure: ContextPressure,
     config: PolicyConfig,
   ): SettleAction;
+
+  /**
+   * DISPATCH phase: should this tool call explore or exploit?
+   *
+   * When true (explore), content-boundary tools use agent-local scoring only.
+   * When false (exploit), tools apply dual scoring via scoreRelevanceBatch.
+   * Optional — defaults to true (explore) when absent.
+   */
+  shouldExplore?(agent: Agent, pressure: ContextPressure): boolean;
 }
 
 /**
@@ -159,14 +168,20 @@ export interface DefaultAgentPolicyOpts {
   guards?: ToolGuard[];
   /** Append additional guards to the defaults. */
   extraGuards?: ToolGuard[];
+  /** KV availability threshold (0–100). Above → explore. Below → exploit.
+   *  Uses ContextPressure.percentAvailable. @default 40 */
+  exploreThreshold?: number;
 }
 
 export class DefaultAgentPolicy implements AgentPolicy {
   private _minToolCalls: number;
   private _guards: ToolGuard[];
+  private _exploreThreshold: number;
+  private _forceExploit = false;
 
   constructor(opts?: DefaultAgentPolicyOpts) {
     this._minToolCalls = opts?.minToolCallsBeforeReport ?? 2;
+    this._exploreThreshold = opts?.exploreThreshold ?? 40;
     this._guards = opts?.guards ?? [
       ...defaultToolGuards,
       ...(opts?.extraGuards ?? []),
@@ -241,5 +256,16 @@ export class DefaultAgentPolicy implements AgentPolicy {
     }
     // Second offense: kill
     return { type: 'idle', reason: 'pressure_settle_reject' as IdleReason };
+  }
+
+  /**
+   * UI-driven override. Harness calls this when the user wants agents
+   * to wrap up. Overrides pressure-based logic immediately.
+   */
+  setExploitMode(force: boolean): void { this._forceExploit = force; }
+
+  shouldExplore(_agent: Agent, pressure: ContextPressure): boolean {
+    if (this._forceExploit) return false;
+    return pressure.percentAvailable > this._exploreThreshold;
   }
 }

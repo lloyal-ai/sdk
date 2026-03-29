@@ -60,10 +60,42 @@ export class SearchTool extends Tool<{ query: string }> {
       return last;
     });
 
-    // Corpus search: agent-local scoring only. No entailment check —
-    // agents need to discover bridging content (adjacent sections that
-    // connect the agent's investigation to the answer). Scoring against
-    // the original query would demote exactly that content.
+    // Explore mode (default): agent-local scoring only. Agents discover
+    // bridging content (adjacent sections connecting investigation to answer).
+    // Scoring against the original query would demote exactly that content.
+    //
+    // Exploit mode (!explore): dual scoring via scoreRelevanceBatch —
+    // min(toolQueryScore, originalQueryScore) per chunk. Tightens focus
+    // when KV headroom is low, at the cost of serendipitous discovery.
+    if (!context?.explore && context?.scorer && results.length > 0) {
+      type ScoredWithOriginal = ScoredChunk & { _toolQueryScore: number };
+      const chunkTexts = results.map((sc) => {
+        const chunk = chunks.find(c => c.resource === sc.file && c.startLine === sc.startLine);
+        return chunk?.text ?? '';
+      });
+      const combinedScores: number[] = yield* call(() =>
+        context.scorer!.scoreRelevanceBatch(chunkTexts, query),
+      );
+      const reordered: ScoredWithOriginal[] = results
+        .map((sc, i) => ({ ...sc, score: combinedScores[i], _toolQueryScore: sc.score }))
+        .sort((a, b) => b.score - a.score);
+      results = reordered;
+
+      tw.write({
+        traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
+        type: 'entailment:content:exploit', tool: 'search',
+        pressure: {
+          percentAvailable: context.pressurePercentAvailable ?? -1,
+          remaining: -1,
+          nCtx: -1,
+        },
+        chunks: reordered.slice(0, 5).map((sc) => ({
+          heading: sc.heading,
+          toolQueryScore: sc._toolQueryScore,
+          combinedScore: sc.score,
+        })),
+      });
+    }
 
     tw.write({
       traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),

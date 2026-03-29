@@ -73,6 +73,19 @@ export interface ToolContext {
    * results against the root intent before returning to the agent.
    */
   scorer?: EntailmentScorer;
+  /**
+   * When false, content-boundary tools apply dual scoring
+   * (scoreRelevanceBatch) for tighter focus. Computed per-DISPATCH
+   * by policy.shouldExplore(). @default true
+   */
+  explore?: boolean;
+  /**
+   * KV percent available at DISPATCH time. Always set (from
+   * ContextPressure.percentAvailable). Used by tools to include the
+   * pressure snapshot in exploit-mode trace events without needing
+   * a SessionContext reference.
+   */
+  pressurePercentAvailable?: number;
 }
 
 // ── Trace types ───────────────────────────────────────────────

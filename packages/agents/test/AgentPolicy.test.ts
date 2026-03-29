@@ -25,7 +25,17 @@ function makeAgent(overrides?: { toolCallCount?: number; turns?: number; nudged?
 }
 
 function pressure(remaining = 5000, nCtx = 16384) {
-  return { headroom: remaining - 1024, critical: remaining < 128, remaining, nCtx, cellsUsed: nCtx - remaining };
+  return {
+    headroom: remaining - 1024,
+    critical: remaining < 128,
+    remaining,
+    nCtx,
+    cellsUsed: nCtx - remaining,
+    percentAvailable: nCtx > 0 ? Math.max(0, Math.round((remaining / nCtx) * 100)) : 100,
+    canFit: (n: number) => n <= remaining - 1024,
+    softLimit: 1024,
+    hardLimit: 128,
+  };
 }
 
 describe('DefaultAgentPolicy', () => {
@@ -188,6 +198,57 @@ describe('DefaultAgentPolicy', () => {
       const action = customPolicy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('nudge');
       expect((action as any).message).toBe('extra guard fired');
+    });
+  });
+
+  describe('shouldExplore', () => {
+    it('returns true when percentAvailable > threshold (default 40)', () => {
+      // 5000/16384 ≈ 30.5% → false
+      expect(policy.shouldExplore(makeAgent(), pressure(5000))).toBe(false);
+      // 8000/16384 ≈ 48.8% → true
+      expect(policy.shouldExplore(makeAgent(), pressure(8000))).toBe(true);
+    });
+
+    it('respects custom exploreThreshold', () => {
+      const lowThreshold = new DefaultAgentPolicy({ exploreThreshold: 20 });
+      // 30% > 20 → true
+      expect(lowThreshold.shouldExplore(makeAgent(), pressure(5000))).toBe(true);
+
+      const highThreshold = new DefaultAgentPolicy({ exploreThreshold: 70 });
+      // 48% < 70 → false
+      expect(highThreshold.shouldExplore(makeAgent(), pressure(8000))).toBe(false);
+    });
+
+    it('setExploitMode(true) overrides to always false', () => {
+      const p = new DefaultAgentPolicy();
+      const highPressure = pressure(15000); // ~91% available
+      expect(p.shouldExplore(makeAgent(), highPressure)).toBe(true);
+
+      p.setExploitMode(true);
+      expect(p.shouldExplore(makeAgent(), highPressure)).toBe(false);
+    });
+
+    it('setExploitMode(false) reverts to pressure-driven', () => {
+      const p = new DefaultAgentPolicy();
+      p.setExploitMode(true);
+      expect(p.shouldExplore(makeAgent(), pressure(15000))).toBe(false);
+
+      p.setExploitMode(false);
+      expect(p.shouldExplore(makeAgent(), pressure(15000))).toBe(true);
+    });
+
+    it('nCtx=0 → percentAvailable=100 → explore', () => {
+      // When nCtx is 0, remaining=Infinity, percentAvailable=100
+      const noLimit = pressure(Infinity, 0);
+      expect(noLimit.percentAvailable).toBe(100);
+      expect(policy.shouldExplore(makeAgent(), noLimit)).toBe(true);
+    });
+
+    it('nCtx=0 → canFit always true (Infinity chain)', () => {
+      const noLimit = pressure(Infinity, 0);
+      expect(noLimit.headroom).toBe(Infinity);
+      expect(noLimit.canFit(999999)).toBe(true);
+      expect(noLimit.critical).toBe(false);
     });
   });
 });

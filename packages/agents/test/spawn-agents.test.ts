@@ -131,9 +131,12 @@ describe('Entailment boundary discipline', () => {
     // Verify EntailmentScorer interface has the right shape
     const scorer: EntailmentScorer = {
       scoreEntailmentBatch: async (texts) => texts.map(() => 0.5),
+      scoreRelevanceBatch: async (texts) => texts.map(() => 0.5),
+      scoreSimilarityBatch: async (_ref, texts) => texts.map(() => 0),
       shouldProceed: (score) => score >= 0.25,
     };
     expect(scorer.scoreEntailmentBatch).toBeDefined();
+    expect(scorer.scoreRelevanceBatch).toBeDefined();
     expect(scorer.shouldProceed).toBeDefined();
   });
 

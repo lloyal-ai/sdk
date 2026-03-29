@@ -190,11 +190,43 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
           }
         });
 
-        // Fetch page: agent-local scoring only. No entailment check —
-        // the agent already chose to read this page. Content should be
-        // scored against what the agent asked for. Filtering against the
-        // original query removes bridging content that produces hypothesis
-        // greps. The alsoOnPage field provides discovery signals instead.
+        // Explore mode (default): agent-local scoring only. The agent chose
+        // this page — content scored against what it asked for. Filtering
+        // against original query removes bridging content that produces
+        // hypothesis greps. alsoOnPage provides discovery signals instead.
+        //
+        // Exploit mode (!explore): dual scoring via scoreRelevanceBatch.
+        if (!context?.explore && context?.scorer && scored.length > 0) {
+          type ScoredWithOriginal = ScoredChunk & { _toolQueryScore: number };
+          const chunkTexts = scored.map((sc) => {
+            const chunk = chunks.find(c => c.resource === sc.file && c.startLine === sc.startLine);
+            return chunk?.text ?? '';
+          });
+          const combinedScores: number[] = yield* call(() =>
+            context.scorer!.scoreRelevanceBatch(chunkTexts, args.query!),
+          );
+          const reordered: ScoredWithOriginal[] = scored
+            .map((sc, i) => ({ ...sc, score: combinedScores[i], _toolQueryScore: sc.score }))
+            .sort((a, b) => b.score - a.score);
+          scored = reordered;
+
+          if (tw) {
+            tw.write({
+              traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
+              type: 'entailment:content:exploit', tool: 'fetch_page',
+              pressure: {
+                percentAvailable: context.pressurePercentAvailable ?? -1,
+                remaining: -1,
+                nCtx: -1,
+              },
+              chunks: reordered.slice(0, 5).map((sc) => ({
+                heading: sc.heading,
+                toolQueryScore: sc._toolQueryScore,
+                combinedScore: sc.score,
+              })),
+            });
+          }
+        }
 
         // Select top-K within token budget (tokens populated by tokenizeChunks)
         const topChunks = selectTopChunks(scored, chunks, topK, tokenBudget);

@@ -74,6 +74,10 @@ export class ContextPressure {
   /** Default hardLimit: 128 tokens crash-prevention floor */
   static readonly DEFAULT_HARD_LIMIT = 128;
 
+  /** Total KV cache capacity (max positions). 0 when no context limit. */
+  readonly nCtx: number;
+  /** KV cells currently in use (monotonic within a pool run). */
+  readonly cellsUsed: number;
   /**
    * KV slots remaining (`nCtx - cellsUsed`).
    * Infinity when nCtx ≤ 0 (no context limit).
@@ -86,6 +90,8 @@ export class ContextPressure {
 
   constructor(ctx: SessionContext, opts?: PressureThresholds) {
     const p = ctx._storeKvPressure();
+    this.nCtx = p.nCtx;
+    this.cellsUsed = p.cellsUsed;
     this.remaining = p.nCtx <= 0 ? Infinity : p.remaining;
     this.softLimit = opts?.softLimit ?? ContextPressure.DEFAULT_SOFT_LIMIT;
     this.hardLimit = opts?.hardLimit ?? ContextPressure.DEFAULT_HARD_LIMIT;
@@ -103,6 +109,18 @@ export class ContextPressure {
 
   /** Can `tokenCount` tokens fit while staying above softLimit? */
   canFit(tokenCount: number): boolean { return tokenCount <= this.headroom; }
+
+  /**
+   * KV available as 0–100 integer. Single source of truth for the
+   * percentage shown to agents (`contextAvailablePercent`), recorded
+   * on tool history (`contextAfterPercent`), and used by
+   * `policy.shouldExplore()`.
+   */
+  get percentAvailable(): number {
+    return this.nCtx > 0
+      ? Math.max(0, Math.round((this.remaining / this.nCtx) * 100))
+      : 100;
+  }
 }
 
 /**
@@ -352,8 +370,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       const pressure = new ContextPressure(ctx, pressureOpts);
 
       if (trace && (pressure.critical || pressure.headroom < 0)) {
-        const p = ctx._storeKvPressure();
-        try { process.stderr.write(`[PRODUCE] ${pressure.critical ? 'CRITICAL' : 'SOFT_LIMIT'} remaining=${p.remaining} headroom=${pressure.headroom} cellsUsed=${p.cellsUsed} nCtx=${p.nCtx}\n`); } catch {}
+        try { process.stderr.write(`[PRODUCE] ${pressure.critical ? 'CRITICAL' : 'SOFT_LIMIT'} remaining=${pressure.remaining} headroom=${pressure.headroom} cellsUsed=${pressure.cellsUsed} nCtx=${pressure.nCtx}\n`); } catch {}
       }
 
       const entries: [Branch, number][] = [];
@@ -469,8 +486,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       if (entries.length > 0) {
         yield* call(() => store.commit(entries));
         steps++;
-        const tp = ctx._storeKvPressure();
-        yield* events.send({ type: 'agent:tick', cellsUsed: tp.cellsUsed, nCtx: tp.nCtx });
+        const commitPressure = new ContextPressure(ctx, pressureOpts);
+        yield* events.send({ type: 'agent:tick', cellsUsed: commitPressure.cellsUsed, nCtx: commitPressure.nCtx });
       }
 
       // -- Phase 3: SETTLE -- drain settled tool buffer, batch prefill
@@ -481,9 +498,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         let headroom = settlePressure.headroom;
 
         if (trace) {
-          const p = ctx._storeKvPressure();
           const items = settled.map(s => `${s.toolName}:${s.prefillTokens.length}`).join(', ');
-          try { process.stderr.write(`[SETTLE] remaining=${p.remaining} headroom=${headroom} cellsUsed=${p.cellsUsed} nCtx=${p.nCtx} items=[${items}]\n`); } catch {}
+          try { process.stderr.write(`[SETTLE] remaining=${settlePressure.remaining} headroom=${headroom} cellsUsed=${settlePressure.cellsUsed} nCtx=${settlePressure.nCtx} items=[${items}]\n`); } catch {}
         }
 
         const prefillPairs: [Branch, number[]][] = [];
@@ -523,14 +539,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           settledAgents.push(a);
           headroom -= item.prefillTokens.length;
           // Record tool history for policy decisions
-          const postSettle = ctx._storeKvPressure();
+          const postSettle = new ContextPressure(ctx, pressureOpts);
           a.recordToolResult({
             name: item.toolName,
             args: item.callId,
             resultTokenCount: item.prefillTokens.length,
-            contextAfterPercent: postSettle.nCtx > 0
-              ? Math.max(0, Math.round((postSettle.remaining / postSettle.nCtx) * 100))
-              : 100,
+            contextAfterPercent: postSettle.percentAvailable,
             timestamp: performance.now(),
           });
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
@@ -582,6 +596,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         });
 
         const tool = tools.get(tc.name);
+        // Fresh pressure snapshot — SETTLE may have consumed significant KV
+        // since the PRODUCE-phase snapshot at tick-top. On 16K context, a
+        // single SETTLE pass can drain 12-18% of capacity (3 agents' tool
+        // results). Using stale PRODUCE pressure here would keep agents in
+        // explore mode past the threshold.
+        const dispatchPressure = new ContextPressure(ctx, pressureOpts);
+        const explore = policy.shouldExplore?.(agent, dispatchPressure) ?? true;
         const toolContext: ToolContext = {
           agentId: agent.id,
           branch: agent.branch,
@@ -589,6 +610,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             progressBridge.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });
           },
           scorer: opts.scorer,
+          explore,
+          pressurePercentAvailable: dispatchPressure.percentAvailable,
         };
 
         try {
@@ -603,10 +626,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           });
 
           // Inject context availability into tool result so agent can make pressure-aware decisions
-          const postToolPressure = ctx._storeKvPressure();
-          const contextAvailablePercent = postToolPressure.nCtx > 0
-            ? Math.max(0, Math.round((postToolPressure.remaining / postToolPressure.nCtx) * 100))
-            : 100;
+          const postToolPressure = new ContextPressure(ctx, pressureOpts);
+          const contextAvailablePercent = postToolPressure.percentAvailable;
           if (result && typeof result === 'object' && !Array.isArray(result)) {
             (result as Record<string, unknown>)._contextAvailablePercent = contextAvailablePercent;
 

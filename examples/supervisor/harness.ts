@@ -1,15 +1,15 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { DefaultAgentPolicy, call } from 'effection';
+import { call } from 'effection';
 import type { Operation, Channel } from 'effection';
-import { DefaultAgentPolicy, Session } from '@lloyal-labs/sdk';
+import { Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
-import { DefaultAgentPolicy,
-  Ctx, generate, useAgentPool, runAgents, withSharedRoot,
+import {
+  Ctx, generate, useAgentPool, runAgents, withSharedRoot, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
-import { DefaultAgentPolicy, reportTool } from '@lloyal-labs/rig';
+import { reportTool } from '@lloyal-labs/rig';
 
 function loadTask(name: string): { system: string; user: string } {
   const raw = fs.readFileSync(path.resolve(__dirname, `tasks/${name}.md`), 'utf8').trim();

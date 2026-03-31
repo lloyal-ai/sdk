@@ -3,8 +3,6 @@ export { BranchStore } from './BranchStore';
 export { Session } from './Session';
 export { Rerank } from './Rerank';
 export { buildUserDelta, buildToolResultDelta } from './deltas';
-export { MockSessionContext, createMockSdk } from './MockSessionContext';
-export type { MockSessionContextOpts, MockSdk } from './MockSessionContext';
 
 // ── Enums + constants ────────────────────────────────────────
 export { PoolingType, CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, ReasoningFormat, GrammarTriggerType } from './types';

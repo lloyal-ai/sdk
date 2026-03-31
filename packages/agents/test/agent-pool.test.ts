@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { run, createChannel, spawn, each, scoped, call } from 'effection';
 import type { Operation, Channel } from 'effection';
-import { MockSessionContext, createMockSdk } from '@lloyal-labs/sdk';
+import { MockSessionContext, createMockSdk } from '../../sdk/test/MockSessionContext';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../src/agent-pool';
 import { Ctx, Store, Events, Trace } from '../src/context';

@@ -45,10 +45,10 @@ import type {
   FormatChatOptions,
   ParseChatOutputResult,
   ParseChatOutputOptions,
-} from './types';
-import { Branch } from './Branch';
-import { BranchStore } from './BranchStore';
-import { Session } from './Session';
+} from '../src/types';
+import { Branch } from '../src/Branch';
+import { BranchStore } from '../src/BranchStore';
+import { Session } from '../src/Session';
 
 /** Internal branch state tracked by the mock */
 interface BranchState {

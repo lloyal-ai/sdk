@@ -6,6 +6,7 @@ import { createMockReranker } from './helpers/mock-reranker';
 import { createMockBranch } from './helpers/mock-branch';
 import { Source, NULL_SCORER } from '../src/source';
 import type { EntailmentScorer } from '../src/source';
+import { DefaultAgentPolicy } from '../src/AgentPolicy';
 
 // ── Pure unit tests (no Effection) ──────────────────────────
 
@@ -362,5 +363,121 @@ describe('Agent.task', () => {
       fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
     });
     expect(a.task).toBe('');
+  });
+});
+
+// ── Decoupling: explore/exploit independent of lifecycle ──
+
+describe('Explore/exploit decoupled from lifecycle', () => {
+  it('exploit mode does not affect agent lifecycle — agent is active, not killed', () => {
+    // Agent in exploit mode (low pressure → shouldExplore false)
+    // but NOT nudged or killed (shouldExit false, onProduced returns tool_call)
+    const policy = new DefaultAgentPolicy({ exploreThreshold: 50 });
+    const branch = createMockBranch();
+    const a = new Agent({
+      id: 1, parentId: 0, branch: branch as any,
+      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+    });
+    a.transition('active');
+    a.incrementToolCalls();
+    a.incrementToolCalls();
+
+    // Pressure at 45% — below exploreThreshold (50) → exploit mode
+    const p = {
+      headroom: 5000, critical: false, remaining: 7372, nCtx: 16384,
+      cellsUsed: 9012, percentAvailable: 45, canFit: () => true, softLimit: 1024, hardLimit: 128,
+    };
+
+    // shouldExplore = false (exploit)
+    expect(policy.shouldExplore(a, p)).toBe(false);
+
+    // But shouldExit = false (not critical, no time limit)
+    expect(policy.shouldExit(a, p)).toBe(false);
+
+    // And onProduced allows tool_call (headroom positive, not over budget)
+    const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+    const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, p,
+      { maxTurns: 20, terminalTool: 'report', hasNonTerminalTools: true });
+    expect(action.type).toBe('tool_call');
+    expect(a.status).toBe('active');
+  });
+
+  it('lifecycle nudge does not suppress explore mode', () => {
+    // Agent nudged (over budget) while shouldExplore is true
+    const policy = new DefaultAgentPolicy();
+    const branch = createMockBranch();
+    const a = new Agent({
+      id: 1, parentId: 0, branch: branch as any,
+      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+    });
+    a.transition('active');
+    a.incrementToolCalls();
+    a.incrementToolCalls();
+    a.incrementToolCalls();
+    for (let i = 0; i < 25; i++) a.incrementTurns();
+
+    // Pressure at 60% — above threshold → explore mode
+    const p = {
+      headroom: 5000, critical: false, remaining: 9830, nCtx: 16384,
+      cellsUsed: 6554, percentAvailable: 60, canFit: () => true, softLimit: 1024, hardLimit: 128,
+    };
+
+    // shouldExplore = true (explore)
+    expect(policy.shouldExplore(a, p)).toBe(true);
+
+    // But onProduced nudges (turns >= maxTurns)
+    const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+    const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, p,
+      { maxTurns: 20, terminalTool: 'report', hasNonTerminalTools: true });
+    expect(action.type).toBe('nudge');
+
+    // Explore and lifecycle are independent decisions
+  });
+
+  it('explore and lifecycle states do not bleed into each other', () => {
+    const policy = new DefaultAgentPolicy({ exploreThreshold: 40 });
+    const a = new Agent({
+      id: 1, parentId: 0, branch: createMockBranch() as any,
+      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+    });
+
+    const highPressure = {
+      headroom: 5000, critical: false, remaining: 12000, nCtx: 16384,
+      cellsUsed: 4384, percentAvailable: 73, canFit: () => true, softLimit: 1024, hardLimit: 128,
+    };
+    const lowPressure = {
+      headroom: 5000, critical: false, remaining: 4915, nCtx: 16384,
+      cellsUsed: 11469, percentAvailable: 30, canFit: () => true, softLimit: 1024, hardLimit: 128,
+    };
+
+    // High pressure: explore=true, shouldExit=false
+    expect(policy.shouldExplore(a, highPressure)).toBe(true);
+    expect(policy.shouldExit(a, highPressure)).toBe(false);
+
+    // Low pressure: explore=false, shouldExit still false (not critical)
+    expect(policy.shouldExplore(a, lowPressure)).toBe(false);
+    expect(policy.shouldExit(a, lowPressure)).toBe(false);
+
+    // Critical: shouldExit=true, explore is irrelevant but still computable
+    const criticalPressure = {
+      headroom: -900, critical: true, remaining: 100, nCtx: 16384,
+      cellsUsed: 16284, percentAvailable: 1, canFit: () => false, softLimit: 1024, hardLimit: 128,
+    };
+    expect(policy.shouldExit(a, criticalPressure)).toBe(true);
+    expect(policy.shouldExplore(a, criticalPressure)).toBe(false);
+  });
+});
+
+// ── EntailmentScorer interface shape ──────────────────────
+
+describe('EntailmentScorer interface', () => {
+  it('scoreRelevanceBatch exists on interface shape', () => {
+    const scorer: EntailmentScorer = {
+      scoreEntailmentBatch: async (texts) => texts.map(() => 0.5),
+      scoreRelevanceBatch: async (texts) => texts.map(() => 0.5),
+      scoreSimilarityBatch: async (_ref, texts) => texts.map(() => 0),
+      shouldProceed: (score) => score >= 0.25,
+    };
+    expect(scorer.scoreRelevanceBatch).toBeDefined();
   });
 });

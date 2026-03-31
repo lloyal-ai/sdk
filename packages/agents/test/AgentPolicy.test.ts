@@ -11,13 +11,12 @@ const FMT = {
 
 const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalTool: 'report', hasNonTerminalTools: true };
 
-function makeAgent(overrides?: { toolCallCount?: number; turns?: number; nudged?: boolean; toolHistory?: Array<{ name: string; args: string }> }) {
+function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHistory?: Array<{ name: string; args: string }> }) {
   const branch = createMockBranch();
   const a = new Agent({ id: 1, parentId: 0, branch: branch as any, fmt: FMT });
   a.transition('active');
   for (let i = 0; i < (overrides?.toolCallCount ?? 0); i++) a.incrementToolCalls();
   for (let i = 0; i < (overrides?.turns ?? 0); i++) a.incrementTurns();
-  if (overrides?.nudged) a.markNudged();
   for (const h of overrides?.toolHistory ?? []) {
     a.recordToolResult({ name: h.name, args: h.args, resultTokenCount: 100, contextAfterPercent: 80, timestamp: 0 });
   }
@@ -70,8 +69,8 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('nudge');
     });
 
-    it('bypasses nudge for previously nudged agents', () => {
-      const a = makeAgent({ toolCallCount: 1, nudged: true });
+    it('allows report when over budget despite < minToolCalls', () => {
+      const a = makeAgent({ toolCallCount: 1, turns: 25 });
       const tc = { name: 'report', arguments: JSON.stringify({ result: 'r' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('report');
@@ -79,18 +78,18 @@ describe('DefaultAgentPolicy', () => {
   });
 
   describe('onProduced — over budget', () => {
-    it('nudges on first offense', () => {
+    it('nudges every time (stateless, no escalation)', () => {
       const a = makeAgent({ toolCallCount: 3, turns: 25 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('nudge');
     });
 
-    it('kills on second offense (already nudged)', () => {
-      const a = makeAgent({ toolCallCount: 3, turns: 25, nudged: true });
+    it('nudges again on repeated over-budget (no second-offense kill)', () => {
+      const a = makeAgent({ toolCallCount: 5, turns: 25 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('idle');
+      expect(action.type).toBe('nudge');
     });
   });
 
@@ -249,6 +248,251 @@ describe('DefaultAgentPolicy', () => {
       expect(noLimit.headroom).toBe(Infinity);
       expect(noLimit.canFit(999999)).toBe(true);
       expect(noLimit.critical).toBe(false);
+    });
+  });
+
+  describe('shouldExit', () => {
+    it('returns false when pressure not critical', () => {
+      expect(policy.shouldExit(makeAgent(), pressure(5000))).toBe(false);
+    });
+
+    it('returns true when pressure critical', () => {
+      expect(policy.shouldExit(makeAgent(), pressure(50))).toBe(true);
+    });
+
+    it('no time budget → only pressure checked', () => {
+      const p = new DefaultAgentPolicy(); // no budget
+      expect(p.shouldExit(makeAgent(), pressure(5000))).toBe(false);
+      expect(p.shouldExit(makeAgent(), pressure(50))).toBe(true);
+    });
+
+    it('time hardLimit exceeded → returns true', () => {
+      const p = new DefaultAgentPolicy({ budget: { time: { hardLimit: 0 } } }); // 0ms = instant
+      expect(p.shouldExit(makeAgent(), pressure(5000))).toBe(true);
+    });
+
+    it('time hardLimit not exceeded → returns false', () => {
+      const p = new DefaultAgentPolicy({ budget: { time: { hardLimit: 999_999 } } });
+      expect(p.shouldExit(makeAgent(), pressure(5000))).toBe(false);
+    });
+
+    it('pressure OK + time exceeded → exit', () => {
+      const p = new DefaultAgentPolicy({ budget: { time: { hardLimit: 0 } } });
+      expect(p.shouldExit(makeAgent(), pressure(5000))).toBe(true);
+    });
+
+    it('pressure critical + time OK → exit', () => {
+      const p = new DefaultAgentPolicy({ budget: { time: { hardLimit: 999_999 } } });
+      expect(p.shouldExit(makeAgent(), pressure(50))).toBe(true);
+    });
+  });
+
+  describe('onRecovery', () => {
+    it('returns skip when no recovery config', () => {
+      const result = policy.onRecovery(makeAgent({ toolCallCount: 5 }));
+      expect(result).toEqual({ type: 'skip' });
+    });
+
+    it('returns skip when tokenCount < minTokens', () => {
+      const p = new DefaultAgentPolicy({ recovery: { prompt: { system: 's', user: 'u' }, minTokens: 200 } });
+      const a = makeAgent({ toolCallCount: 5 }); // tokenCount=0 < 200
+      expect(p.onRecovery(a)).toEqual({ type: 'skip' });
+    });
+
+    it('returns skip when toolCallCount < minToolCalls', () => {
+      const p = new DefaultAgentPolicy({ recovery: { prompt: { system: 's', user: 'u' }, minToolCalls: 5 } });
+      const a = makeAgent({ toolCallCount: 2 }); // 2 < 5
+      expect(p.onRecovery(a)).toEqual({ type: 'skip' });
+    });
+
+    it('returns extract with prompt when guard passes', () => {
+      const prompt = { system: 'extract findings', user: 'report now' };
+      const p = new DefaultAgentPolicy({ recovery: { prompt } });
+      const a = makeAgent({ toolCallCount: 3 });
+      // Need tokenCount >= 100 — manually set via accumulating tokens
+      for (let i = 0; i < 101; i++) a.accumulateToken('x');
+      expect(p.onRecovery(a)).toEqual({ type: 'extract', prompt });
+    });
+
+    it('custom minTokens/minToolCalls respected', () => {
+      const prompt = { system: 's', user: 'u' };
+      const p = new DefaultAgentPolicy({ recovery: { prompt, minTokens: 10, minToolCalls: 1 } });
+      const a = makeAgent({ toolCallCount: 1 });
+      for (let i = 0; i < 11; i++) a.accumulateToken('x');
+      expect(p.onRecovery(a)).toEqual({ type: 'extract', prompt });
+    });
+
+    it('defaults: minTokens=100, minToolCalls=2', () => {
+      const prompt = { system: 's', user: 'u' };
+      const p = new DefaultAgentPolicy({ recovery: { prompt } });
+      // toolCallCount=1 < default 2 → skip
+      const a = makeAgent({ toolCallCount: 1 });
+      for (let i = 0; i < 101; i++) a.accumulateToken('x');
+      expect(p.onRecovery(a)).toEqual({ type: 'skip' });
+    });
+  });
+
+  describe('onSettleReject', () => {
+    it('nudges with message when terminal tool + toolCallCount > 0', () => {
+      const a = makeAgent({ toolCallCount: 3 });
+      const action = policy.onSettleReject(a, 5000, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('nudge');
+      expect((action as any).message).toContain('Tool result too large');
+    });
+
+    it('returns idle when no terminal tool', () => {
+      const a = makeAgent({ toolCallCount: 3 });
+      const config = { maxTurns: 20, hasNonTerminalTools: true };
+      const action = policy.onSettleReject(a, 5000, pressure(), config);
+      expect(action.type).toBe('idle');
+    });
+
+    it('returns idle when toolCallCount === 0', () => {
+      const a = makeAgent({ toolCallCount: 0 });
+      const action = policy.onSettleReject(a, 5000, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('idle');
+    });
+
+    it('nudge message matches expected string', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      const action = policy.onSettleReject(a, 5000, pressure(), BASE_CONFIG);
+      expect(action).toEqual({
+        type: 'nudge',
+        message: 'Tool result too large for remaining KV. Report your findings now.',
+      });
+    });
+  });
+
+  describe('budget + pressureThresholds', () => {
+    it('no budget → pressureThresholds returns defaults', () => {
+      expect(policy.pressureThresholds).toEqual({ softLimit: 1024, hardLimit: 128 });
+    });
+
+    it('budget.context.softLimit overrides default', () => {
+      const p = new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } });
+      expect(p.pressureThresholds.softLimit).toBe(2048);
+      expect(p.pressureThresholds.hardLimit).toBe(128); // default
+    });
+
+    it('budget.context.hardLimit overrides default', () => {
+      const p = new DefaultAgentPolicy({ budget: { context: { hardLimit: 256 } } });
+      expect(p.pressureThresholds.hardLimit).toBe(256);
+      expect(p.pressureThresholds.softLimit).toBe(1024); // default
+    });
+
+    it('partial budget → other uses default', () => {
+      const p = new DefaultAgentPolicy({ budget: { context: { softLimit: 512 } } });
+      expect(p.pressureThresholds).toEqual({ softLimit: 512, hardLimit: 128 });
+    });
+
+    it('pressureThresholds getter returns correct shape', () => {
+      const pt = policy.pressureThresholds;
+      expect(pt).toHaveProperty('softLimit');
+      expect(pt).toHaveProperty('hardLimit');
+      expect(typeof pt.softLimit).toBe('number');
+      expect(typeof pt.hardLimit).toBe('number');
+    });
+  });
+
+  describe('time budget in onProduced', () => {
+    it('no time budget → overBudget driven by turns/headroom', () => {
+      const a = makeAgent({ toolCallCount: 3, turns: 25 });
+      const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('nudge');
+      expect((action as any).message).toContain('Turn limit');
+    });
+
+    it('time softLimit exceeded → nudge with time message', () => {
+      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 0 } } }); // 0ms = instant
+      const a = makeAgent({ toolCallCount: 3 });
+      const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+      const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('nudge');
+      expect((action as any).message).toContain('Time limit');
+    });
+
+    it('time softLimit not exceeded → no time nudge', () => {
+      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 999_999 } } });
+      const a = makeAgent({ toolCallCount: 3 });
+      const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+      const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('tool_call');
+    });
+
+    it('time nudge message distinct from pressure/turns', () => {
+      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 0 } } });
+      const a = makeAgent({ toolCallCount: 3 });
+      const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+      const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect((action as any).message).toBe('Time limit approaching — report your findings now.');
+    });
+  });
+
+  describe('underPressure / overBudget split', () => {
+    it('underPressure + terminal tool → report accepted despite < minToolCalls', () => {
+      const a = makeAgent({ toolCallCount: 1, turns: 25 }); // turns >= maxTurns
+      const tc = { name: 'report', arguments: JSON.stringify({ result: 'r' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('report');
+    });
+
+    it('underPressure (time) + terminal tool → report accepted', () => {
+      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 0 } } });
+      const a = makeAgent({ toolCallCount: 1 });
+      const tc = { name: 'report', arguments: JSON.stringify({ result: 'r' }), id: 'c1' };
+      const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('report');
+    });
+
+    it('not underPressure + terminal tool + < minToolCalls → premature nudge', () => {
+      const a = makeAgent({ toolCallCount: 1 });
+      const tc = { name: 'report', arguments: '{}', id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('nudge');
+      expect((action as any).message).toContain('must use tools');
+    });
+
+    it('underPressure + non-terminal tool → overBudget → nudge', () => {
+      const a = makeAgent({ toolCallCount: 3, turns: 25 });
+      const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('nudge');
+    });
+  });
+
+  describe('stateless nudge', () => {
+    it('nudges repeatedly without escalation to kill', () => {
+      const a = makeAgent({ toolCallCount: 3, turns: 25 });
+      const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+      // First nudge
+      const action1 = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action1.type).toBe('nudge');
+      // Second nudge — still nudge, not kill
+      const action2 = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action2.type).toBe('nudge');
+      // Third — still nudge
+      const action3 = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action3.type).toBe('nudge');
+    });
+
+    it('headroom recovers → tool_call allowed', () => {
+      const a = makeAgent({ toolCallCount: 3, turns: 5 });
+      const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+      // Over budget (headroom negative)
+      const lowPressure = pressure(500); // headroom = 500 - 1024 = -524
+      const action1 = policy.onProduced(a, { content: null, toolCalls: [tc] }, lowPressure, BASE_CONFIG);
+      expect(action1.type).toBe('nudge');
+      // Headroom recovers
+      const highPressure = pressure(5000); // headroom = 3976
+      const action2 = policy.onProduced(a, { content: null, toolCalls: [tc] }, highPressure, BASE_CONFIG);
+      expect(action2.type).toBe('tool_call');
+    });
+
+    it('no nudged/markNudged in agent API', () => {
+      const a = makeAgent();
+      expect('nudged' in a).toBe(false);
+      expect('markNudged' in a).toBe(false);
     });
   });
 });

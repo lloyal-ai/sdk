@@ -13,6 +13,7 @@ import {
   createToolkit,
   renderTemplate,
   spawnAgents,
+  DefaultAgentPolicy,
 } from "@lloyal-labs/lloyal-agents";
 import type { Source } from "@lloyal-labs/lloyal-agents";
 import type { AgentPoolResult } from "@lloyal-labs/lloyal-agents";
@@ -51,6 +52,13 @@ const VERIFY = loadTask("verify");
 const EVAL = loadTask("eval");
 const FINDINGS_EVAL = loadTask("findings-eval");
 const REPORT = loadTask("report");
+const researchPolicy = new DefaultAgentPolicy({
+  budget: {
+    context: { softLimit: 1024 },
+    time: { softLimit: 480_000, hardLimit: 600_000 },  // nudge 8min, kill 10min
+  },
+  recovery: { prompt: REPORT },
+});
 
 // ── Options ──────────────────────────────────────────────────────
 
@@ -177,7 +185,7 @@ function* research(
             },
             extractTasks: (args) => args.questions as string[],
           },
-          extractionPrompt: REPORT,
+          policy: researchPolicy,
           pruneOnReport: true,
           trace: opts.trace,
           scorer,
@@ -246,8 +254,6 @@ function* research(
                 terminalTool: "report",
                 maxTurns: effectiveMaxTurns,
                 trace: opts.trace,
-                pressure: { softLimit: 1024 },
-                extractionPrompt: REPORT,
               });
               totalTokens += pool.totalTokens;
               totalToolCalls += pool.totalToolCalls;
@@ -341,7 +347,7 @@ function* warmResearch(
         },
         extractTasks: (args) => args.questions as string[],
       },
-      extractionPrompt: REPORT,
+      policy: researchPolicy,
       pruneOnReport: true,
       trace: opts.trace,
       scorer,
@@ -408,8 +414,6 @@ function* warmResearch(
             terminalTool: "report",
             maxTurns: effectiveMaxTurns,
             trace: opts.trace,
-            pressure: { softLimit: 1024 },
-            extractionPrompt: REPORT,
           });
           totalTokens += pool.totalTokens;
           totalToolCalls += pool.totalToolCalls;
@@ -510,8 +514,6 @@ function* synthesize(
         terminalTool: "report",
         maxTurns: opts.maxTurns,
         trace: opts.trace,
-        pressure: { softLimit: 1024 },
-        extractionPrompt: REPORT,
       });
       return pool;
     },

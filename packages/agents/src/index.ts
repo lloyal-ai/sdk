@@ -3,7 +3,7 @@ export { Tool } from './Tool';
 export { Agent } from './Agent';
 export type { AgentStatus, ResultSource, FormatConfig, ToolHistoryEntry } from './Agent';
 export { DefaultAgentPolicy } from './AgentPolicy';
-export type { AgentPolicy, ProduceAction, SettleAction, IdleReason, PolicyConfig, ToolGuard, DefaultAgentPolicyOpts } from './AgentPolicy';
+export type { AgentPolicy, ProduceAction, SettleAction, RecoveryAction, IdleReason, PolicyConfig, ToolGuard, DefaultAgentPolicyOpts } from './AgentPolicy';
 export { defaultToolGuards } from './AgentPolicy';
 export { CallingAgent } from './context';
 export { Source, NULL_SCORER } from './source';

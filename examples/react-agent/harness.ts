@@ -4,7 +4,7 @@ import { call } from 'effection';
 import type { Operation, Channel } from 'effection';
 import { Session } from '@lloyal-labs/sdk';
 import {
-  Ctx, useAgentPool, runAgents, withSharedRoot,
+  Ctx, useAgentPool, runAgents, withSharedRoot, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
@@ -42,7 +42,7 @@ function* reportPass(
     tools: new Map([['report', reportTool]]),
     terminalTool: 'report',
     trace: opts.trace,
-    pressure: { softLimit: 200, hardLimit: 64 },
+    policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 200, hardLimit: 64 } } }),
   });
 
   hardCut.forEach((a, i) => {
@@ -83,7 +83,7 @@ export function* handleQuery(query: string, opts: HarnessOpts): Operation<void> 
         maxTurns: opts.maxTurns,
         terminalTool: 'report',
         trace: opts.trace,
-        pressure: { softLimit: 2048 },
+        policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } }),
       });
 
       yield* reportPass(pool, opts);

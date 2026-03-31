@@ -113,7 +113,6 @@ export class Agent {
   private _tokenCount = 0;
   private _toolCallCount = 0;
   private _turns = 0;
-  private _nudged = false;
   private _result: string | null = null;
   private _resultSource: ResultSource | null = null;
   private _toolHistory: ToolHistoryEntry[] = [];
@@ -172,7 +171,6 @@ export class Agent {
   get tokenCount(): number { return this._tokenCount; }
   get toolCallCount(): number { return this._toolCallCount; }
   get turns(): number { return this._turns; }
-  get nudged(): boolean { return this._nudged; }
   get traceBuffer(): TraceToken[] { return this._traceBuffer; }
 
   /** Accumulate generated token text into the current turn */
@@ -196,9 +194,6 @@ export class Agent {
 
   /** Increment tool call counter */
   incrementToolCalls(): void { this._toolCallCount++; }
-
-  /** Mark agent as nudged (second offense kills) */
-  markNudged(): void { this._nudged = true; }
 
   // ── Tool history ────────────────────────────────────────
 

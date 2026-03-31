@@ -1,15 +1,15 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { call } from 'effection';
+import { DefaultAgentPolicy, call } from 'effection';
 import type { Operation, Channel } from 'effection';
-import { Session } from '@lloyal-labs/sdk';
+import { DefaultAgentPolicy, Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
-import {
+import { DefaultAgentPolicy,
   Ctx, generate, useAgentPool, runAgents, withSharedRoot,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
-import { reportTool } from '@lloyal-labs/rig';
+import { DefaultAgentPolicy, reportTool } from '@lloyal-labs/rig';
 
 function loadTask(name: string): { system: string; user: string } {
   const raw = fs.readFileSync(path.resolve(__dirname, `tasks/${name}.md`), 'utf8').trim();
@@ -51,7 +51,7 @@ function* reportPass(
     tools: new Map([['report', reportTool]]),
     terminalTool: 'report',
     trace: opts.trace,
-    pressure: { softLimit: 200, hardLimit: 64 },
+    policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 200, hardLimit: 64 } } }),
   });
 
   hardCut.forEach((a, i) => {
@@ -154,7 +154,7 @@ function* dispatch(
         maxTurns: opts.maxTurns,
         terminalTool: 'report',
         trace: opts.trace,
-        pressure: { softLimit: 2048 },
+        policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } }),
       });
 
       yield* reportPass(pool, opts);

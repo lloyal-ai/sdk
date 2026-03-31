@@ -66,17 +66,8 @@ export interface SpawnAgentsOpts {
    * name, description, args schema, and task extraction.
    */
   recursive?: boolean | RecursiveOpts;
-  /** Scratchpad extraction for agents killed before reporting. */
-  extractionPrompt?: {
-    system: string;
-    user: string;
-    minTokens?: number;
-    minToolCalls?: number;
-  };
   /** Prune agent branches immediately on report, freeing KV mid-pool. */
   pruneOnReport?: boolean;
-  /** KV pressure thresholds for the agent pool. */
-  pressure?: PressureThresholds;
   /** Custom agent policy. @default DefaultAgentPolicy */
   policy?: AgentPolicy;
   /** Enable structured trace events. */
@@ -177,10 +168,17 @@ class DelegateTool extends Tool<Record<string, unknown>> {
       }
       if (rejected.length > 0) filtered = rejected;
 
+      // Read calling agent for diagnostic — same read the echo guard will do
+      let _diagAgent: Agent | undefined;
+      try { _diagAgent = yield* CallingAgent.get(); } catch { /* top-level */ }
+
       tw.write({
         traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
         type: 'entailment:delegate',
         tool: this.name,
+        callingAgentId: _diagAgent?.id,
+        callingAgentTaskLength: _diagAgent?.task?.length,
+        callingAgentTask: _diagAgent?.task?.slice(0, 200),
         tasks: allTasks.map((text, i) => ({
           text: text.slice(0, 200),
           score: scores[i],
@@ -203,17 +201,19 @@ class DelegateTool extends Tool<Record<string, unknown>> {
           scorer.scoreSimilarityBatch(callingAgent!.task, tasks),
         );
         const minEchoScore = Math.min(...echoScores);
+        const echoRejected = minEchoScore > echoThreshold;
 
-        if (minEchoScore > echoThreshold) {
-          tw.write({
-            traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
-            type: 'entailment:delegate:echo',
-            tool: this.name,
-            agentTask: callingAgent.task.slice(0, 200),
-            tasks: tasks.map((text, i) => ({ text: text.slice(0, 200), echoScore: echoScores[i] })),
-            threshold: echoThreshold,
-            rejected: true,
-          });
+        tw.write({
+          traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
+          type: 'entailment:delegate:echo',
+          tool: this.name,
+          agentTask: callingAgent.task.slice(0, 200),
+          tasks: tasks.map((text, i) => ({ text: text.slice(0, 200), echoScore: echoScores[i] })),
+          threshold: echoThreshold,
+          rejected: echoRejected,
+        });
+
+        if (echoRejected) {
           return {
             filtered,
             echoRejected: true,
@@ -270,8 +270,6 @@ class DelegateTool extends Tool<Record<string, unknown>> {
           pruneOnReport: opts.pruneOnReport ?? true,
           maxTurns: opts.maxTurns,
           trace: opts.trace,
-          pressure: opts.pressure,
-          extractionPrompt: opts.extractionPrompt,
           policy: opts.policy,
           scorer: context?.scorer,
         });
@@ -361,8 +359,6 @@ export function* spawnAgents(opts: SpawnAgentsOpts): Operation<AgentPoolResult> 
         pruneOnReport: opts.pruneOnReport,
         maxTurns: opts.maxTurns,
         trace: opts.trace,
-        pressure: opts.pressure,
-        extractionPrompt: opts.extractionPrompt,
         policy: opts.policy,
         scorer: opts.scorer,
       });

@@ -114,13 +114,15 @@ export type TraceEvent =
         | 'pressure_critical'
         | 'pressure_softcut'
         | 'pressure_settle_reject'
+        | 'time_exceeded'
+        | 'policy_exit'
         | 'maxTurns'
         | 'stop_token';
     }
   | TraceEventBase & {
       type: 'pool:agentNudge';
       agentId: number;
-      reason: 'pressure_softcut' | 'pressure_settle_reject';
+      reason: 'pressure_softcut' | 'pressure_settle_reject' | 'time_nudge';
     }
 
   // ── Agent per-turn output ────────────────────
@@ -142,6 +144,8 @@ export type TraceEvent =
       toolkitSize: number;
       args: Record<string, unknown>;
       callId: string;
+      explore: boolean;
+      percentAvailable: number;
     }
   | TraceEventBase & {
       type: 'tool:result';
@@ -190,7 +194,7 @@ export type TraceEvent =
   // ── Entailment scoring events ──────────────
   | TraceEventBase & { type: 'entailment:search'; tool: string; query: string; [key: string]: unknown }
   | TraceEventBase & { type: 'entailment:search:reordered'; tool: string; after: Array<{ title: string; url: string }> }
-  | TraceEventBase & { type: 'entailment:delegate'; tool: string; tasks: Array<{ text: string; score: number; kept: boolean }> }
+  | TraceEventBase & { type: 'entailment:delegate'; tool: string; callingAgentId?: number; callingAgentTaskLength?: number; callingAgentTask?: string; tasks: Array<{ text: string; score: number; kept: boolean }> }
   | TraceEventBase & { type: 'entailment:delegate:echo'; tool: string; agentTask: string; tasks: Array<{ text: string; echoScore: number }>; threshold: number; rejected: boolean }
   | TraceEventBase & {
       /** Exploit-mode dual scoring at a content boundary (search/fetch_page).

@@ -381,10 +381,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       for (const a of agents) {
         if (a.status !== 'active') continue;
 
-        if (policy.shouldExit?.(a, pressure) ?? pressure.critical) {
+        const policyExit = policy.shouldExit?.(a, pressure);
+        if (policyExit ?? pressure.critical) {
           a.transition('idle');
           const exitReason = pressure.critical ? 'pressure_critical' as const
-            : policy.shouldExit ? 'policy_exit' as const
+            : policyExit ? 'policy_exit' as const
             : 'pressure_critical' as const;
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: exitReason });

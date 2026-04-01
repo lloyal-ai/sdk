@@ -230,32 +230,14 @@ export interface AgentPoolOptions {
   terminalTool?: string;
   /** Enable per-token entropy/surprisal on `agent:produce` events */
   trace?: boolean;
-  /** KV pressure thresholds — tune per pool. Reporter pools typically use
-   *  lower thresholds than research pools since they complete in a single
-   *  terminal tool call. See {@link PressureThresholds} for tuning guidance. */
-  pressure?: PressureThresholds;
   /** Prune agent branches immediately when they call the terminal tool.
    *  Frees KV for remaining agents mid-pool. Only agents that reported
    *  findings are pruned — hard-cut agents keep their branches for
    *  reportPass extraction. @default false */
   pruneOnReport?: boolean;
-  /**
-   * Report prompt for scratchpad extraction of agents that were killed
-   * without findings. When provided, the pool extracts findings inline
-   * (idle processing) instead of requiring the harness to call reportPass.
-   *
-   * Format: `{ system: string; user: string }` — system prompt describes
-   * the extraction task, user prompt triggers the report.
-   */
-  extractionPrompt?: {
-    system: string;
-    user: string;
-    /** Min tokens generated before scratchpad extraction is attempted. @default 100 */
-    minTokens?: number;
-    /** Min tool calls before scratchpad extraction is attempted. @default 2 */
-    minToolCalls?: number;
-  };
-  /** Custom agent policy. @default DefaultAgentPolicy with default opts */
+  /** Custom agent policy. Configure recovery (scratchpad extraction),
+   *  time limits, explore/exploit threshold, and tool guards via
+   *  {@link DefaultAgentPolicyOpts}. @default DefaultAgentPolicy with default opts */
   policy?: AgentPolicy;
   /** Entailment scorer for semantic coherence across recursive depths.
    *  Passed to every tool via {@link ToolContext.scorer}. */

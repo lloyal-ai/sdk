@@ -1,6 +1,7 @@
 import type { Agent, ToolHistoryEntry } from './Agent';
-import type { ContextPressure } from './agent-pool';
+import { ContextPressure } from './agent-pool';
 import type { ParsedToolCall } from '@lloyal-labs/sdk';
+import type { PressureThresholds } from './types';
 
 // ── Declarative tool guards ─────────────────────────────
 
@@ -74,7 +75,7 @@ export type IdleReason =
 export type ProduceAction =
   | { type: 'tool_call'; tc: ParsedToolCall }
   | { type: 'report'; result: string }
-  | { type: 'nudge'; message?: string }
+  | { type: 'nudge'; message: string }
   | { type: 'idle'; reason: IdleReason }
   | { type: 'free_text_report'; content: string };
 
@@ -83,8 +84,17 @@ export type ProduceAction =
  * @category Agents
  */
 export type SettleAction =
-  | { type: 'nudge' }
+  | { type: 'nudge'; message: string }
   | { type: 'idle'; reason: IdleReason };
+
+/**
+ * Action returned by policy.onRecovery — what to do with an agent
+ * that was killed without reporting.
+ * @category Agents
+ */
+export type RecoveryAction =
+  | { type: 'extract'; prompt: { system: string; user: string } }
+  | { type: 'skip' };
 
 // ── Policy interface ────────────────────────────────────────
 
@@ -131,9 +141,46 @@ export interface AgentPolicy {
    *
    * When true (explore), content-boundary tools use agent-local scoring only.
    * When false (exploit), tools apply dual scoring via scoreRelevanceBatch.
+   * Non-monotonic — flips with live pressure. Separate from lifecycle.
    * Optional — defaults to true (explore) when absent.
    */
   shouldExplore?(agent: Agent, pressure: ContextPressure): boolean;
+
+  /**
+   * PRODUCE phase (pre-produceSync): should this agent be killed immediately?
+   *
+   * Called before the agent generates any tokens. Returns true to kill —
+   * no nudge possible here (there's no tool call to attach a message to).
+   * The branch stays alive for recovery via {@link onRecovery}.
+   *
+   * Signatures are narrow by design: `(agent, pressure)`. The policy is a
+   * class — time, cost, or other signals live on `this` (e.g. `_startTime`).
+   * The pool passes what it owns; the policy combines with its own state.
+   *
+   * Optional — defaults to `pressure.critical` when absent.
+   */
+  shouldExit?(agent: Agent, pressure: ContextPressure): boolean;
+
+  /**
+   * KV pressure thresholds for ContextPressure construction.
+   * Pool reads this once at setup. Optional — defaults to
+   * ContextPressure.DEFAULT_SOFT_LIMIT / DEFAULT_HARD_LIMIT.
+   */
+  readonly pressureThresholds?: PressureThresholds;
+
+  /**
+   * Post-loop: should we extract findings from this killed agent?
+   *
+   * Called for each idle agent without a result after the tick loop ends.
+   * Return `extract` with a prompt to fork from the agent's branch and
+   * generate grammar-constrained findings. Return `skip` to prune.
+   *
+   * The pool owns the extraction grammar (`{ "result": "..." }` schema).
+   * Custom prompts must produce output matching this shape.
+   *
+   * Optional — defaults to skip when absent.
+   */
+  onRecovery?(agent: Agent): RecoveryAction;
 }
 
 /**
@@ -171,6 +218,24 @@ export interface DefaultAgentPolicyOpts {
   /** KV availability threshold (0–100). Above → explore. Below → exploit.
    *  Uses ContextPressure.percentAvailable. @default 40 */
   exploreThreshold?: number;
+  /** Scratchpad recovery for agents killed without reporting.
+   *  Policy decides per-agent via {@link AgentPolicy.onRecovery}. */
+  recovery?: {
+    prompt: { system: string; user: string };
+    /** Skip extraction for agents with fewer tokens than this. @default 100 */
+    minTokens?: number;
+    /** Skip extraction for agents with fewer tool calls than this. @default 2 */
+    minToolCalls?: number;
+  };
+  /** Budget thresholds. softLimit = nudge, hardLimit = kill.
+   *  Same naming pattern for both resource types.
+   *  time budget is global across nesting levels (ms since policy creation). */
+  budget?: {
+    /** KV context budget (tokens remaining). */
+    context?: { softLimit?: number; hardLimit?: number };
+    /** Wall-time budget (ms since policy creation). */
+    time?: { softLimit?: number; hardLimit?: number };
+  };
 }
 
 export class DefaultAgentPolicy implements AgentPolicy {
@@ -178,6 +243,9 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _guards: ToolGuard[];
   private _exploreThreshold: number;
   private _forceExploit = false;
+  private _recovery: DefaultAgentPolicyOpts['recovery'] | null;
+  private _budget: DefaultAgentPolicyOpts['budget'] | null;
+  private _startTime: number;
 
   constructor(opts?: DefaultAgentPolicyOpts) {
     this._minToolCalls = opts?.minToolCallsBeforeReport ?? 2;
@@ -186,6 +254,22 @@ export class DefaultAgentPolicy implements AgentPolicy {
       ...defaultToolGuards,
       ...(opts?.extraGuards ?? []),
     ];
+    this._recovery = opts?.recovery ?? null;
+    this._budget = opts?.budget ?? null;
+    this._startTime = performance.now();
+  }
+
+  private _elapsed(): number { return performance.now() - this._startTime; }
+
+  /** KV pressure thresholds for ContextPressure construction.
+   *  Pool reads this once at setup. */
+  get pressureThresholds(): PressureThresholds {
+    return {
+      softLimit: this._budget?.context?.softLimit
+        ?? ContextPressure.DEFAULT_SOFT_LIMIT,
+      hardLimit: this._budget?.context?.hardLimit
+        ?? ContextPressure.DEFAULT_HARD_LIMIT,
+    };
   }
 
   onProduced(
@@ -204,24 +288,34 @@ export class DefaultAgentPolicy implements AgentPolicy {
       return { type: 'idle', reason: 'free_text_stop' };
     }
 
-    // Over budget check: turns exceeded or headroom negative, non-terminal tool
-    const overBudget = (agent.turns >= config.maxTurns || pressure.headroom < 0)
+    // Resource pressure: turns exceeded, headroom negative, or time nudge threshold
+    const timeSoft = this._budget?.time?.softLimit;
+    const timeNudge = timeSoft != null && this._elapsed() >= timeSoft;
+    const underPressure = agent.turns >= config.maxTurns || pressure.headroom < 0 || timeNudge;
+    // overBudget = under pressure AND calling a non-terminal tool (terminal tools always pass)
+    const overBudget = underPressure
       && (!config.terminalTool || tc.name !== config.terminalTool);
 
     if (overBudget) {
-      // First offense: nudge if conditions met
-      if (config.terminalTool && !agent.nudged && agent.toolCallCount > 0 && !pressure.critical) {
-        return { type: 'nudge' };
+      // Nudge: tell the model to report. Stateless — fires every turn the agent
+      // is over budget. No escalation tracking. shouldExit handles the hard kill.
+      if (config.terminalTool && agent.toolCallCount > 0 && !pressure.critical) {
+        const msg = timeNudge
+          ? 'Time limit approaching — report your findings now.'
+          : agent.turns >= config.maxTurns
+            ? 'Turn limit reached — report your findings now.'
+            : 'KV memory pressure — report your findings now.';
+        return { type: 'nudge', message: msg };
       }
-      // Second offense or no terminal tool: kill
+      // No terminal tool or critical pressure: kill
       return { type: 'idle', reason: agent.turns >= config.maxTurns ? 'max_turns' : 'pressure_softcut' };
     }
 
-    // Terminal tool — intercept and extract findings
+    // Terminal tool — intercept and extract result
     if (config.terminalTool && tc.name === config.terminalTool) {
-      // Prevent reporting without sufficient research (minimum 2 non-report tool calls).
-      // Nudged agents bypass — they may have only 1 tool call but were told to report.
-      if (agent.toolCallCount < this._minToolCalls && config.hasNonTerminalTools && !agent.nudged) {
+      // Prevent reporting without sufficient work — but skip this check when
+      // over budget so the agent can report after receiving a nudge.
+      if (agent.toolCallCount < this._minToolCalls && config.hasNonTerminalTools && !underPressure) {
         return { type: 'nudge', message: 'You must use tools before submitting results.' };
       }
       let result: string;
@@ -250,11 +344,11 @@ export class DefaultAgentPolicy implements AgentPolicy {
     _pressure: ContextPressure,
     config: PolicyConfig,
   ): SettleAction {
-    // First offense: nudge if conditions met
-    if (config.terminalTool && !agent.nudged && agent.toolCallCount > 0) {
-      return { type: 'nudge' };
+    // Nudge if possible — stateless, no escalation tracking
+    if (config.terminalTool && agent.toolCallCount > 0) {
+      return { type: 'nudge', message: 'Tool result too large for remaining KV. Report your findings now.' };
     }
-    // Second offense: kill
+    // No terminal tool: kill
     return { type: 'idle', reason: 'pressure_settle_reject' as IdleReason };
   }
 
@@ -267,5 +361,22 @@ export class DefaultAgentPolicy implements AgentPolicy {
   shouldExplore(_agent: Agent, pressure: ContextPressure): boolean {
     if (this._forceExploit) return false;
     return pressure.percentAvailable > this._exploreThreshold;
+  }
+
+  shouldExit(_agent: Agent, pressure: ContextPressure): boolean {
+    if (pressure.critical) return true;
+    const timeHard = this._budget?.time?.hardLimit;
+    if (timeHard != null && this._elapsed() >= timeHard) return true;
+    return false;
+  }
+
+  onRecovery(agent: Agent): RecoveryAction {
+    if (!this._recovery) return { type: 'skip' };
+    const minTokens = this._recovery.minTokens ?? 100;
+    const minToolCalls = this._recovery.minToolCalls ?? 2;
+    if (agent.tokenCount < minTokens || agent.toolCallCount < minToolCalls) {
+      return { type: 'skip' };
+    }
+    return { type: 'extract', prompt: this._recovery.prompt };
   }
 }

@@ -134,6 +134,10 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
       const { parseHTML } = await import('linkedom');
       const { document } = parseHTML(html);
 
+      if (!document || !document.documentElement) {
+        return { url, content: '[Could not parse HTML]' } as const;
+      }
+
       const { Readability } = await import('@mozilla/readability');
       const article = new Readability(document).parse();
 

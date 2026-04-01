@@ -5,7 +5,7 @@ import type { Operation, Channel } from 'effection';
 import { Branch, Session, buildUserDelta } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  Ctx, useAgentPool, runAgents, diverge, withSharedRoot,
+  Ctx, useAgentPool, runAgents, diverge, withSharedRoot, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult, DivergeResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
@@ -46,7 +46,7 @@ function* reportPass(
     tools: new Map([['report', reportTool]]),
     terminalTool: 'report',
     trace: opts.trace,
-    pressure: { softLimit: 200, hardLimit: 64 },
+    policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 200, hardLimit: 64 } } }),
   });
 
   hardCut.forEach((a, i) => {
@@ -89,7 +89,7 @@ function* research(
         maxTurns: opts.maxTurns,
         terminalTool: 'report',
         trace: opts.trace,
-        pressure: { softLimit: 2048 },
+        policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } }),
       });
 
       yield* reportPass(pool, opts);

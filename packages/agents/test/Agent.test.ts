@@ -99,12 +99,6 @@ describe('Agent', () => {
       expect(a.turns).toBe(1);
     });
 
-    it('marks nudged', () => {
-      const a = makeAgent();
-      expect(a.nudged).toBe(false);
-      a.markNudged();
-      expect(a.nudged).toBe(true);
-    });
   });
 
   describe('findings', () => {

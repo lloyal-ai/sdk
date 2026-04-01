@@ -6,7 +6,7 @@ import type { BranchStore } from '@lloyal-labs/sdk';
 import { Ctx, Store, Events, Trace, TraceParent, CallingAgent } from './context';
 import { buildToolResultDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
-import { generate } from './generate';
+import { prepare } from './generate';
 import { Agent } from './Agent';
 import { DefaultAgentPolicy } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
@@ -239,7 +239,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       }
     });
     const tw = yield* Trace.expect();
-    const { tasks, tools, maxTurns = 100, terminalTool, trace = false, pressure: pressureOpts, pruneOnReport = false } = opts;
+    const { tasks, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false } = opts;
 
     // Tool index map for trace — position in toolkit array
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
@@ -262,6 +262,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     // traps reporters in an infinite rejection loop.
     const hasNonTerminalTools = terminalTool ? [...tools.keys()].some(k => k !== terminalTool) : tools.size > 0;
     const policy = opts.policy ?? new DefaultAgentPolicy();
+    const pressureOpts: PressureThresholds = policy.pressureThresholds
+      ?? { softLimit: ContextPressure.DEFAULT_SOFT_LIMIT, hardLimit: ContextPressure.DEFAULT_HARD_LIMIT };
     const policyConfig: PolicyConfig = { maxTurns, terminalTool, hasNonTerminalTools };
 
     // ── Setup: fork branches, collect suffix tokens ──────────
@@ -379,10 +381,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       for (const a of agents) {
         if (a.status !== 'active') continue;
 
-        if (pressure.critical) {
+        const policyExit = policy.shouldExit?.(a, pressure);
+        if (policyExit ?? pressure.critical) {
           a.transition('idle');
+          const exitReason = pressure.critical ? 'pressure_critical' as const
+            : policyExit ? 'policy_exit' as const
+            : 'pressure_critical' as const;
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-            type: 'pool:agentDrop', agentId: a.id, reason: 'pressure_critical' });
+            type: 'pool:agentDrop', agentId: a.id, reason: exitReason });
           yield* events.send({ type: 'agent:done', agentId: a.id });
           continue;
         }
@@ -427,22 +433,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             case 'nudge': {
               const tc = parsed.toolCalls[0];
               const callId = tc?.id || `call_${a.toolCallCount}`;
-              const isResearchFirst = terminalTool && tc?.name === terminalTool && a.toolCallCount === 0 && hasNonTerminalTools;
-              const nudgeMsg = action.message
-                ? JSON.stringify({ error: action.message })
-                : isResearchFirst
-                  ? JSON.stringify({ error: 'You must perform research before reporting. Call at least one tool first.' })
-                  : JSON.stringify({ error: 'KV memory pressure — you cannot call more tools. Report your findings now.' });
-              if (!isResearchFirst) a.markNudged();
+              const nudgeMsg = JSON.stringify({ error: action.message });
               a.incrementTurns();
               a.transition('awaiting_tool');
               const prefillTokens = buildToolResultDelta(ctx, nudgeMsg, callId);
               settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc?.name || '', callId });
               a.resetTurn();
-              if (!isResearchFirst) {
-                tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-                  type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_softcut' });
-              }
+              tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+                type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_softcut' });
               continue;
             }
 
@@ -515,10 +513,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             }
             const settleAction = policy.onSettleReject(a, item.prefillTokens.length, settlePressure, policyConfig);
             if (settleAction.type === 'nudge') {
-              const nudgeMsg = JSON.stringify({ error: 'Tool result too large for remaining KV. Report your findings now.' });
+              const nudgeMsg = JSON.stringify({ error: settleAction.message });
               const nudgeTokens = buildToolResultDelta(ctx, nudgeMsg, item.callId);
               if (nudgeTokens.length <= headroom) {
-                a.markNudged();
                 prefillPairs.push([a.branch, nudgeTokens]);
                 settledAgents.push(a);
                 headroom -= nudgeTokens.length;
@@ -586,15 +583,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
         yield* events.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
 
-        const dispatchTraceId = tw.nextId();
-        const toolT0 = performance.now();
-        tw.write({
-          traceId: dispatchTraceId, parentTraceId: poolScope.traceId, ts: toolT0,
-          type: 'tool:dispatch', agentId: agent.id, tool: tc.name,
-          toolIndex: toolIndexMap.get(tc.name) ?? -1, toolkitSize,
-          args: toolArgs, callId,
-        });
-
         const tool = tools.get(tc.name);
         // Fresh pressure snapshot — SETTLE may have consumed significant KV
         // since the PRODUCE-phase snapshot at tick-top. On 16K context, a
@@ -603,6 +591,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         // explore mode past the threshold.
         const dispatchPressure = new ContextPressure(ctx, pressureOpts);
         const explore = policy.shouldExplore?.(agent, dispatchPressure) ?? true;
+
+        const dispatchTraceId = tw.nextId();
+        const toolT0 = performance.now();
+        tw.write({
+          traceId: dispatchTraceId, parentTraceId: poolScope.traceId, ts: toolT0,
+          type: 'tool:dispatch', agentId: agent.id, tool: tc.name,
+          toolIndex: toolIndexMap.get(tc.name) ?? -1, toolkitSize,
+          args: toolArgs, callId,
+          explore, percentAvailable: dispatchPressure.percentAvailable,
+        });
         const toolContext: ToolContext = {
           agentId: agent.id,
           branch: agent.branch,
@@ -672,18 +670,23 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       if (agents.every(a => a.status === 'idle' || a.status === 'disposed')) break;
     }
 
-    // ── Idle processing: scratchpad extraction ────────────────
-    // Replaces harness-level reportPass. Agents in 'idle' without findings
-    // get scratchpad extraction if they did enough work. This runs BEFORE
-    // pool:close trace so findings are populated in the trace.
-    if (opts.extractionPrompt) {
-      // Free KV from agents that already reported — gives room for extraction
-      for (const a of agents) {
-        if (a.result && !a.branch.disposed) {
-          a.branch.pruneSync();
-        }
+    // ── Idle processing: scratchpad recovery ─────────────────
+    // Policy decides per-agent whether to extract findings from killed agents.
+    // The pool owns the grammar and fork/generate/parse mechanics.
+    // Free KV from agents that already reported — gives room for extraction.
+    for (const a of agents) {
+      if (a.result && !a.branch.disposed) {
+        a.branch.pruneSync();
       }
+    }
 
+    // Check if any agent needs recovery before setting up grammar
+    const needsRecovery = agents.some(a =>
+      a.status === 'idle' && !a.result && !a.branch.disposed &&
+      policy.onRecovery?.(a)?.type === 'extract',
+    );
+
+    if (needsRecovery) {
       const reportSchema = {
         type: 'object',
         properties: { result: { type: 'string' } },
@@ -692,35 +695,61 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       const reportGrammar: string = yield* call(() =>
         ctx.jsonSchemaToGrammar(JSON.stringify(reportSchema)),
       );
-      const reportMessages = [
-        { role: 'system', content: opts.extractionPrompt.system },
-        { role: 'user', content: opts.extractionPrompt.user },
-      ];
-      const { prompt: extractionPromptStr } = ctx.formatChatSync(
-        JSON.stringify(reportMessages), { enableThinking: false },
-      );
+
+      // Cache formatted prompts per unique prompt object
+      const promptCache = new Map<string, string>();
 
       for (const a of agents) {
         if (a.status !== 'idle' || a.result || a.branch.disposed) continue;
 
-        // Confabulation guard: skip agents that barely ran
-        const minTokens = opts.extractionPrompt?.minTokens ?? 100;
-        const minToolCalls = opts.extractionPrompt?.minToolCalls ?? 2;
-        if (a.tokenCount < minTokens || a.toolCallCount < minToolCalls) {
+        const recovery = policy.onRecovery?.(a);
+        if (!recovery || recovery.type === 'skip') {
           if (!a.branch.disposed) a.branch.pruneSync();
           continue;
         }
 
+        // Format extraction prompt (cache by system+user key)
+        const cacheKey = recovery.prompt.system + '\0' + recovery.prompt.user;
+        let extractionPromptStr = promptCache.get(cacheKey);
+        if (!extractionPromptStr) {
+          const reportMessages = [
+            { role: 'system', content: recovery.prompt.system },
+            { role: 'user', content: recovery.prompt.user },
+          ];
+          const { prompt } = ctx.formatChatSync(
+            JSON.stringify(reportMessages), { enableThinking: false },
+          );
+          extractionPromptStr = prompt;
+          promptCache.set(cacheKey, prompt);
+        }
+
         try {
-          const result = yield* generate<{ result: string }>({
+          yield* events.send({ type: 'agent:spawn', agentId: a.id, parentAgentId: a.parentId });
+          const branch = yield* prepare({
             prompt: extractionPromptStr,
             grammar: reportGrammar,
-            parse: (o: string) => JSON.parse(o),
             parent: a.branch,
           });
-          if (result.parsed?.result) {
-            a.reportResult(result.parsed.result, 'scratchpad');
-            yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
+          try {
+            let output = '';
+            let tokenCount = 0;
+            yield* call(async () => {
+              for await (const { text } of branch) {
+                output += text;
+                tokenCount++;
+              }
+            });
+            const tickPressure = new ContextPressure(ctx, pressureOpts);
+            yield* events.send({
+              type: 'agent:tick', cellsUsed: tickPressure.cellsUsed, nCtx: tickPressure.nCtx,
+            });
+            const parsed = JSON.parse(output) as { result: string };
+            if (parsed?.result) {
+              a.reportResult(parsed.result, 'scratchpad');
+              yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
+            }
+          } finally {
+            if (!branch.disposed) branch.pruneSync();
           }
         } catch {
           /* extraction failure non-fatal */

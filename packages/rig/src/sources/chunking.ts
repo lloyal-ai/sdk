@@ -56,6 +56,7 @@ export function chunkFetchedPages(pages: FetchedPage[]): Chunk[] {
         chunks.push({
           resource: page.url,
           heading: page.title || page.url,
+          section: '',
           text: page.text.trim(),
           tokens: [],
           startLine: 1,
@@ -69,6 +70,7 @@ export function chunkFetchedPages(pages: FetchedPage[]): Chunk[] {
       chunks.push({
         resource: page.url,
         heading: page.title || page.url,
+        section: '',
         text: paragraphs[i],
         tokens: [],
         startLine: i + 1,
@@ -113,6 +115,7 @@ export async function chunkHtml(html: string, url: string, title: string): Promi
       chunks.push({
         resource: url,
         heading: currentHeading || title || url,
+        section: '',
         text,
         tokens: [],
         startLine: chunkIndex + 1,

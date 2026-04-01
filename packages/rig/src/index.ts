@@ -28,7 +28,7 @@ export type {
 export { WebSource } from './sources/web';
 export type { WebSourceOpts } from './sources/web';
 export { CorpusSource } from './sources/corpus';
-export type { CorpusSourceOpts } from './sources/corpus';
+export type { CorpusSourceOpts, CorpusPromptData } from './sources/corpus';
 export type { SourceContext } from './sources/types';
 
 // Chunking (platform-agnostic — linkedom is pure JS)

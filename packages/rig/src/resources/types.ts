@@ -26,8 +26,10 @@ export interface Resource {
 export interface Chunk {
   /** Resource identifier (file name or URL) this chunk belongs to */
   resource: string;
-  /** Section heading or auto-generated preview used as a label */
+  /** Leaf section heading (e.g. "Recovery loop") */
   heading: string;
+  /** Hierarchical section path (e.g. "Agents > Lifecycle > Recovery loop"). Empty for web chunks. */
+  section: string;
   /** Raw text content of the chunk */
   text: string;
   /** Pre-tokenized representation for the reranker — empty until {@link Reranker.tokenizeChunks} runs */

@@ -13,8 +13,12 @@ import type { Chunk } from '../resources/types';
 export interface ScoredChunk {
   /** Source filename containing the chunk */
   file: string;
-  /** Section heading the chunk belongs to */
+  /** Leaf section heading (e.g. "Recovery loop") */
   heading: string;
+  /** Hierarchical section path (e.g. "Agents > Lifecycle > Recovery loop"). Empty for web chunks. */
+  section: string;
+  /** First ~200 chars of chunk text — gives agents content at search time */
+  snippet: string;
   /** Relevance score (higher = more relevant) */
   score: number;
   /** Start line in the source file (1-indexed) */

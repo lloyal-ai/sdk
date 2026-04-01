@@ -38,7 +38,7 @@ export function loadResources(dir: string): Resource[] {
   }
   const files = fs
     .readdirSync(dir)
-    .filter((f) => f.endsWith(".mdx") || f.endsWith(".mdx"));
+    .filter((f) => f.endsWith(".md") || f.endsWith(".mdx"));
   if (!files.length) {
     process.stdout.write(`Error: no .md(x) files in: ${dir}\n`);
     process.exit(1);
@@ -64,6 +64,7 @@ function chunkByParagraph(res: Resource): Chunk[] {
           heading:
             text.slice(0, 60).replace(/\n/g, " ") +
             (text.length > 60 ? "\u2026" : ""),
+          section: '',
           text,
           tokens: [],
           startLine: start + 1,
@@ -88,6 +89,25 @@ function chunkByParagraph(res: Resource): Chunk[] {
  *
  * @category Rig
  */
+/**
+ * Build hierarchical section path from a heading stack.
+ * Stack maps level → heading name. When a new heading at level N arrives,
+ * pop everything above N and push the new one.
+ */
+function buildSectionPath(stack: Map<number, string>, level: number, heading: string): string {
+  // Pop all levels deeper than current
+  for (const k of Array.from(stack.keys())) {
+    if (k >= level) stack.delete(k);
+  }
+  stack.set(level, heading);
+  // Join all levels in order
+  const parts: string[] = [];
+  for (const k of Array.from(stack.keys()).sort((a, b) => a - b)) {
+    parts.push(stack.get(k)!);
+  }
+  return parts.join(' > ');
+}
+
 export function chunkResources(resources: Resource[]): Chunk[] {
   const out: Chunk[] = [];
   for (const res of resources) {
@@ -98,15 +118,21 @@ export function chunkResources(resources: Resource[]): Chunk[] {
       continue;
     }
     const lines = res.content.split("\n");
+    const headingStack = new Map<number, string>();
     for (const sec of sections) {
       const text = lines
         .slice(sec.startLine - 1, sec.endLine)
         .join("\n")
         .trim();
       if (!text) continue;
+      const leaf = sec.heading || res.name;
+      const section = sec.heading
+        ? buildSectionPath(headingStack, sec.level, sec.heading)
+        : res.name;
       out.push({
         resource: res.name,
-        heading: sec.heading || res.name,
+        heading: leaf,
+        section,
         text,
         tokens: [],
         startLine: sec.startLine,

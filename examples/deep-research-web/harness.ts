@@ -46,8 +46,8 @@ const PLAN = loadTask("plan");
 const ROOT = loadTask("root");
 const BRIDGE = loadTask("bridge");
 const WEB_RESEARCH = loadTask("web-research");
-const CORPUS_RESEARCH = loadTask("corpus-research");
 const SYNTHESIZE_TEMPLATE = loadEtaTemplate("synthesize");
+const CORPUS_RESEARCH_TEMPLATE = loadEtaTemplate("corpus-research");
 const VERIFY = loadTask("verify");
 const EVAL = loadTask("eval");
 const FINDINGS_EVAL = loadTask("findings-eval");
@@ -116,8 +116,22 @@ function* rerankChunks(
 
 const SOURCE_PROMPTS: Record<string, { system: string; user: string }> = {
   web: WEB_RESEARCH,
-  corpus: CORPUS_RESEARCH,
 };
+
+/**
+ * Get system prompt for a source.
+ * Corpus: renders Eta template with TOC from CorpusSource.
+ * Web/other: static prompt from SOURCE_PROMPTS.
+ */
+function sourcePromptFor(
+  source: { name: string; promptData?: () => { toc: string } },
+): { system: string; user: string } {
+  if (source.promptData) {
+    const data = source.promptData();
+    return { system: renderTemplate(CORPUS_RESEARCH_TEMPLATE, data), user: '' };
+  }
+  return SOURCE_PROMPTS[source.name] ?? ROOT;
+}
 
 // ── Source research result ────────────────────────────────────
 
@@ -167,7 +181,7 @@ function* research(
 
       for (let i = 0; i < opts.sources.length; i++) {
         const source = opts.sources[i];
-        const sourcePrompt = SOURCE_PROMPTS[source.name] ?? ROOT;
+        const sourcePrompt = sourcePromptFor(source);
         const scorer = source.createScorer(query);
         const pool = yield* spawnAgents({
           tools: source.tools,
@@ -329,7 +343,7 @@ function* warmResearch(
 
   for (let i = 0; i < opts.sources.length; i++) {
     const source = opts.sources[i];
-    const sourcePrompt = SOURCE_PROMPTS[source.name] ?? ROOT;
+    const sourcePrompt = sourcePromptFor(source);
     const scorer = source.createScorer(query);
     const pool = yield* spawnAgents({
       tools: source.tools,

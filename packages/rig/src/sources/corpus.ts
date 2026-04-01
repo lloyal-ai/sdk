@@ -8,6 +8,11 @@ import { SearchTool } from "../tools/search";
 import { ReadFileTool } from "../tools/read-file";
 import { GrepTool } from "../tools/grep";
 
+/** Data for rendering the corpus-research Eta template */
+export interface CorpusPromptData {
+  toc: string;
+}
+
 /**
  * Configuration for {@link CorpusSource}.
  *
@@ -35,8 +40,10 @@ export interface CorpusSourceOpts {
  * and regex grep. On {@link bind}, tokenizes chunks through the reranker
  * and prepends a reranker-backed search tool.
  *
- * No orchestration, no prompts, no node:fs. Use {@link spawnAgents}
- * from your harness to orchestrate agents with these tools.
+ * System prompt data is provided via {@link promptData}: the reranker
+ * scores the task against chunk section paths to find semantically
+ * relevant starting points. The harness renders this data into an
+ * Eta template (same pattern as synthesize.eta).
  *
  * @category Rig
  */
@@ -57,13 +64,51 @@ export class CorpusSource extends Source<{ reranker: Reranker }, Chunk> {
     super();
     this._chunks = chunks;
     this._tools = [
-      new ReadFileTool(resources, opts?.readFile),
+      new ReadFileTool(resources, { ...opts?.readFile, chunks }),
       new GrepTool(resources, opts?.grep),
     ];
   }
 
   /** @inheritDoc */
   get tools(): Tool[] { return this._tools; }
+
+  /**
+   * Provide data for rendering the corpus-research Eta template.
+   *
+   * Returns the TOC (structural orientation). The harness renders
+   * this into its corpus-research.eta template (same pattern as
+   * synthesize.eta). Agents discover relevant content through their
+   * tools (search snippets, read_file relatedSections), not through
+   * pre-scored suggestions in the prompt.
+   */
+  promptData(): CorpusPromptData {
+    return { toc: this._buildToc() };
+  }
+
+  /** Build table of contents from chunk index: file → top-level headings */
+  private _buildToc(): string {
+    const byFile = new Map<string, string[]>();
+    for (const c of this._chunks) {
+      if (!c.section) continue;
+      const isTopLevel = !c.section.includes(' > ');
+      if (!isTopLevel) continue;
+      const topics = byFile.get(c.resource) ?? [];
+      if (!topics.includes(c.heading)) topics.push(c.heading);
+      byFile.set(c.resource, topics);
+    }
+    for (const c of this._chunks) {
+      if (!byFile.has(c.resource)) byFile.set(c.resource, []);
+    }
+    const lines: string[] = [];
+    for (const [file, topics] of byFile) {
+      lines.push(
+        topics.length > 0
+          ? `${file} (topics: ${topics.join(', ')})`
+          : file,
+      );
+    }
+    return lines.join('\n');
+  }
 
   /**
    * Late-bind reranker: tokenize chunks and prepend SearchTool.

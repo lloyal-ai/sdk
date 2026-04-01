@@ -62,6 +62,8 @@ export async function createReranker(
                   results: value.results.map((r) => ({
                     file: chunks[r.index].resource,
                     heading: chunks[r.index].heading,
+                    section: chunks[r.index].section,
+                    snippet: chunks[r.index].text.slice(0, 200),
                     score: r.score,
                     startLine: chunks[r.index].startLine,
                     endLine: chunks[r.index].endLine,

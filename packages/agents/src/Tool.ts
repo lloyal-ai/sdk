@@ -67,6 +67,23 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
   abstract execute(args: TArgs, context?: ToolContext): Operation<unknown>;
 
   /**
+   * Optional reasoning probe prefilled after this tool's result settles.
+   *
+   * When set, the pool prefills this text into the agent's context after
+   * the tool result, before the lazy grammar resets. This nudges the model
+   * to reason in prose about the result before generating the next tool call.
+   *
+   * Return null/undefined to skip (default). Only applies to real tool
+   * dispatches — nudges and settle rejects are unaffected.
+   *
+   * @example
+   * ```typescript
+   * get probe() { return 'Wait, '; }
+   * ```
+   */
+  get probe(): string | null { return null; }
+
+  /**
    * OpenAI-compatible function tool schema
    *
    * Auto-generated from `name`, `description`, and `parameters`.

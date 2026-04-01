@@ -1076,7 +1076,7 @@ async function testChatInOut(ctx: SessionContext): Promise<void> {
   assert(typeof result.format === 'number', 'formatChat: returns format');
   assert(typeof result.grammar === 'string', 'formatChat: returns grammar');
   assert(typeof result.grammarLazy === 'boolean', 'formatChat: returns grammarLazy');
-  assert(typeof result.thinkingForcedOpen === 'boolean', 'formatChat: returns thinkingForcedOpen');
+  assert(typeof result.generationPrompt === 'string', 'formatChat: returns generationPrompt');
   assert(typeof result.reasoningFormat === 'number', 'formatChat: returns reasoningFormat');
   assert(Array.isArray(result.grammarTriggers), 'formatChat: returns grammarTriggers');
   assert(Array.isArray(result.preservedTokens), 'formatChat: returns preservedTokens');
@@ -1112,7 +1112,7 @@ async function testChatInOut(ctx: SessionContext): Promise<void> {
   const parsedWithOpts = ctx.parseChatOutput('Some output', toolResult.format, {
     reasoningFormat: toolResult.reasoningFormat,
     isPartial: false,
-    thinkingForcedOpen: false,
+    generationPrompt: '',
   });
   assert(typeof parsedWithOpts.content === 'string', 'parseChatOutput with options');
   ok('parseChatOutput with options');

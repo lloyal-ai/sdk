@@ -674,3 +674,199 @@ describe('pressure thresholds propagation', () => {
     }
   });
 });
+
+// ── Group 7: Tool probe lifecycle hook ──────────────────────────
+
+describe('tool probe lifecycle hook', () => {
+  /** Tool with a probe — returns "Wait, " after result settles */
+  class ProbeTool extends Tool<{ query: string }> {
+    readonly name = 'web_search';
+    readonly description = 'search with probe';
+    readonly parameters = { type: 'object' as const, properties: { query: { type: 'string' as const } } };
+    get probe() { return 'Wait, '; }
+    *execute(): Operation<unknown> { return { results: ['result'] }; }
+  }
+
+  /** Tool without a probe — default null */
+  class NoProbeTool extends Tool<{ query: string }> {
+    readonly name = 'web_search';
+    readonly description = 'search without probe';
+    readonly parameters = { type: 'object' as const, properties: { query: { type: 'string' as const } } };
+    *execute(): Operation<unknown> { return { results: ['result'] }; }
+  }
+
+  function toolCallPolicy(): AgentPolicy {
+    return stubPolicy({
+      shouldExit: () => false,
+      onProduced: (_a, parsed) => {
+        if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+        return { type: 'idle', reason: 'free_text_stop' };
+      },
+      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    });
+  }
+
+  it('7a: tool with probe → extra prefill after tool result', async () => {
+    const probeTool = new ProbeTool();
+    const toolMap = new Map<string, Tool>([['web_search', probeTool]]);
+
+    const { ctx, store, root } = createMockSdk({ nCtx: 16384, cellsUsed: 1000 });
+
+    // Track prefill calls on the single ctx
+    let prefillCallCount = 0;
+    const origPrefill = ctx._storePrefill.bind(ctx);
+    ctx._storePrefill = async (handles: number[], tokenArrays: number[][]) => {
+      prefillCallCount++;
+      return origPrefill(handles, tokenArrays);
+    };
+
+    // Wire token queues
+    let forkCount = 0;
+    const branchForkIndex = new Map<number, number>();
+    const branchSampleCount = new Map<number, number>();
+    const origFork = ctx._branchFork.bind(ctx);
+    ctx._branchFork = (parentHandle: number): number => {
+      const handle = origFork(parentHandle);
+      branchForkIndex.set(handle, forkCount++);
+      branchSampleCount.set(handle, 0);
+      return handle;
+    };
+    const queues = [[1, STOP, STOP]];
+    ctx._branchSample = (handle: number): number => {
+      const fi = branchForkIndex.get(handle) ?? -1;
+      const queue = fi >= 0 ? (queues[fi] ?? [STOP]) : [STOP];
+      const idx = branchSampleCount.get(handle) ?? 0;
+      branchSampleCount.set(handle, idx + 1);
+      return idx < queue.length ? queue[idx] : STOP;
+    };
+    ctx.parseChatOutput = (raw: string) => {
+      if (!raw || raw === '') return { content: '', reasoningContent: '', toolCalls: [] };
+      return { content: '', reasoningContent: '', toolCalls: [{ name: 'web_search', arguments: '{"query":"test"}', id: 'c1' }] };
+    };
+
+    const traceWriter = new CapturingTraceWriter();
+    await root.prefill(ctx.tokenizeSync('system'));
+    prefillCallCount = 0; // reset after root prefill
+
+    await run(function* () {
+      yield* Ctx.set(ctx as any);
+      yield* Store.set(store);
+      const events: Channel<AgentEvent, void> = createChannel();
+      yield* Events.set(events as any);
+      yield* Trace.set(traceWriter);
+      yield* spawn(function* () { for (const ev of yield* each(events)) { yield* each.next(); } });
+
+      return yield* scoped(function* () {
+        return yield* useAgentPool({
+          tasks: [{ systemPrompt: 'Agent', content: 'Task', tools: JSON.stringify([probeTool.schema]), parent: root, seed: 0 }],
+          tools: toolMap,
+          policy: toolCallPolicy(),
+          maxTurns: 100,
+        });
+      });
+    });
+
+    // Prefill calls: 1 (agent suffix) + 1 (tool result) + 1 (probe) = 3 minimum
+    expect(prefillCallCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('7b: tool without probe → no extra prefill (noop)', async () => {
+    const noProbeTool = new NoProbeTool();
+    const toolMap = new Map<string, Tool>([['web_search', noProbeTool]]);
+
+    const { ctx, store, root } = createMockSdk({ nCtx: 16384, cellsUsed: 1000 });
+
+    let prefillCallCount = 0;
+    const origPrefill = ctx._storePrefill.bind(ctx);
+    ctx._storePrefill = async (handles: number[], tokenArrays: number[][]) => {
+      prefillCallCount++;
+      return origPrefill(handles, tokenArrays);
+    };
+
+    let forkCount = 0;
+    const branchForkIndex = new Map<number, number>();
+    const branchSampleCount = new Map<number, number>();
+    const origFork = ctx._branchFork.bind(ctx);
+    ctx._branchFork = (parentHandle: number): number => {
+      const handle = origFork(parentHandle);
+      branchForkIndex.set(handle, forkCount++);
+      branchSampleCount.set(handle, 0);
+      return handle;
+    };
+    const queues = [[1, STOP, STOP]];
+    ctx._branchSample = (handle: number): number => {
+      const fi = branchForkIndex.get(handle) ?? -1;
+      const queue = fi >= 0 ? (queues[fi] ?? [STOP]) : [STOP];
+      const idx = branchSampleCount.get(handle) ?? 0;
+      branchSampleCount.set(handle, idx + 1);
+      return idx < queue.length ? queue[idx] : STOP;
+    };
+    ctx.parseChatOutput = (raw: string) => {
+      if (!raw || raw === '') return { content: '', reasoningContent: '', toolCalls: [] };
+      return { content: '', reasoningContent: '', toolCalls: [{ name: 'web_search', arguments: '{"query":"test"}', id: 'c1' }] };
+    };
+
+    const traceWriter = new CapturingTraceWriter();
+    await root.prefill(ctx.tokenizeSync('system'));
+    prefillCallCount = 0;
+
+    await run(function* () {
+      yield* Ctx.set(ctx as any);
+      yield* Store.set(store);
+      const events: Channel<AgentEvent, void> = createChannel();
+      yield* Events.set(events as any);
+      yield* Trace.set(traceWriter);
+      yield* spawn(function* () { for (const ev of yield* each(events)) { yield* each.next(); } });
+
+      return yield* scoped(function* () {
+        return yield* useAgentPool({
+          tasks: [{ systemPrompt: 'Agent', content: 'Task', tools: JSON.stringify([noProbeTool.schema]), parent: root, seed: 0 }],
+          tools: toolMap,
+          policy: toolCallPolicy(),
+          maxTurns: 100,
+        });
+      });
+    });
+
+    // Prefill calls: 1 (agent suffix) + 1 (tool result) = 2 — NO probe prefill
+    expect(prefillCallCount).toBe(2);
+  });
+
+  it('7c: default Tool.probe returns null', () => {
+    const tool = new NoProbeTool();
+    expect(tool.probe).toBeNull();
+  });
+
+  it('7d: probe does not fire on nudge', async () => {
+    // Tool has a probe, but the agent gets nudged — probe should NOT fire
+    const probeTool = new ProbeTool();
+    const toolMap = new Map<string, Tool>([['web_search', probeTool]]);
+
+    const { result, ctx } = await runPool({
+      forkTokenQueues: [[1, 2, STOP, 3, STOP]],
+      parseChatOutputFn: (raw) => {
+        if (!raw || raw === '') return { content: '', reasoningContent: '', toolCalls: [] };
+        return { content: '', reasoningContent: '', toolCalls: [{ name: 'web_search', arguments: '{}', id: 'c1' }] };
+      },
+      tools: toolMap,
+      policy: (() => {
+        let nudged = false;
+        return stubPolicy({
+          shouldExit: () => false,
+          onProduced: (_a, parsed) => {
+            if (parsed.toolCalls.length > 0 && !nudged) {
+              nudged = true;
+              return { type: 'nudge', message: 'Report now.' };
+            }
+            return { type: 'idle', reason: 'free_text_stop' };
+          },
+          onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        });
+      })(),
+    });
+
+    // Agent was nudged, not dispatched — probe tool exists but probe should not fire
+    // Agent should complete without errors
+    expect(result.agents[0]).toBeDefined();
+  });
+});

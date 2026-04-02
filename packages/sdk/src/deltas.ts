@@ -39,6 +39,10 @@ export function buildUserDelta(
  * single token array suitable for `branch.prefill()`. Used by
  * {@link useAgentPool} to inject tool results back into agent context.
  *
+ * For templates that require a user message (e.g. Qwen 3.5), the native layer
+ * (`chat_in::format`) retries with a synthetic user and strips it, so the
+ * caller always receives correctly formatted output.
+ *
  * @param ctx - Active session context
  * @param resultStr - JSON-serialized tool result
  * @param callId - Tool call identifier from the model's parsed output
@@ -52,12 +56,20 @@ export function buildToolResultDelta(
   callId: string
 ): number[] {
   const sep = ctx.getTurnSeparator();
-  const { prompt } = ctx.formatChatSync(
+  const { prompt, generationPrompt } = ctx.formatChatSync(
     JSON.stringify([
       { role: 'system', content: '' },
       { role: 'tool', content: resultStr, tool_call_id: callId },
     ])
   );
   const delta = ctx.tokenizeSync(prompt, false);
-  return [...sep, ...delta];
+  // Append generation prompt (e.g. "<|im_start|>assistant\n<think>\n" for thinking models).
+  // For non-thinking models this is "<|im_start|>assistant\n" which is already
+  // included in prompt by formatChatSync. Tokenizing it again would double it,
+  // so only append when it's NOT already a suffix of prompt.
+  let genTokens: number[] = [];
+  if (generationPrompt && !prompt.endsWith(generationPrompt)) {
+    genTokens = ctx.tokenizeSync(generationPrompt, false);
+  }
+  return [...sep, ...delta, ...genTokens];
 }

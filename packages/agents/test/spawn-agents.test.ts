@@ -350,7 +350,7 @@ describe('Agent.task', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
       task: 'investigate speculative decoding on M3',
     });
     expect(a.task).toBe('investigate speculative decoding on M3');
@@ -360,7 +360,7 @@ describe('Agent.task', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
     });
     expect(a.task).toBe('');
   });
@@ -376,7 +376,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
     });
     a.transition('active');
     a.incrementToolCalls();
@@ -408,7 +408,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
     });
     a.transition('active');
     a.incrementToolCalls();
@@ -438,7 +438,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     const policy = new DefaultAgentPolicy({ exploreThreshold: 40 });
     const a = new Agent({
       id: 1, parentId: 0, branch: createMockBranch() as any,
-      fmt: { format: 0, reasoningFormat: 0, thinkingForcedOpen: false, parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
     });
 
     const highPressure = {

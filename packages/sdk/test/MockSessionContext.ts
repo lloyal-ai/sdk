@@ -269,7 +269,7 @@ export class MockSessionContext implements SessionContext {
       prompt: `<formatted>${msgs}</formatted>`,
       format: 2 as ChatFormat, // >1 to pass tool-calling support check
       reasoningFormat: 0,
-      thinkingForcedOpen: false,
+      generationPrompt: '',
       parser: 'default',
       grammar: '',
       grammarLazy: false,

@@ -21,13 +21,13 @@ export function createMockSessionContext(opts?: {
     tokenizeSync: (text: string) => Array.from({ length: Math.ceil(text.length / 4) }, (_, i) => i + 1),
     formatChat: async (msgs: string, opts?: Record<string, unknown>) => ({
       prompt: `<formatted>${msgs}</formatted>`,
-      format: 1, reasoningFormat: 0, thinkingForcedOpen: false,
+      format: 1, reasoningFormat: 0, generationPrompt: '',
       parser: 'default', grammar: '', grammarLazy: true,
       grammarTriggers: [],
     }),
     formatChatSync: (msgs: string) => ({
       prompt: `<formatted>${msgs}</formatted>`,
-      format: 1, reasoningFormat: 0, thinkingForcedOpen: false,
+      format: 1, reasoningFormat: 0, generationPrompt: '',
       parser: 'default', grammar: '', grammarLazy: true,
       grammarTriggers: [],
     }),

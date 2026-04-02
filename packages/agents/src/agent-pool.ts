@@ -165,7 +165,7 @@ function* setupAgent(
     fmt: {
       format: fmt.format,
       reasoningFormat: fmt.reasoningFormat,
-      thinkingForcedOpen: fmt.thinkingForcedOpen,
+      generationPrompt: fmt.generationPrompt,
       parser: fmt.parser,
       grammar: fmt.grammar,
       grammarLazy: fmt.grammarLazy,
@@ -357,6 +357,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     // in the next tick. DISPATCH awaits each tool to completion via
     // scoped() + call() — no concurrent llama_decode possible.
     const settledBuffer: SettledTool[] = [];
+    const dispatchedProbes = new Map<number, string>();
     const agentById = new Map(agents.map(a => [a.id, a]));
 
     let steps = 0;
@@ -397,7 +398,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         if (isStop) {
           const parsed = ctx.parseChatOutput(a.rawOutput, a.fmt.format, {
             reasoningFormat: a.fmt.reasoningFormat,
-            thinkingForcedOpen: a.fmt.thinkingForcedOpen,
+            generationPrompt: a.fmt.generationPrompt,
             parser: a.fmt.parser,
           });
 
@@ -558,6 +559,20 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           counters.warmPrefillCalls++;
           counters.warmPrefillBranches += prefillPairs.length;
 
+          // Prefill per-tool reasoning probes for agents that just got real
+          // tool results. Each tool can optionally return a probe string via
+          // its `probe` getter — prefilled after the tool result to nudge the
+          // model into prose reasoning before the next tool call.
+          const probePairs: [Branch, number[]][] = [];
+          for (const a of settledAgents) {
+            const probe = dispatchedProbes.get(a.id);
+            if (probe) probePairs.push([a.branch, ctx.tokenizeSync(probe, false)]);
+          }
+          if (probePairs.length > 0) {
+            yield* call(() => store.prefill(probePairs));
+          }
+          dispatchedProbes.clear();
+
           // Only NOW transition state + reset grammar
           for (const a of settledAgents) {
             a.transition('active');
@@ -648,6 +663,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
           const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
           settledBuffer.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId });
+          const probe = tool?.probe;
+          if (probe) dispatchedProbes.set(agent.id, probe);
 
           tw.write({
             traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),

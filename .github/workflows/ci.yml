@@ -55,7 +55,10 @@ jobs:
     name: GPU Integration Tests
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-gpu-tests')
 
     steps:
       - name: Dispatch GPU tests to lloyal-node

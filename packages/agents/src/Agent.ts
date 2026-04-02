@@ -40,7 +40,7 @@ export type ResultSource =
 export interface FormatConfig {
   format: number;
   reasoningFormat: number;
-  thinkingForcedOpen: boolean;
+  generationPrompt: string;
   parser: string;
   grammar: string;
   grammarLazy: boolean;

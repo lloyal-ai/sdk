@@ -350,7 +350,7 @@ export interface GrammarTrigger {
  * // ... generate tokens using fmt.prompt and fmt.grammar ...
  * const parsed = ctx.parseChatOutput(output, fmt.format, {
  *   reasoningFormat: fmt.reasoningFormat,
- *   thinkingForcedOpen: fmt.thinkingForcedOpen,
+ *   generationPrompt: fmt.generationPrompt,
  *   parser: fmt.parser,
  * });
  * ```
@@ -375,8 +375,8 @@ export interface FormattedChatResult {
   grammar: string;
   /** Whether grammar should be applied lazily (only after triggers fire) */
   grammarLazy: boolean;
-  /** Whether the thinking tag was forced open by the template */
-  thinkingForcedOpen: boolean;
+  /** Generation prompt prefill text (e.g. "<think>"), empty if none */
+  generationPrompt: string;
 
   /**
    * Reasoning format (pass to parseChatOutput options)
@@ -416,8 +416,8 @@ export interface ParseChatOutputOptions {
    */
   isPartial?: boolean;
 
-  /** Whether thinking tag was forced open (from {@link FormattedChatResult.thinkingForcedOpen}) */
-  thinkingForcedOpen?: boolean;
+  /** Generation prompt prefill (from {@link FormattedChatResult.generationPrompt}) */
+  generationPrompt?: string;
 
   /** PEG parser definition for PEG format models (from {@link FormattedChatResult.parser}) */
   parser?: string;
@@ -1132,7 +1132,7 @@ export interface SessionContext {
    * // ... generate tokens ...
    * const parsed = ctx.parseChatOutput(generatedText, fmt.format, {
    *   reasoningFormat: fmt.reasoningFormat,
-   *   thinkingForcedOpen: fmt.thinkingForcedOpen,
+   *   generationPrompt: fmt.generationPrompt,
    *   parser: fmt.parser
    * });
    * if (parsed.toolCalls.length > 0) {
@@ -1184,7 +1184,7 @@ export interface SessionContext {
    *   // Parse output: separates reasoning from content
    *   const parsed = ctx.parseChatOutput(rawOutput, fmt.format, {
    *     reasoningFormat: fmt.reasoningFormat,
-   *     thinkingForcedOpen: fmt.thinkingForcedOpen,
+   *     generationPrompt: fmt.generationPrompt,
    *     parser: fmt.parser
    *   });
    *

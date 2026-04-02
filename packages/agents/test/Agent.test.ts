@@ -3,7 +3,7 @@ import { Agent } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
 const FMT = {
-  format: 0, reasoningFormat: 0, thinkingForcedOpen: false,
+  format: 0, reasoningFormat: 0, generationPrompt: '',
   parser: '', grammar: '', grammarLazy: false, grammarTriggers: [],
 };
 

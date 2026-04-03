@@ -31,7 +31,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/sdk": "*",
+    "@lloyal-labs/sdk": "^1.5.5",
     "effection": "^4.0.2",
     "eta": "^4.5.1"
   },

@@ -45,9 +45,9 @@ function loadEtaTemplate(name: string): string {
 const PLAN = loadTask("plan");
 const ROOT = loadTask("root");
 const BRIDGE = loadTask("bridge");
-const WEB_RESEARCH = loadTask("web-research");
 const SYNTHESIZE_TEMPLATE = loadEtaTemplate("synthesize");
 const CORPUS_RESEARCH_TEMPLATE = loadEtaTemplate("corpus-research");
+const WEB_RESEARCH_TEMPLATE = loadEtaTemplate("web-research");
 const VERIFY = loadTask("verify");
 const EVAL = loadTask("eval");
 const FINDINGS_EVAL = loadTask("findings-eval");
@@ -62,6 +62,8 @@ const researchPolicy = new DefaultAgentPolicy({
 
 // ── Options ──────────────────────────────────────────────────────
 
+export type Strategy = 'deep' | 'wide';
+
 export interface WorkflowOpts {
   session: Session;
   reranker: Reranker;
@@ -72,6 +74,7 @@ export interface WorkflowOpts {
   findingsMaxChars?: number;
   events: Channel<WorkflowEvent, void>;
   sources: Source<SourceContext, Chunk>[];
+  strategy: Strategy;
 }
 
 export type QueryResult =
@@ -114,23 +117,22 @@ function* rerankChunks(
 
 // ── Source prompt mapping ─────────────────────────────────────
 
-const SOURCE_PROMPTS: Record<string, { system: string; user: string }> = {
-  web: WEB_RESEARCH,
-};
-
 /**
- * Get system prompt for a source.
- * Corpus: renders Eta template with TOC from CorpusSource.
- * Web/other: static prompt from SOURCE_PROMPTS.
+ * Render source prompt from Eta template.
+ * Corpus: TOC + strategy. Web: strategy only.
  */
 function sourcePromptFor(
   source: { name: string; promptData?: () => { toc: string } },
+  strategy: Strategy,
 ): { system: string; user: string } {
   if (source.promptData) {
-    const data = source.promptData();
+    const data = { ...source.promptData(), strategy };
     return { system: renderTemplate(CORPUS_RESEARCH_TEMPLATE, data), user: '' };
   }
-  return SOURCE_PROMPTS[source.name] ?? ROOT;
+  if (source.name === 'web') {
+    return { system: renderTemplate(WEB_RESEARCH_TEMPLATE, { strategy }), user: '' };
+  }
+  return ROOT;
 }
 
 // ── Source research result ────────────────────────────────────
@@ -181,7 +183,7 @@ function* research(
 
       for (let i = 0; i < opts.sources.length; i++) {
         const source = opts.sources[i];
-        const sourcePrompt = sourcePromptFor(source);
+        const sourcePrompt = sourcePromptFor(source, opts.strategy);
         const scorer = source.createScorer(query);
         const pool = yield* spawnAgents({
           tools: source.tools,

@@ -69,7 +69,7 @@ function argVal(flag: string): string | null {
 }
 const corpusDir = argVal("--corpus");
 const flagIndices = new Set(
-  ["--reranker", "--query", "--findings-budget", "--corpus"].flatMap((f) => {
+  ["--reranker", "--query", "--findings-budget", "--corpus", "--strategy"].flatMap((f) => {
     const i = args.indexOf(f);
     return i !== -1 ? [i, i + 1] : [];
   }),
@@ -80,6 +80,7 @@ const initialQuery = argVal("--query");
 const findingsMaxChars = argVal("--findings-budget")
   ? parseInt(argVal("--findings-budget")!, 10)
   : undefined;
+const strategy = (argVal("--strategy") || "deep") as "deep" | "wide";
 const modelPath =
   args.find((a, i) => !a.startsWith("--") && !flagIndices.has(i)) ||
   DEFAULT_MODEL;
@@ -208,6 +209,7 @@ main(function* () {
     trace,
     findingsMaxChars,
     sources,
+    strategy,
   };
 
   // Initial query — clarify falls through to passthrough in non-interactive mode

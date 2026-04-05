@@ -131,77 +131,48 @@ export class ContextPressure {
 }
 
 /**
- * Extract findings from killed agents via eager grammar on their own branches.
+ * Inline recovery for a single killed agent (trailing stop).
  *
- * No fork — prefills the extraction prompt directly into each agent's branch,
- * sets eager report grammar (`{"result": "..."}`), and runs a batched
- * produce/commit loop. The grammar constrains from token 0, forcing the
- * model to produce a JSON report. No tool calls possible, no model choice.
+ * Prefills the extraction prompt into the agent's own branch, sets eager
+ * report grammar, generates to stop token, parses JSON, reports result,
+ * and prunes the branch — all before the tick loop continues. The freed
+ * KV lets remaining agents keep researching.
  *
- * Returns the number of agents that successfully reported.
+ * Returns true if the agent reported findings.
  */
-function* extractRecoveryReports(
-  agents: Agent[],
+function* recoverInline(
+  agent: Agent,
   policy: AgentPolicy,
   ctx: SessionContext,
   store: BranchStore,
   tw: TraceWriter,
   parentTraceId: number,
   events: Channel<AgentEvent, void>,
-  pressureOpts: PressureThresholds,
-): Operation<number> {
-  // Free KV from agents that already reported — gives room for extraction
-  for (const a of agents) {
-    if (a.result && !a.branch.disposed) {
-      a.branch.pruneSync();
-    }
+): Operation<boolean> {
+  const recovery = policy.onRecovery?.(agent);
+  if (!recovery || recovery.type === 'skip') {
+    if (!agent.branch.disposed) agent.branch.pruneSync();
+    return false;
   }
 
-  const promptCache = new Map<string, string>();
+  const { prompt } = ctx.formatChatSync(
+    JSON.stringify([
+      { role: 'system', content: recovery.prompt.system },
+      { role: 'user', content: recovery.prompt.user },
+    ]), { enableThinking: false },
+  );
   const sep = ctx.getTurnSeparator();
-  const prefillPairs: [Branch, number[]][] = [];
-  const recovering: Agent[] = [];
+  const delta = ctx.tokenizeSync(prompt, false);
+  const tokens = [...sep, ...delta];
 
-  for (const a of agents) {
-    if (a.status !== 'idle' || a.result || a.branch.disposed) continue;
-
-    const recovery = policy.onRecovery?.(a);
-    if (!recovery || recovery.type === 'skip') {
-      if (!a.branch.disposed) a.branch.pruneSync();
-      continue;
-    }
-
-    const cacheKey = recovery.prompt.system + '\0' + recovery.prompt.user;
-    let promptStr = promptCache.get(cacheKey);
-    if (!promptStr) {
-      const { prompt } = ctx.formatChatSync(
-        JSON.stringify([
-          { role: 'system', content: recovery.prompt.system },
-          { role: 'user', content: recovery.prompt.user },
-        ]), { enableThinking: false },
-      );
-      promptStr = prompt;
-      promptCache.set(cacheKey, prompt);
-    }
-
-    const delta = ctx.tokenizeSync(promptStr, false);
-    const tokens = [...sep, ...delta];
-    prefillPairs.push([a.branch, tokens]);
-    recovering.push(a);
+  // Check if extraction prompt fits
+  const pressure = new ContextPressure(ctx);
+  if (pressure.remaining < tokens.length) {
+    if (!agent.branch.disposed) agent.branch.pruneSync();
+    return false;
   }
 
-  if (prefillPairs.length === 0) return 0;
-
-  // Check pressure — if there's not enough room for extraction prompts,
-  // skip recovery. Uses raw remaining (not headroom) because the hardLimit
-  // reserve exists precisely for this: recovery after critical pressure.
-  const pressure = new ContextPressure(ctx, pressureOpts);
-  const totalPrefill = prefillPairs.reduce((s, [, t]) => s + t.length, 0);
-  if (pressure.remaining < totalPrefill) {
-    return 0;
-  }
-
-  // Eager report grammar — constrains from token 0, forces {"result": "..."}
+  // Eager report grammar
   const reportGrammar: string = yield* call(() =>
     ctx.jsonSchemaToGrammar(JSON.stringify({
       type: 'object',
@@ -210,63 +181,52 @@ function* extractRecoveryReports(
     })),
   );
 
-  // Batch prefill all extraction prompts in one GPU call
-  try { process.stderr.write(`[RECOVERY] prefilling ${recovering.length} agents, ${totalPrefill} tokens, remaining=${pressure.remaining}\n`); } catch {}
-  yield* call(() => store.prefill(prefillPairs));
-  try { process.stderr.write(`[RECOVERY] prefill done, setting grammar\n`); } catch {}
+  // Prefill + grammar
+  yield* call(() => store.prefill([[agent.branch, tokens]]));
+  agent.branch.setGrammar(reportGrammar);
 
-  // Set eager grammar and emit events after successful prefill
-  for (let i = 0; i < recovering.length; i++) {
-    const a = recovering[i];
-    a.branch.setGrammar(reportGrammar);
-    tw.write({
-      traceId: tw.nextId(), parentTraceId, ts: performance.now(),
-      type: 'branch:prefill', branchHandle: a.id,
-      tokenCount: prefillPairs[i][1].length, role: 'recovery',
-    });
-    yield* events.send({ type: 'agent:spawn', agentId: a.id, parentAgentId: a.parentId });
+  tw.write({
+    traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+    type: 'branch:prefill', branchHandle: agent.id,
+    tokenCount: tokens.length, role: 'recovery',
+  });
+  yield* events.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId });
+
+  try { process.stderr.write(`[RECOVERY] inline agent=${agent.id} tokens=${tokens.length} remaining=${pressure.remaining}\n`); } catch {}
+
+  // Single-agent produce/commit loop
+  let output = '';
+  let tokenCount = 0;
+  for (;;) {
+    const { token, text, isStop } = agent.branch.produceSync();
+    if (isStop) break;
+    output += text;
+    tokenCount++;
+    yield* call(() => store.commit([[agent.branch, token]]));
+    yield* events.send({ type: 'agent:produce', agentId: agent.id, text, tokenCount });
   }
 
-  // Batched produce/commit — all branches in parallel, one GPU call per step
-  const outputs = new Map<Agent, string>();
-  for (const a of recovering) outputs.set(a, '');
-  const done = new Set<Agent>();
-
-  try { process.stderr.write(`[RECOVERY] starting produce/commit loop\n`); } catch {}
-  while (done.size < recovering.length) {
-    const entries: [Branch, number][] = [];
-
-    for (const a of recovering) {
-      if (done.has(a)) continue;
-      const { token, text, isStop } = a.branch.produceSync();
-      if (isStop) {
-        done.add(a);
-        try {
-          const parsed = JSON.parse(outputs.get(a)!) as { result: string };
-          if (parsed?.result) {
-            a.reportResult(parsed.result, 'scratchpad');
-            yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
-          }
-        } catch { /* malformed JSON — non-fatal */ }
-        continue;
-      }
-      outputs.set(a, outputs.get(a)! + text);
-      entries.push([a.branch, token]);
-      yield* events.send({ type: 'agent:produce', agentId: a.id, text, tokenCount: outputs.get(a)!.length });
+  // Parse + report
+  let reported = false;
+  try {
+    const parsed = JSON.parse(output) as { result: string };
+    if (parsed?.result) {
+      agent.reportResult(parsed.result, 'scratchpad');
+      yield* events.send({ type: 'agent:report', agentId: agent.id, result: agent.result! });
+      reported = true;
     }
+  } catch { /* malformed JSON — non-fatal */ }
 
-    if (entries.length === 0) {
-      try { process.stderr.write(`[RECOVERY] no entries, done=${done.size}/${recovering.length}\n`); } catch {}
-      break;
-    }
-    yield* call(() => store.commit(entries));
-  }
+  // Free KV for remaining agents
+  if (!agent.branch.disposed) agent.branch.pruneSync();
 
-  const tickPressure = new ContextPressure(ctx, pressureOpts);
-  yield* events.send({ type: 'agent:tick', cellsUsed: tickPressure.cellsUsed, nCtx: tickPressure.nCtx });
+  // Emit tick so TUI updates pressure percentage after prune
+  const postPressure = new ContextPressure(ctx);
+  yield* events.send({ type: 'agent:tick', cellsUsed: postPressure.cellsUsed, nCtx: postPressure.nCtx });
 
-  return recovering.filter(a => !!a.result).length;
+  return reported;
 }
+
 
 /**
  * Fork an agent from a parent branch with its own system prompt and task.
@@ -537,6 +497,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: exitReason });
           yield* events.send({ type: 'agent:done', agentId: a.id });
+          // Trailing stop: extract findings inline, free KV for remaining agents
+          yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, events);
           continue;
         }
 
@@ -851,13 +813,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         }
       }
 
-      // -- Termination + recovery (one-shot)
+      // -- Termination + recovery
       if (agents.every(a => a.status === 'idle' || a.status === 'disposed')) {
         if (!recoveryAttempted) {
           recoveryAttempted = true;
-          yield* extractRecoveryReports(
-            agents, policy, ctx, store, tw, poolScope.traceId, events, pressureOpts,
-          );
+          // Recover any idle agents that weren't handled by inline recovery
+          // (e.g., killed by max_turns, time budget, or free_text_stop)
+          for (const a of agents) {
+            if (a.status === 'idle' && !a.result && !a.branch.disposed) {
+              yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, events);
+            }
+          }
         }
         break;
       }

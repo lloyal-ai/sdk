@@ -77,6 +77,27 @@ describe('DefaultAgentPolicy', () => {
     });
   });
 
+  describe('onProduced — JSON parse edge cases', () => {
+    it('T7: terminal tool with malformed JSON falls back to raw arguments', () => {
+      const a = makeAgent({ toolCallCount: 3 });
+      const tc = { name: 'report', arguments: 'not valid json', id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action).toEqual({ type: 'report', result: 'not valid json' });
+    });
+
+    it('T8: tool guard with malformed JSON args proceeds with empty object', () => {
+      const a = makeAgent({
+        toolCallCount: 2,
+        toolHistory: [{ name: 'fetch_page', args: 'https://example.com' }],
+      });
+      // Invalid JSON in arguments — guard should still evaluate (with empty args)
+      const tc = { name: 'fetch_page', arguments: 'not json', id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      // Guard checks url field — with empty args, url is undefined, so guard doesn't reject
+      expect(action.type).toBe('tool_call');
+    });
+  });
+
   describe('onProduced — over budget', () => {
     it('nudges every time (stateless, no escalation)', () => {
       const a = makeAgent({ toolCallCount: 3, turns: 25 });
@@ -85,11 +106,16 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('nudge');
     });
 
-    it('nudges again on repeated over-budget (no second-offense kill)', () => {
-      const a = makeAgent({ toolCallCount: 5, turns: 25 });
+    it('trailing stop: first over-budget agent nudged, second gets tool_call', () => {
+      // Reset trailing stop state by simulating a new tick
+      policy.shouldExit(makeAgent({}), pressure(5000));
+      const a1 = makeAgent({ toolCallCount: 5, turns: 25 });
+      const a2 = makeAgent({ toolCallCount: 5, turns: 25 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
+      const action1 = policy.onProduced(a1, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action1.type).toBe('nudge');
+      const action2 = policy.onProduced(a2, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action2.type).toBe('tool_call');
     });
   });
 
@@ -453,7 +479,9 @@ describe('DefaultAgentPolicy', () => {
       expect((action as any).message).toContain('must use tools');
     });
 
-    it('underPressure + non-terminal tool → overBudget → nudge', () => {
+    it('underPressure + non-terminal tool → overBudget → nudge (first agent)', () => {
+      // Reset trailing stop state by simulating a new tick
+      policy.shouldExit(makeAgent({}), pressure(5000));
       const a = makeAgent({ toolCallCount: 3, turns: 25 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
@@ -461,25 +489,30 @@ describe('DefaultAgentPolicy', () => {
     });
   });
 
-  describe('stateless nudge', () => {
-    it('nudges repeatedly without escalation to kill', () => {
-      const a = makeAgent({ toolCallCount: 3, turns: 25 });
+  describe('trailing stop nudge', () => {
+    it('nudges first agent, lets subsequent agents tool_call (no escalation)', () => {
+      // Reset state
+      policy.shouldExit(makeAgent({}), pressure(5000));
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
-      // First nudge
-      const action1 = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      // First agent — nudged
+      const a1 = makeAgent({ toolCallCount: 3, turns: 25 });
+      const action1 = policy.onProduced(a1, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action1.type).toBe('nudge');
-      // Second nudge — still nudge, not kill
-      const action2 = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action2.type).toBe('nudge');
-      // Third — still nudge
-      const action3 = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action3.type).toBe('nudge');
+      // Second agent — tool_call (trailing stop, not killed)
+      const a2 = makeAgent({ toolCallCount: 3, turns: 25 });
+      const action2 = policy.onProduced(a2, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action2.type).toBe('tool_call');
+      // Third agent — also tool_call
+      const a3 = makeAgent({ toolCallCount: 3, turns: 25 });
+      const action3 = policy.onProduced(a3, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action3.type).toBe('tool_call');
     });
 
     it('headroom recovers → tool_call allowed', () => {
       const a = makeAgent({ toolCallCount: 3, turns: 5 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
-      // Over budget (headroom negative)
+      // Over budget (headroom negative) — first nudge
+      policy.shouldExit(makeAgent({}), pressure(5000)); // reset
       const lowPressure = pressure(500); // headroom = 500 - 1024 = -524
       const action1 = policy.onProduced(a, { content: null, toolCalls: [tc] }, lowPressure, BASE_CONFIG);
       expect(action1.type).toBe('nudge');

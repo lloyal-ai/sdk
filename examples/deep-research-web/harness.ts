@@ -54,7 +54,7 @@ const FINDINGS_EVAL = loadTask("findings-eval");
 const REPORT = loadTask("report");
 const researchPolicy = new DefaultAgentPolicy({
   budget: {
-    context: { softLimit: 2304, hardLimit: 2048 },
+    context: { softLimit: 2048, hardLimit: 1024 },
     time: { softLimit: 480_000, hardLimit: 600_000 }, // nudge 8min, kill 10min
   },
   recovery: { prompt: REPORT },

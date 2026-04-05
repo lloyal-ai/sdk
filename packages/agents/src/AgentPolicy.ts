@@ -297,15 +297,22 @@ export class DefaultAgentPolicy implements AgentPolicy {
       && (!config.terminalTool || tc.name !== config.terminalTool);
 
     if (overBudget) {
-      // Nudge: tell the model to report. Stateless — fires every turn the agent
-      // is over budget. No escalation tracking. shouldExit handles the hard kill.
+      // Trailing stop: nudge at most one agent per tick when over budget.
+      // The nudged agent gets recovered and pruned, freeing KV for the others.
+      // Remaining agents' tool calls pass through — their results settle after
+      // the freed KV makes headroom available.
       if (config.terminalTool && agent.toolCallCount > 0 && !pressure.critical) {
-        const msg = timeNudge
-          ? 'Time limit approaching — report your findings now.'
-          : agent.turns >= config.maxTurns
-            ? 'Turn limit reached — report your findings now.'
-            : 'KV memory pressure — report your findings now.';
-        return { type: 'nudge', message: msg };
+        if (!this._nudgedThisTick) {
+          this._nudgedThisTick = true;
+          const msg = timeNudge
+            ? 'Time limit approaching — report your findings now.'
+            : agent.turns >= config.maxTurns
+              ? 'Turn limit reached — report your findings now.'
+              : 'KV memory pressure — report your findings now.';
+          return { type: 'nudge', message: msg };
+        }
+        // Already nudged one this tick — let this agent's tool call through
+        return { type: 'tool_call', tc };
       }
       // No terminal tool or critical pressure: kill
       return { type: 'idle', reason: agent.turns >= config.maxTurns ? 'max_turns' : 'pressure_softcut' };
@@ -363,11 +370,27 @@ export class DefaultAgentPolicy implements AgentPolicy {
     return pressure.percentAvailable > this._exploreThreshold;
   }
 
+  /**
+   * Trailing stop: at most one agent nudged or killed per tick.
+   * The sacrificed agent's findings are extracted and its KV freed,
+   * giving the remaining agents headroom to continue researching.
+   * Both flags reset each tick when pressure is not critical.
+   */
+  private _killedThisTick = false;
+  private _nudgedThisTick = false;
+
   shouldExit(_agent: Agent, pressure: ContextPressure): boolean {
-    if (pressure.critical) return true;
-    const timeHard = this._budget?.time?.hardLimit;
-    if (timeHard != null && this._elapsed() >= timeHard) return true;
-    return false;
+    if (!pressure.critical) {
+      this._killedThisTick = false;
+      this._nudgedThisTick = false;
+      const timeHard = this._budget?.time?.hardLimit;
+      if (timeHard != null && this._elapsed() >= timeHard) return true;
+      return false;
+    }
+    // Critical: kill one agent per tick, keep others alive
+    if (this._killedThisTick) return false;
+    this._killedThisTick = true;
+    return true;
   }
 
   onRecovery(agent: Agent): RecoveryAction {

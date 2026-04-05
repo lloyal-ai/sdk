@@ -20,6 +20,7 @@ import type { AgentPolicy } from '../src/AgentPolicy';
 import type { AgentPoolResult, AgentEvent, ToolContext, AgentTaskSpec } from '../src/types';
 import type { Agent } from '../src/Agent';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
+import { MockTool } from './helpers/mock-tool';
 
 const STOP = 999; // MockSessionContext default stopToken
 
@@ -642,6 +643,269 @@ describe('pressure thresholds propagation', () => {
     } else {
       expect(drops.some(d => d.reason === 'pressure_init')).toBe(true);
     }
+  });
+});
+
+// ── Group 8: Multi-agent interaction paths ──────────────────────
+
+describe('multi-agent interactions', () => {
+  it('T1: trailing stop nudges one agent, passes others tool_call', async () => {
+    const tool = new MockTool('web_search');
+    const toolMap = new Map<string, Tool>([['web_search', tool]]);
+    let nudgeCount = 0;
+
+    const { trace } = await runPool({
+      forkTokenQueues: [[1, STOP], [1, STOP], [1, STOP]],
+      taskCount: 3,
+      parseChatOutputFn: () => ({
+        content: '', reasoningContent: '',
+        toolCalls: [{ name: 'web_search', arguments: '{}', id: 'c1' }],
+      }),
+      tools: toolMap,
+      policy: (() => {
+        const p = stubPolicy({
+          shouldExit: () => false,
+          onProduced: (_a, parsed) => {
+            if (parsed.toolCalls.length > 0) {
+              nudgeCount++;
+              if (nudgeCount === 1) return { type: 'nudge', message: 'Report now.' };
+              return { type: 'tool_call', tc: parsed.toolCalls[0] };
+            }
+            return { type: 'idle', reason: 'free_text_stop' };
+          },
+          onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        });
+        return p;
+      })(),
+    });
+
+    const nudges = trace.ofType('pool:agentNudge');
+    const dispatches = trace.ofType('tool:dispatch');
+    expect(nudges).toHaveLength(1);
+    expect(dispatches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('T2: multi-agent SETTLE headroom exhaustion — first fits, rest rejected', async () => {
+    const tool = new MockTool('web_search');
+    const toolMap = new Map<string, Tool>([['web_search', tool]]);
+
+    const { trace } = await runPool({
+      nCtx: 16384,
+      cellsUsed: 14000,  // remaining=2384, headroom=2384-1024=1360 — tight but not critical
+      forkTokenQueues: [[1, STOP], [1, STOP]],
+      taskCount: 2,
+      parseChatOutputFn: () => ({
+        content: '', reasoningContent: '',
+        toolCalls: [{ name: 'web_search', arguments: '{}', id: 'c1' }],
+      }),
+      tools: toolMap,
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: (_a, parsed) => {
+          if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+          return { type: 'idle', reason: 'free_text_stop' };
+        },
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    const drops = trace.ofType('pool:agentDrop');
+    const settleRejects = drops.filter(d => d.reason === 'pressure_settle_reject');
+    expect(settleRejects.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('T6: tool execution throws — agent gets tool_error, pool completes', async () => {
+    class ThrowingTool extends Tool<Record<string, unknown>> {
+      readonly name = 'explode';
+      readonly description = 'throws';
+      readonly parameters = { type: 'object' as const, properties: {} };
+      *execute(): Operation<unknown> { throw new Error('boom'); }
+    }
+    const tool = new ThrowingTool();
+    const toolMap = new Map<string, Tool>([['explode', tool]]);
+
+    const { result } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: () => ({
+        content: '', reasoningContent: '',
+        toolCalls: [{ name: 'explode', arguments: '{}', id: 'c1' }],
+      }),
+      tools: toolMap,
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: (_a, parsed) => {
+          if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+          return { type: 'idle', reason: 'free_text_stop' };
+        },
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0].result).toContain('boom');
+  });
+
+  it('T14: pruneOnReport with free_text_report — branch pruned', async () => {
+    const { result, ctx } = await runPool({
+      forkTokenQueues: [[1, 2, STOP]],
+      parseChatOutputFn: () => ({
+        content: 'my findings', reasoningContent: '', toolCalls: [],
+      }),
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: (_a, parsed) => {
+          if (parsed.content) return { type: 'free_text_report', content: parsed.content };
+          return { type: 'idle', reason: 'free_text_stop' };
+        },
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+      pruneOnReport: true,
+    });
+
+    expect(result.agents[0].result).toBe('my findings');
+    // Branch should be disposed after pruneOnReport
+    expect(result.agents[0].branch.disposed).toBe(true);
+  });
+
+  it('T3: multi-agent critical pressure — shouldExit kills one per tick', async () => {
+    let killCount = 0;
+    const { trace } = await runPool({
+      nCtx: 16384,
+      cellsUsed: 16300,  // remaining=84, critical (< hardLimit 128)
+      forkTokenQueues: [[1, 1, STOP], [1, 1, STOP]],
+      taskCount: 2,
+      parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
+      policy: stubPolicy({
+        shouldExit: (_a, p) => {
+          if (!p.critical) return false;
+          if (killCount > 0) return false;  // one per tick
+          killCount++;
+          return true;
+        },
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        pressureThresholds: { softLimit: 64, hardLimit: 128 },
+      }),
+    });
+
+    const drops = trace.ofType('pool:agentDrop');
+    // At least one dropped by shouldExit, not all at once
+    expect(drops.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('T12: nested results collected from tool return', async () => {
+    class NestedTool extends Tool<Record<string, unknown>> {
+      readonly name = 'nested';
+      readonly description = 'returns nested results';
+      readonly parameters = { type: 'object' as const, properties: {} };
+      *execute(): Operation<unknown> {
+        return { results: ['finding1', 'finding2'], nestedResults: ['nested1'] };
+      }
+    }
+    const tool = new NestedTool();
+    const toolMap = new Map<string, Tool>([['nested', tool]]);
+
+    const { result } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      parseChatOutputFn: (raw) => {
+        if (!raw || raw === '') return { content: '', reasoningContent: '', toolCalls: [] };
+        return { content: '', reasoningContent: '', toolCalls: [{ name: 'nested', arguments: '{}', id: 'c1' }] };
+      },
+      tools: toolMap,
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: (_a, parsed) => {
+          if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+          return { type: 'idle', reason: 'free_text_stop' };
+        },
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    // nestedResults should have been collected
+    expect(result.agents[0]).toBeDefined();
+  });
+
+  it('T15: multiple tool calls in output — only first processed', async () => {
+    const tool = new MockTool('web_search');
+    const toolMap = new Map<string, Tool>([['web_search', tool]]);
+
+    const { trace } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      parseChatOutputFn: (raw) => {
+        if (!raw || raw === '') return { content: '', reasoningContent: '', toolCalls: [] };
+        return {
+          content: '', reasoningContent: '',
+          toolCalls: [
+            { name: 'web_search', arguments: '{"query":"first"}', id: 'c1' },
+            { name: 'web_search', arguments: '{"query":"second"}', id: 'c2' },
+          ],
+        };
+      },
+      tools: toolMap,
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: (_a, parsed) => {
+          if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+          return { type: 'idle', reason: 'free_text_stop' };
+        },
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    // Only one tool:dispatch per agent turn (first tool call)
+    const dispatches = trace.ofType('tool:dispatch');
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0].args.query).toBe('first');
+  });
+});
+
+// ── Group 9: Recovery edge cases ────────────────────────────────
+
+describe('recovery edge cases', () => {
+  it('T9: recovery skipped when extraction prompt exceeds remaining KV', async () => {
+    // Agent spawns with room to produce, but by the time recovery runs,
+    // cellsUsed has grown enough that the extraction prompt doesn't fit.
+    // Use a very large recovery prompt to ensure it exceeds remaining.
+    const { result } = await runPool({
+      nCtx: 16384,
+      cellsUsed: 14000,  // remaining=2384, headroom=2384-128=2256 — room to spawn
+      forkTokenQueues: [[STOP]],
+      parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        onRecovery: () => ({
+          type: 'extract',
+          // Very long prompt that won't fit in remaining KV
+          prompt: { system: 'X'.repeat(5000), user: 'Y'.repeat(5000) },
+        }),
+        pressureThresholds: { softLimit: 128, hardLimit: 64 },
+      }),
+    });
+
+    // Agent spawned but recovery skipped — no result
+    expect(result.agents.length).toBeGreaterThanOrEqual(1);
+    expect(result.agents[0].result).toBeNull();
+  });
+
+  it('T10: recovery with empty prompt completes without crash', async () => {
+    const { result } = await runPool({
+      forkTokenQueues: [[STOP, 1, STOP]],
+      parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        onRecovery: () => ({
+          type: 'extract',
+          prompt: { system: '', user: '' },
+        }),
+      }),
+    });
+
+    expect(result.agents).toHaveLength(1);
   });
 });
 

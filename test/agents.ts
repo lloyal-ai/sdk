@@ -21,6 +21,7 @@ import { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
   initAgents, runAgents, useAgentPool, withSharedRoot, generate, diverge, Tool, createToolkit,
+  DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type {
   AgentPoolResult, AgentEvent, JsonSchema, DivergeResult,
@@ -343,7 +344,9 @@ async function testContextPressureSoftLimit(): Promise<void> {
           }),
           tools: new Map(),
           maxTurns: 1,
-          pressure: { softLimit: 256, hardLimit: 64 },
+          policy: new DefaultAgentPolicy({
+            budget: { context: { softLimit: 256, hardLimit: 64 } },
+          }),
         });
 
         // Pool should complete without crash
@@ -377,7 +380,9 @@ async function testContextPressureAgentDrop(): Promise<void> {
           tasks,
           tools: new Map(),
           maxTurns: 1,
-          pressure: { softLimit: 128, hardLimit: 32 },
+          policy: new DefaultAgentPolicy({
+            budget: { context: { softLimit: 128, hardLimit: 32 } },
+          }),
         });
 
         // With 512 ctx and 6 agents, some should be dropped
@@ -776,7 +781,9 @@ async function testCrossLevelPressure(): Promise<void> {
           }],
           tools: toolMap,
           maxTurns: 3,
-          pressure: { softLimit: 512, hardLimit: 64 },
+          policy: new DefaultAgentPolicy({
+            budget: { context: { softLimit: 512, hardLimit: 64 } },
+          }),
         });
 
         // Pool must complete without crash — inner pool consumed from same budget

@@ -73,15 +73,13 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
    * the tool result, before the lazy grammar resets. This nudges the model
    * to reason in prose about the result before generating the next tool call.
    *
-   * Return null/undefined to skip (default). Only applies to real tool
-   * dispatches — nudges and settle rejects are unaffected.
+   * Receives the tool result so the probe can be conditional — return null
+   * to skip.
    *
-   * @example
-   * ```typescript
-   * get probe() { return 'Wait, '; }
-   * ```
+   * @param result - The tool result that was prefilled
+   * @returns Probe text to prefill, or null to skip
    */
-  get probe(): string | null { return null; }
+  probe(_result: unknown): string | null { return null; }
 
   /**
    * OpenAI-compatible function tool schema

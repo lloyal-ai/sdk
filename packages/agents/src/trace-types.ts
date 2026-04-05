@@ -60,7 +60,8 @@ export type TraceEvent =
       type: 'branch:prefill';
       branchHandle: number;
       tokenCount: number;
-      role: 'sharedPrefix' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'scratchpad';
+      role: 'sharedPrefix' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'scratchpad' | 'probe' | 'recovery';
+      probeText?: string;
     }
   | TraceEventBase & { type: 'branch:prune'; branchHandle: number; position: number }
 

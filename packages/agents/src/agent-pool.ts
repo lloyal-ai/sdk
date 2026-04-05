@@ -1,4 +1,4 @@
-import { resource, call, ensure, createSignal, spawn, scoped, each } from 'effection';
+import { resource, call, ensure, createSignal, spawn, scoped, each} from 'effection';
 import type { Operation, Channel } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
@@ -6,7 +6,8 @@ import type { BranchStore } from '@lloyal-labs/sdk';
 import { Ctx, Store, Events, Trace, TraceParent, CallingAgent } from './context';
 import { buildToolResultDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
-import { prepare } from './generate';
+import type { TraceWriter } from './trace-writer';
+import type { AgentPolicy } from './AgentPolicy';
 import { Agent } from './Agent';
 import { DefaultAgentPolicy } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
@@ -36,6 +37,12 @@ interface SettledTool {
 
 /**
  * Immutable KV budget snapshot for one tick of the agent loop
+ *
+ * Frozen at phase boundaries (PRODUCE, SETTLE, DISPATCH) so that all
+ * decisions within a phase are evaluated against the same baseline.
+ * Without this, items processed earlier in a loop would see different
+ * pressure than items processed later — making reject/nudge/kill
+ * decisions order-dependent and nondeterministic.
  *
  * Created from `SessionContext._storeKvPressure()` which returns
  * `{ nCtx, cellsUsed, remaining }` where `remaining = nCtx - cellsUsed`.
@@ -121,6 +128,144 @@ export class ContextPressure {
       ? Math.max(0, Math.round((this.remaining / this.nCtx) * 100))
       : 100;
   }
+}
+
+/**
+ * Extract findings from killed agents via eager grammar on their own branches.
+ *
+ * No fork — prefills the extraction prompt directly into each agent's branch,
+ * sets eager report grammar (`{"result": "..."}`), and runs a batched
+ * produce/commit loop. The grammar constrains from token 0, forcing the
+ * model to produce a JSON report. No tool calls possible, no model choice.
+ *
+ * Returns the number of agents that successfully reported.
+ */
+function* extractRecoveryReports(
+  agents: Agent[],
+  policy: AgentPolicy,
+  ctx: SessionContext,
+  store: BranchStore,
+  tw: TraceWriter,
+  parentTraceId: number,
+  events: Channel<AgentEvent, void>,
+  pressureOpts: PressureThresholds,
+): Operation<number> {
+  // Free KV from agents that already reported — gives room for extraction
+  for (const a of agents) {
+    if (a.result && !a.branch.disposed) {
+      a.branch.pruneSync();
+    }
+  }
+
+  const promptCache = new Map<string, string>();
+  const sep = ctx.getTurnSeparator();
+  const prefillPairs: [Branch, number[]][] = [];
+  const recovering: Agent[] = [];
+
+  for (const a of agents) {
+    if (a.status !== 'idle' || a.result || a.branch.disposed) continue;
+
+    const recovery = policy.onRecovery?.(a);
+    if (!recovery || recovery.type === 'skip') {
+      if (!a.branch.disposed) a.branch.pruneSync();
+      continue;
+    }
+
+    const cacheKey = recovery.prompt.system + '\0' + recovery.prompt.user;
+    let promptStr = promptCache.get(cacheKey);
+    if (!promptStr) {
+      const { prompt } = ctx.formatChatSync(
+        JSON.stringify([
+          { role: 'system', content: recovery.prompt.system },
+          { role: 'user', content: recovery.prompt.user },
+        ]), { enableThinking: false },
+      );
+      promptStr = prompt;
+      promptCache.set(cacheKey, prompt);
+    }
+
+    const delta = ctx.tokenizeSync(promptStr, false);
+    const tokens = [...sep, ...delta];
+    prefillPairs.push([a.branch, tokens]);
+    recovering.push(a);
+  }
+
+  if (prefillPairs.length === 0) return 0;
+
+  // Check pressure — if there's not enough room for extraction prompts,
+  // skip recovery. Uses raw remaining (not headroom) because the hardLimit
+  // reserve exists precisely for this: recovery after critical pressure.
+  const pressure = new ContextPressure(ctx, pressureOpts);
+  const totalPrefill = prefillPairs.reduce((s, [, t]) => s + t.length, 0);
+  if (pressure.remaining < totalPrefill) {
+    return 0;
+  }
+
+  // Eager report grammar — constrains from token 0, forces {"result": "..."}
+  const reportGrammar: string = yield* call(() =>
+    ctx.jsonSchemaToGrammar(JSON.stringify({
+      type: 'object',
+      properties: { result: { type: 'string' } },
+      required: ['result'],
+    })),
+  );
+
+  // Batch prefill all extraction prompts in one GPU call
+  try { process.stderr.write(`[RECOVERY] prefilling ${recovering.length} agents, ${totalPrefill} tokens, remaining=${pressure.remaining}\n`); } catch {}
+  yield* call(() => store.prefill(prefillPairs));
+  try { process.stderr.write(`[RECOVERY] prefill done, setting grammar\n`); } catch {}
+
+  // Set eager grammar and emit events after successful prefill
+  for (let i = 0; i < recovering.length; i++) {
+    const a = recovering[i];
+    a.branch.setGrammar(reportGrammar);
+    tw.write({
+      traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+      type: 'branch:prefill', branchHandle: a.id,
+      tokenCount: prefillPairs[i][1].length, role: 'recovery',
+    });
+    yield* events.send({ type: 'agent:spawn', agentId: a.id, parentAgentId: a.parentId });
+  }
+
+  // Batched produce/commit — all branches in parallel, one GPU call per step
+  const outputs = new Map<Agent, string>();
+  for (const a of recovering) outputs.set(a, '');
+  const done = new Set<Agent>();
+
+  try { process.stderr.write(`[RECOVERY] starting produce/commit loop\n`); } catch {}
+  while (done.size < recovering.length) {
+    const entries: [Branch, number][] = [];
+
+    for (const a of recovering) {
+      if (done.has(a)) continue;
+      const { token, text, isStop } = a.branch.produceSync();
+      if (isStop) {
+        done.add(a);
+        try {
+          const parsed = JSON.parse(outputs.get(a)!) as { result: string };
+          if (parsed?.result) {
+            a.reportResult(parsed.result, 'scratchpad');
+            yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
+          }
+        } catch { /* malformed JSON — non-fatal */ }
+        continue;
+      }
+      outputs.set(a, outputs.get(a)! + text);
+      entries.push([a.branch, token]);
+      yield* events.send({ type: 'agent:produce', agentId: a.id, text, tokenCount: outputs.get(a)!.length });
+    }
+
+    if (entries.length === 0) {
+      try { process.stderr.write(`[RECOVERY] no entries, done=${done.size}/${recovering.length}\n`); } catch {}
+      break;
+    }
+    yield* call(() => store.commit(entries));
+  }
+
+  const tickPressure = new ContextPressure(ctx, pressureOpts);
+  yield* events.send({ type: 'agent:tick', cellsUsed: tickPressure.cellsUsed, nCtx: tickPressure.nCtx });
+
+  return recovering.filter(a => !!a.result).length;
 }
 
 /**
@@ -368,6 +513,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     };
 
     // ── Four-phase tick loop ─────────────────────────────────
+    let recoveryAttempted = false;
     for (;;) {
       // -- Phase 1: PRODUCE -- sample from active agents, collect tool calls
       const pressure = new ContextPressure(ctx, pressureOpts);
@@ -434,11 +580,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             case 'nudge': {
               const tc = parsed.toolCalls[0];
               const callId = tc?.id || `call_${a.toolCallCount}`;
-              const nudgeMsg = JSON.stringify({ error: action.message });
+              const nudgeResult = { error: action.message };
+              const nudgeMsg = JSON.stringify(nudgeResult);
               a.incrementTurns();
               a.transition('awaiting_tool');
               const prefillTokens = buildToolResultDelta(ctx, nudgeMsg, callId);
               settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc?.name || '', callId });
+              // Probe with nudge error so tool can steer toward reporting
+              const nudgeTool = tools?.get(tc?.name || '');
+              const nudgeProbe = nudgeTool?.probe(nudgeResult);
+              if (nudgeProbe) dispatchedProbes.set(a.id, nudgeProbe);
               a.resetTurn();
               tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
                 type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_softcut' });
@@ -492,7 +643,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       // -- Phase 3: SETTLE -- drain settled tool buffer, batch prefill
       const settled = settledBuffer.splice(0);
       if (settled.length > 0) {
-        // Fresh snapshot — Phase 2 commits may have advanced positions
+        // Fresh snapshot — Phase 2 commits may have advanced positions.
+        // headroom is tracked locally because cellsUsed doesn't update
+        // until store.prefill() at the end of this phase. The local
+        // variable accounts for items queued but not yet prefilled,
+        // ensuring all items are evaluated against the same baseline.
         const settlePressure = new ContextPressure(ctx, pressureOpts);
         let headroom = settlePressure.headroom;
 
@@ -514,12 +669,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             }
             const settleAction = policy.onSettleReject(a, item.prefillTokens.length, settlePressure, policyConfig);
             if (settleAction.type === 'nudge') {
-              const nudgeMsg = JSON.stringify({ error: settleAction.message });
+              const nudgeResult = { error: settleAction.message };
+              const nudgeMsg = JSON.stringify(nudgeResult);
               const nudgeTokens = buildToolResultDelta(ctx, nudgeMsg, item.callId);
               if (nudgeTokens.length <= headroom) {
                 prefillPairs.push([a.branch, nudgeTokens]);
                 settledAgents.push(a);
                 headroom -= nudgeTokens.length;
+                // Re-probe with nudge error so tool can steer toward reporting
+                const nudgeTool = tools?.get(item.toolName);
+                const nudgeProbe = nudgeTool?.probe(nudgeResult);
+                if (nudgeProbe) dispatchedProbes.set(a.id, nudgeProbe);
                 tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
                   type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_settle_reject' });
                 continue;
@@ -566,7 +726,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           const probePairs: [Branch, number[]][] = [];
           for (const a of settledAgents) {
             const probe = dispatchedProbes.get(a.id);
-            if (probe) probePairs.push([a.branch, ctx.tokenizeSync(probe, false)]);
+            if (probe) {
+              const probeTokens = ctx.tokenizeSync(probe, false);
+              probePairs.push([a.branch, probeTokens]);
+              tw.write({
+                traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+                type: 'branch:prefill', branchHandle: a.id,
+                tokenCount: probeTokens.length, role: 'probe', probeText: probe,
+              });
+            }
           }
           if (probePairs.length > 0) {
             yield* call(() => store.prefill(probePairs));
@@ -663,7 +831,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
           const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
           settledBuffer.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId });
-          const probe = tool?.probe;
+          const probe = tool?.probe(result);
           if (probe) dispatchedProbes.set(agent.id, probe);
 
           tw.write({
@@ -683,95 +851,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         }
       }
 
-      // -- Termination
-      if (agents.every(a => a.status === 'idle' || a.status === 'disposed')) break;
-    }
-
-    // ── Idle processing: scratchpad recovery ─────────────────
-    // Policy decides per-agent whether to extract findings from killed agents.
-    // The pool owns the grammar and fork/generate/parse mechanics.
-    // Free KV from agents that already reported — gives room for extraction.
-    for (const a of agents) {
-      if (a.result && !a.branch.disposed) {
-        a.branch.pruneSync();
-      }
-    }
-
-    // Check if any agent needs recovery before setting up grammar
-    const needsRecovery = agents.some(a =>
-      a.status === 'idle' && !a.result && !a.branch.disposed &&
-      policy.onRecovery?.(a)?.type === 'extract',
-    );
-
-    if (needsRecovery) {
-      const reportSchema = {
-        type: 'object',
-        properties: { result: { type: 'string' } },
-        required: ['result'],
-      };
-      const reportGrammar: string = yield* call(() =>
-        ctx.jsonSchemaToGrammar(JSON.stringify(reportSchema)),
-      );
-
-      // Cache formatted prompts per unique prompt object
-      const promptCache = new Map<string, string>();
-
-      for (const a of agents) {
-        if (a.status !== 'idle' || a.result || a.branch.disposed) continue;
-
-        const recovery = policy.onRecovery?.(a);
-        if (!recovery || recovery.type === 'skip') {
-          if (!a.branch.disposed) a.branch.pruneSync();
-          continue;
-        }
-
-        // Format extraction prompt (cache by system+user key)
-        const cacheKey = recovery.prompt.system + '\0' + recovery.prompt.user;
-        let extractionPromptStr = promptCache.get(cacheKey);
-        if (!extractionPromptStr) {
-          const reportMessages = [
-            { role: 'system', content: recovery.prompt.system },
-            { role: 'user', content: recovery.prompt.user },
-          ];
-          const { prompt } = ctx.formatChatSync(
-            JSON.stringify(reportMessages), { enableThinking: false },
+      // -- Termination + recovery (one-shot)
+      if (agents.every(a => a.status === 'idle' || a.status === 'disposed')) {
+        if (!recoveryAttempted) {
+          recoveryAttempted = true;
+          yield* extractRecoveryReports(
+            agents, policy, ctx, store, tw, poolScope.traceId, events, pressureOpts,
           );
-          extractionPromptStr = prompt;
-          promptCache.set(cacheKey, prompt);
         }
-
-        try {
-          yield* events.send({ type: 'agent:spawn', agentId: a.id, parentAgentId: a.parentId });
-          const branch = yield* prepare({
-            prompt: extractionPromptStr,
-            grammar: reportGrammar,
-            parent: a.branch,
-          });
-          try {
-            let output = '';
-            let tokenCount = 0;
-            yield* call(async () => {
-              for await (const { text } of branch) {
-                output += text;
-                tokenCount++;
-              }
-            });
-            const tickPressure = new ContextPressure(ctx, pressureOpts);
-            yield* events.send({
-              type: 'agent:tick', cellsUsed: tickPressure.cellsUsed, nCtx: tickPressure.nCtx,
-            });
-            const parsed = JSON.parse(output) as { result: string };
-            if (parsed?.result) {
-              a.reportResult(parsed.result, 'scratchpad');
-              yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
-            }
-          } finally {
-            if (!branch.disposed) branch.pruneSync();
-          }
-        } catch {
-          /* extraction failure non-fatal */
-        }
-        if (!a.branch.disposed) a.branch.pruneSync();
+        break;
       }
     }
 

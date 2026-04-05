@@ -1,10 +1,10 @@
-import { call } from 'effection';
-import type { Operation } from 'effection';
-import { Tool, Trace } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
-import { chunkHtml } from '../sources/chunking';
-import type { Chunk } from '../resources/types';
-import type { Reranker, ScoredChunk } from './types';
+import { call } from "effection";
+import type { Operation } from "effection";
+import { Tool, Trace } from "@lloyal-labs/lloyal-agents";
+import type { JsonSchema, ToolContext } from "@lloyal-labs/lloyal-agents";
+import { chunkHtml } from "../sources/chunking";
+import type { Chunk } from "../resources/types";
+import type { Reranker, ScoredChunk } from "./types";
 
 /** Select top-K scored chunks within a token budget. */
 function selectTopChunks(
@@ -17,7 +17,9 @@ function selectTopChunks(
   let tokenTotal = 0;
 
   for (const sc of scored.slice(0, topK)) {
-    const chunk = chunks.find(c => c.resource === sc.file && c.startLine === sc.startLine);
+    const chunk = chunks.find(
+      (c) => c.resource === sc.file && c.startLine === sc.startLine,
+    );
     if (!chunk?.text) continue;
 
     const chunkTokens = chunk.tokens.length || Math.ceil(chunk.text.length / 4);
@@ -27,9 +29,17 @@ function selectTopChunks(
       if (selected.length === 0) {
         const charLimit = tokenBudget * 4;
         let truncated = chunk.text.slice(0, charLimit);
-        const lastBreak = Math.max(truncated.lastIndexOf('\n\n'), truncated.lastIndexOf('. '));
-        if (lastBreak > charLimit * 0.4) truncated = truncated.slice(0, lastBreak + 1);
-        selected.push({ text: truncated + '\n\n[truncated]', heading: sc.heading, score: sc.score });
+        const lastBreak = Math.max(
+          truncated.lastIndexOf("\n\n"),
+          truncated.lastIndexOf(". "),
+        );
+        if (lastBreak > charLimit * 0.4)
+          truncated = truncated.slice(0, lastBreak + 1);
+        selected.push({
+          text: truncated + "\n\n[truncated]",
+          heading: sc.heading,
+          score: sc.score,
+        });
       }
       break;
     }
@@ -60,15 +70,20 @@ function selectTopChunks(
  * @category Rig
  */
 export class FetchPageTool extends Tool<{ url: string; query?: string }> {
-  readonly name = 'fetch_page';
-  readonly description = 'Fetch a web page and extract its article content. Returns readable text with title and excerpt. Use to read search results or follow links discovered in pages. Pass a query to get only the most relevant sections.';
+  readonly name = "fetch_page";
+  readonly description =
+    "Fetch a web page and extract its article content. Returns readable text with title and excerpt. Use to read search results or follow links discovered in pages. Pass a query to get only the most relevant sections.";
   readonly parameters: JsonSchema = {
-    type: 'object',
+    type: "object",
     properties: {
-      url: { type: 'string', description: 'URL to fetch' },
-      query: { type: 'string', description: 'What to look for in this page (optional — improves relevance of returned content)' },
+      url: { type: "string", description: "URL to fetch" },
+      query: {
+        type: "string",
+        description:
+          "What to look for in this page (optional — improves relevance of returned content)",
+      },
     },
-    required: ['url'],
+    required: ["url"],
   };
 
   private _maxChars: number;
@@ -77,7 +92,12 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
   private _timeout: number;
   private _tokenBudget: number;
 
-  constructor(opts?: { maxChars?: number; topK?: number; timeout?: number; tokenBudget?: number }) {
+  constructor(opts?: {
+    maxChars?: number;
+    topK?: number;
+    timeout?: number;
+    tokenBudget?: number;
+  }) {
     super();
     this._maxChars = opts?.maxChars ?? 6000;
     this._topK = opts?.topK ?? 5;
@@ -90,14 +110,25 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     this._reranker = reranker;
   }
 
-  *execute(args: { url: string; query?: string }, context?: ToolContext): Operation<unknown> {
+  *execute(
+    args: { url: string; query?: string },
+    context?: ToolContext,
+  ): Operation<unknown> {
     const url = args.url?.trim();
-    if (!url) return { error: 'url must not be empty' };
+    if (!url) return { error: "url must not be empty" };
 
     // Early reject PDF URLs
     const lowerUrl = url.toLowerCase();
-    if (lowerUrl.endsWith('.pdf') || lowerUrl.includes('.pdf?') || lowerUrl.includes('.pdf#')) {
-      return { error: 'PDF documents cannot be extracted. Try searching for an HTML version of this content.', url };
+    if (
+      lowerUrl.endsWith(".pdf") ||
+      lowerUrl.includes(".pdf?") ||
+      lowerUrl.includes(".pdf#")
+    ) {
+      return {
+        error:
+          "PDF documents cannot be extracted. Try searching for an HTML version of this content.",
+        url,
+      };
     }
 
     const maxChars = this._maxChars;
@@ -113,72 +144,99 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
       let res: Response;
       try {
         res = await fetch(url, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; lloyal-agents/1.0)' },
+          headers: {
+            "User-Agent": "Mozilla/5.0 (compatible; lloyal-agents/1.0)",
+          },
           signal: controller.signal,
         });
       } catch (err) {
-        return { error: `Fetch failed: ${(err as Error).message}`, url } as const;
+        return {
+          error: `Fetch failed: ${(err as Error).message}`,
+          url,
+        } as const;
       } finally {
         clearTimeout(timer);
       }
 
-      if (!res.ok) return { error: `HTTP ${res.status} ${res.statusText}`, url } as const;
+      if (!res.ok)
+        return { error: `HTTP ${res.status} ${res.statusText}`, url } as const;
 
-      const contentType = res.headers.get('content-type') || '';
-      if (contentType.includes('application/pdf')) {
-        return { error: 'PDF documents cannot be extracted. Try searching for an HTML version of this content.', url } as const;
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/pdf")) {
+        return {
+          error:
+            "PDF documents cannot be extracted. Try searching for an HTML version of this content.",
+          url,
+        } as const;
       }
 
       const html = await res.text();
 
-      const { parseHTML } = await import('linkedom');
+      const { parseHTML } = await import("linkedom");
       const { document } = parseHTML(html);
 
       if (!document || !document.documentElement) {
-        return { url, content: '[Could not parse HTML]' } as const;
+        return { url, content: "[Could not parse HTML]" } as const;
       }
 
-      const { Readability } = await import('@mozilla/readability');
+      const { Readability } = await import("@mozilla/readability");
       const article = new Readability(document).parse();
 
-      if (!article) return { url, content: '[Could not extract article content]' } as const;
+      if (!article)
+        return { url, content: "[Could not extract article content]" } as const;
 
       return {
         url,
-        title: article.title ?? '',
-        content: article.textContent ?? '',
-        articleHtml: article.content ?? '',
-        excerpt: article.excerpt ?? '',
+        title: article.title ?? "",
+        content: article.textContent ?? "",
+        articleHtml: article.content ?? "",
+        excerpt: article.excerpt ?? "",
       } as const;
     });
 
     // Early return on error or no article
-    if ('error' in fetched) return fetched;
+    if ("error" in fetched) return fetched;
     if (!fetched.articleHtml) {
       let content = fetched.content;
-      if (content.length > maxChars) content = content.slice(0, maxChars) + '\n\n[truncated]';
-      return { url: fetched.url, title: fetched.title, content, excerpt: fetched.excerpt };
+      if (content.length > maxChars)
+        content = content.slice(0, maxChars) + "\n\n[truncated]";
+      return {
+        url: fetched.url,
+        title: fetched.title,
+        content,
+        excerpt: fetched.excerpt,
+      };
     }
 
     // Step 2: Reranker path — chunk HTML structurally, score, return top-K
     if (reranker && args.query) {
-      const chunks = yield* call(() => chunkHtml(fetched.articleHtml, url, fetched.title));
+      const chunks = yield* call(() =>
+        chunkHtml(fetched.articleHtml, url, fetched.title),
+      );
 
       // Write chunks to trace for replay sufficiency
       let tw;
-      try { tw = yield* Trace.expect(); } catch { /* no trace context */ }
+      try {
+        tw = yield* Trace.expect();
+      } catch {
+        /* no trace context */
+      }
       const rerankT0 = performance.now();
       if (tw) {
         tw.write({
           traceId: tw.nextId(),
           parentTraceId: null,
           ts: rerankT0,
-          type: 'rerank:start',
+          type: "rerank:start",
           query: args.query,
           chunkCount: chunks.length,
-          tool: 'fetch_page',
+          tool: "fetch_page",
           url,
-          chunks: chunks.map(c => ({ heading: c.heading, textLength: c.text.length, startLine: c.startLine })),
+          chunks: chunks.map((c) => ({
+            heading: c.heading,
+            textLength: c.text.length,
+            startLine: c.startLine,
+          })),
         });
       }
 
@@ -189,7 +247,8 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
         let scored: ScoredChunk[] = [];
         yield* call(async () => {
           for await (const batch of reranker.score(args.query!, chunks)) {
-            if (context?.onProgress) context.onProgress({ filled: batch.filled, total: batch.total });
+            if (context?.onProgress)
+              context.onProgress({ filled: batch.filled, total: batch.total });
             scored = batch.results;
           }
         });
@@ -203,21 +262,30 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
         if (!context?.explore && context?.scorer && scored.length > 0) {
           type ScoredWithOriginal = ScoredChunk & { _toolQueryScore: number };
           const chunkTexts = scored.map((sc) => {
-            const chunk = chunks.find(c => c.resource === sc.file && c.startLine === sc.startLine);
-            return chunk?.text ?? '';
+            const chunk = chunks.find(
+              (c) => c.resource === sc.file && c.startLine === sc.startLine,
+            );
+            return chunk?.text ?? "";
           });
           const combinedScores: number[] = yield* call(() =>
             context.scorer!.scoreRelevanceBatch(chunkTexts, args.query!),
           );
           const reordered: ScoredWithOriginal[] = scored
-            .map((sc, i) => ({ ...sc, score: combinedScores[i], _toolQueryScore: sc.score }))
+            .map((sc, i) => ({
+              ...sc,
+              score: combinedScores[i],
+              _toolQueryScore: sc.score,
+            }))
             .sort((a, b) => b.score - a.score);
           scored = reordered;
 
           if (tw) {
             tw.write({
-              traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
-              type: 'entailment:content:exploit', tool: 'fetch_page',
+              traceId: tw.nextId(),
+              parentTraceId: null,
+              ts: performance.now(),
+              type: "entailment:content:exploit",
+              tool: "fetch_page",
               pressure: {
                 percentAvailable: context.pressurePercentAvailable ?? -1,
                 remaining: -1,
@@ -240,8 +308,8 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
             traceId: tw.nextId(),
             parentTraceId: null,
             ts: performance.now(),
-            type: 'rerank:end',
-            topResults: topChunks.map(c => ({
+            type: "rerank:end",
+            topResults: topChunks.map((c) => ({
               file: url,
               heading: c.heading,
               score: c.score,
@@ -250,7 +318,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
             selectedPassageCount: topChunks.length,
             totalChars: topChunks.reduce((sum, c) => sum + c.text.length, 0),
             durationMs: performance.now() - rerankT0,
-            tool: 'fetch_page',
+            tool: "fetch_page",
             url,
           });
         }
@@ -258,7 +326,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
         if (topChunks.length > 0) {
           // Discovery signal: headings of chunks that didn't make the cut.
           // Lightweight (~50 tokens) but gives the agent topics to explore.
-          const selectedHeadings = new Set(topChunks.map(c => c.heading));
+          const selectedHeadings = new Set(topChunks.map((c) => c.heading));
           const alsoOnPage = scored
             .filter((sc) => !selectedHeadings.has(sc.heading))
             .map((sc) => sc.heading)
@@ -267,7 +335,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
           return {
             url,
             title: fetched.title,
-            content: topChunks.map(c => c.text).join('\n\n---\n\n'),
+            content: topChunks.map((c) => c.text).join("\n\n---\n\n"),
             chunks: topChunks.length,
             ...(alsoOnPage.length > 0 ? { alsoOnPage } : {}),
           };
@@ -278,7 +346,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     // Fallback: return full content, truncated
     let content = fetched.content;
     if (content.length > maxChars) {
-      content = content.slice(0, maxChars) + '\n\n[truncated]';
+      content = content.slice(0, maxChars) + "\n\n[truncated]";
     }
     return { url, title: fetched.title, content, excerpt: fetched.excerpt };
   }

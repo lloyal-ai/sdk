@@ -54,15 +54,15 @@ const FINDINGS_EVAL = loadTask("findings-eval");
 const REPORT = loadTask("report");
 const researchPolicy = new DefaultAgentPolicy({
   budget: {
-    context: { softLimit: 1024 },
-    time: { softLimit: 480_000, hardLimit: 600_000 },  // nudge 8min, kill 10min
+    context: { softLimit: 2304, hardLimit: 2048 },
+    time: { softLimit: 480_000, hardLimit: 600_000 }, // nudge 8min, kill 10min
   },
   recovery: { prompt: REPORT },
 });
 
 // ── Options ──────────────────────────────────────────────────────
 
-export type Strategy = 'deep' | 'wide';
+export type Strategy = "deep" | "wide";
 
 export interface WorkflowOpts {
   session: Session;
@@ -127,10 +127,13 @@ function sourcePromptFor(
 ): { system: string; user: string } {
   if (source.promptData) {
     const data = { ...source.promptData(), strategy };
-    return { system: renderTemplate(CORPUS_RESEARCH_TEMPLATE, data), user: '' };
+    return { system: renderTemplate(CORPUS_RESEARCH_TEMPLATE, data), user: "" };
   }
-  if (source.name === 'web') {
-    return { system: renderTemplate(WEB_RESEARCH_TEMPLATE, { strategy }), user: '' };
+  if (source.name === "web") {
+    return {
+      system: renderTemplate(WEB_RESEARCH_TEMPLATE, { strategy }),
+      user: "",
+    };
   }
   return ROOT;
 }
@@ -193,10 +196,17 @@ function* research(
           maxTurns: effectiveMaxTurns,
           recursive: {
             name: source.name === "web" ? "web_research" : "research",
-            description: "Spawn parallel sub-agents to investigate sub-questions.",
+            description:
+              "Spawn parallel sub-agents to investigate sub-questions.",
             argsSchema: {
               type: "object",
-              properties: { questions: { type: "array", items: { type: "string" }, description: "Sub-questions to investigate in parallel" } },
+              properties: {
+                questions: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Sub-questions to investigate in parallel",
+                },
+              },
               required: ["questions"],
             },
             extractTasks: (args) => args.questions as string[],
@@ -358,7 +368,13 @@ function* warmResearch(
         description: "Spawn parallel sub-agents to investigate sub-questions.",
         argsSchema: {
           type: "object",
-          properties: { questions: { type: "array", items: { type: "string" }, description: "Sub-questions to investigate in parallel" } },
+          properties: {
+            questions: {
+              type: "array",
+              items: { type: "string" },
+              description: "Sub-questions to investigate in parallel",
+            },
+          },
           required: ["questions"],
         },
         extractTasks: (args) => args.questions as string[],
@@ -503,13 +519,15 @@ function* synthesize(
 
   // Split rendered output on first --- into system prompt and user content
   const sepIdx = rendered.indexOf("\n---\n");
-  const system = sepIdx >= 0 ? rendered.slice(0, sepIdx).trim() : rendered.trim();
+  const system =
+    sepIdx >= 0 ? rendered.slice(0, sepIdx).trim() : rendered.trim();
   const content = sepIdx >= 0 ? rendered.slice(sepIdx + 5).trim() : "";
 
   // Tools: grounding tools only when conflicts need resolution
-  const groundingTools = conflicts && conflicts.length > 0
-    ? opts.sources.flatMap((s) => s.tools)
-    : [];
+  const groundingTools =
+    conflicts && conflicts.length > 0
+      ? opts.sources.flatMap((s) => s.tools)
+      : [];
   const synthToolkit = createToolkit([...groundingTools, reportTool]);
 
   // Synthesis runs inside withSharedRoot; verify+eval run outside so that
@@ -673,13 +691,19 @@ function* evaluateFindings(
   );
 
   const t = performance.now();
-  const result = yield* generate<{ converged: boolean; conflicts: string[] } | null>({
+  const result = yield* generate<{
+    converged: boolean;
+    conflicts: string[];
+  } | null>({
     prompt,
     grammar,
     params: { temperature: 0 },
     parse: (output: string) => {
       try {
-        return JSON.parse(output) as { converged: boolean; conflicts: string[] };
+        return JSON.parse(output) as {
+          converged: boolean;
+          conflicts: string[];
+        };
       } catch {
         return null;
       }
@@ -825,9 +849,10 @@ export function* handleQuery(
   const findingsEval = yield* evaluateFindings(res.agentFindings, opts);
 
   // When diverged, pass conflicts to synthesize — it gets grounding tools to verify
-  const conflicts = !findingsEval.converged && findingsEval.conflicts.length > 0
-    ? findingsEval.conflicts
-    : undefined;
+  const conflicts =
+    !findingsEval.converged && findingsEval.conflicts.length > 0
+      ? findingsEval.conflicts
+      : undefined;
 
   const s = yield* synthesize(
     res.agentFindings,

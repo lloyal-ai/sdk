@@ -108,7 +108,7 @@ describe('DefaultAgentPolicy', () => {
 
     it('trailing stop: first over-budget agent nudged, second gets tool_call', () => {
       // Reset trailing stop state by simulating a new tick
-      policy.shouldExit(makeAgent({}), pressure(5000));
+      policy.resetTick();
       const a1 = makeAgent({ toolCallCount: 5, turns: 25 });
       const a2 = makeAgent({ toolCallCount: 5, turns: 25 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
@@ -422,6 +422,7 @@ describe('DefaultAgentPolicy', () => {
 
   describe('time budget in onProduced', () => {
     it('no time budget → overBudget driven by turns/headroom', () => {
+      policy.resetTick();
       const a = makeAgent({ toolCallCount: 3, turns: 25 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
@@ -481,7 +482,7 @@ describe('DefaultAgentPolicy', () => {
 
     it('underPressure + non-terminal tool → overBudget → nudge (first agent)', () => {
       // Reset trailing stop state by simulating a new tick
-      policy.shouldExit(makeAgent({}), pressure(5000));
+      policy.resetTick();
       const a = makeAgent({ toolCallCount: 3, turns: 25 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
@@ -492,7 +493,7 @@ describe('DefaultAgentPolicy', () => {
   describe('trailing stop nudge', () => {
     it('nudges first agent, lets subsequent agents tool_call (no escalation)', () => {
       // Reset state
-      policy.shouldExit(makeAgent({}), pressure(5000));
+      policy.resetTick();
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       // First agent — nudged
       const a1 = makeAgent({ toolCallCount: 3, turns: 25 });
@@ -512,7 +513,7 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 3, turns: 5 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       // Over budget (headroom negative) — first nudge
-      policy.shouldExit(makeAgent({}), pressure(5000)); // reset
+      policy.resetTick(); // reset
       const lowPressure = pressure(500); // headroom = 500 - 1024 = -524
       const action1 = policy.onProduced(a, { content: null, toolCalls: [tc] }, lowPressure, BASE_CONFIG);
       expect(action1.type).toBe('nudge');

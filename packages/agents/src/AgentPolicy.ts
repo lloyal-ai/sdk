@@ -126,8 +126,10 @@ export interface AgentPolicy {
   /**
    * SETTLE phase: tool result won't fit in KV — what should happen?
    *
-   * Called when prefillTokens.length > headroom. Policy decides whether
-   * to nudge (inject "report now" error) or kill (transition to idle).
+   * @deprecated SETTLE no longer kills agents. Oversized tool results are
+   * deferred until headroom recovers via the trailing stop in PRODUCE.
+   * This method is retained for backward compatibility with custom policies
+   * but is no longer called by the pool.
    */
   onSettleReject(
     agent: Agent,
@@ -167,6 +169,13 @@ export interface AgentPolicy {
    * ContextPressure.DEFAULT_SOFT_LIMIT / DEFAULT_HARD_LIMIT.
    */
   readonly pressureThresholds?: PressureThresholds;
+
+  /**
+   * Reset per-tick state (e.g. trailing stop flags).
+   * Called by the pool at the start of each tick iteration.
+   * Optional — only needed if the policy tracks per-tick state.
+   */
+  resetTick?(): void;
 
   /**
    * Post-loop: should we extract findings from this killed agent?
@@ -279,70 +288,84 @@ export class DefaultAgentPolicy implements AgentPolicy {
     config: PolicyConfig,
   ): ProduceAction {
     const tc = parsed.toolCalls[0];
+    if (!tc) return this._handleNoToolCall(agent, parsed);
+    if (this._isTerminalTool(tc, config)) return this._handleTerminalTool(tc, agent, config, pressure);
+    if (this._isOverBudget(agent, tc, pressure, config)) return this._handleOverBudget(agent, tc, pressure, config);
+    const guardRejection = this._checkGuards(tc, agent);
+    if (guardRejection) return guardRejection;
+    // Normal tool call
+    return { type: 'tool_call', tc };
+  }
 
-    // No tool call — natural stop
-    if (!tc) {
-      if (!agent.result && agent.toolCallCount > 0 && parsed.content) {
-        return { type: 'free_text_report', content: parsed.content };
-      }
-      return { type: 'idle', reason: 'free_text_stop' };
+  // ── onProduced decision predicates ─────────────────────
+
+  private _handleNoToolCall(
+    agent: Agent, parsed: { content: string | null },
+  ): ProduceAction {
+    if (!agent.result && agent.toolCallCount > 0 && parsed.content) {
+      return { type: 'free_text_report', content: parsed.content };
     }
+    return { type: 'idle', reason: 'free_text_stop' };
+  }
 
-    // Resource pressure: turns exceeded, headroom negative, or time nudge threshold
+  private _isTerminalTool(tc: ParsedToolCall, config: PolicyConfig): boolean {
+    return !!(config.terminalTool && tc.name === config.terminalTool);
+  }
+
+  private _handleTerminalTool(
+    tc: ParsedToolCall, agent: Agent, config: PolicyConfig, pressure: ContextPressure,
+  ): ProduceAction {
+    const underPressure = this._isUnderPressure(agent, pressure, config);
+    if (agent.toolCallCount < this._minToolCalls && config.hasNonTerminalTools && !underPressure) {
+      return { type: 'nudge', message: 'You must use tools before submitting results.' };
+    }
+    let result: string;
+    try { result = JSON.parse(tc.arguments).result; } catch { result = tc.arguments; }
+    return { type: 'report', result };
+  }
+
+  private _isUnderPressure(agent: Agent, pressure: ContextPressure, config: PolicyConfig): boolean {
     const timeSoft = this._budget?.time?.softLimit;
     const timeNudge = timeSoft != null && this._elapsed() >= timeSoft;
-    const underPressure = agent.turns >= config.maxTurns || pressure.headroom < 0 || timeNudge;
-    // overBudget = under pressure AND calling a non-terminal tool (terminal tools always pass)
-    const overBudget = underPressure
-      && (!config.terminalTool || tc.name !== config.terminalTool);
+    return agent.turns >= config.maxTurns || pressure.headroom < 0 || timeNudge;
+  }
 
-    if (overBudget) {
-      // Trailing stop: nudge at most one agent per tick when over budget.
-      // The nudged agent gets recovered and pruned, freeing KV for the others.
-      // Remaining agents' tool calls pass through — their results settle after
-      // the freed KV makes headroom available.
-      if (config.terminalTool && agent.toolCallCount > 0 && !pressure.critical) {
-        if (!this._nudgedThisTick) {
-          this._nudgedThisTick = true;
-          const msg = timeNudge
-            ? 'Time limit approaching — report your findings now.'
-            : agent.turns >= config.maxTurns
-              ? 'Turn limit reached — report your findings now.'
-              : 'KV memory pressure — report your findings now.';
-          return { type: 'nudge', message: msg };
-        }
-        // Already nudged one this tick — let this agent's tool call through
-        return { type: 'tool_call', tc };
+  private _isOverBudget(agent: Agent, tc: ParsedToolCall, pressure: ContextPressure, config: PolicyConfig): boolean {
+    const underPressure = this._isUnderPressure(agent, pressure, config);
+    return underPressure && (!config.terminalTool || tc.name !== config.terminalTool);
+  }
+
+  private _handleOverBudget(
+    agent: Agent, tc: ParsedToolCall, pressure: ContextPressure, config: PolicyConfig,
+  ): ProduceAction {
+    const timeSoft = this._budget?.time?.softLimit;
+    const timeNudge = timeSoft != null && this._elapsed() >= timeSoft;
+
+    if (config.terminalTool && agent.toolCallCount > 0 && !pressure.critical) {
+      if (!this._nudgedThisTick) {
+        this._nudgedThisTick = true;
+        const msg = timeNudge
+          ? 'Time limit approaching — report your findings now.'
+          : agent.turns >= config.maxTurns
+            ? 'Turn limit reached — report your findings now.'
+            : 'KV memory pressure — report your findings now.';
+        return { type: 'nudge', message: msg };
       }
-      // No terminal tool or critical pressure: kill
-      return { type: 'idle', reason: agent.turns >= config.maxTurns ? 'max_turns' : 'pressure_softcut' };
+      return { type: 'tool_call', tc };
     }
+    return { type: 'idle', reason: agent.turns >= config.maxTurns ? 'max_turns' : 'pressure_softcut' };
+  }
 
-    // Terminal tool — intercept and extract result
-    if (config.terminalTool && tc.name === config.terminalTool) {
-      // Prevent reporting without sufficient work — but skip this check when
-      // over budget so the agent can report after receiving a nudge.
-      if (agent.toolCallCount < this._minToolCalls && config.hasNonTerminalTools && !underPressure) {
-        return { type: 'nudge', message: 'You must use tools before submitting results.' };
-      }
-      let result: string;
-      try { result = JSON.parse(tc.arguments).result; } catch { result = tc.arguments; }
-      return { type: 'report', result };
-    }
-
-    // Check declarative guards against full lineage
+  private _checkGuards(tc: ParsedToolCall, agent: Agent): ProduceAction | null {
     const lineageHistory = agent.walkAncestors(a => a.toolHistory);
     let toolArgs: Record<string, unknown>;
     try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
-
     for (const guard of this._guards) {
       if (guard.tools.includes(tc.name) && guard.reject(toolArgs, lineageHistory, agent)) {
         return { type: 'nudge', message: guard.message };
       }
     }
-
-    // Normal tool call
-    return { type: 'tool_call', tc };
+    return null;
   }
 
   onSettleReject(
@@ -374,20 +397,22 @@ export class DefaultAgentPolicy implements AgentPolicy {
    * Trailing stop: at most one agent nudged or killed per tick.
    * The sacrificed agent's findings are extracted and its KV freed,
    * giving the remaining agents headroom to continue researching.
-   * Both flags reset each tick when pressure is not critical.
+   * Both flags reset per tick via resetTick(), called by the pool.
    */
   private _killedThisTick = false;
   private _nudgedThisTick = false;
 
+  resetTick(): void {
+    this._killedThisTick = false;
+    this._nudgedThisTick = false;
+  }
+
   shouldExit(_agent: Agent, pressure: ContextPressure): boolean {
     if (!pressure.critical) {
-      this._killedThisTick = false;
-      this._nudgedThisTick = false;
       const timeHard = this._budget?.time?.hardLimit;
       if (timeHard != null && this._elapsed() >= timeHard) return true;
       return false;
     }
-    // Critical: kill one agent per tick, keep others alive
     if (this._killedThisTick) return false;
     this._killedThisTick = true;
     return true;

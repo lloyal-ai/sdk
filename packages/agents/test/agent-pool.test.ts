@@ -146,6 +146,7 @@ function stubPolicy(overrides: Partial<AgentPolicy> & {
     shouldExit: overrides.shouldExit,
     onRecovery: overrides.onRecovery,
     pressureThresholds: overrides.pressureThresholds,
+    resetTick: overrides.resetTick,
   };
 }
 

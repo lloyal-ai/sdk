@@ -7,10 +7,11 @@ import { Ctx, Store, Events, Trace, TraceParent, CallingAgent } from './context'
 import { buildToolResultDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
 import type { TraceWriter } from './trace-writer';
-import type { AgentPolicy } from './AgentPolicy';
+import type { AgentPolicy, IdleReason } from './AgentPolicy';
 import { Agent } from './Agent';
 import { DefaultAgentPolicy } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
+import { Tool } from './Tool';
 import type {
   PressureThresholds,
   AgentTaskSpec,
@@ -33,6 +34,7 @@ interface SettledTool {
   prefillTokens: number[];
   toolName: string;
   callId: string;
+  probe?: string;
 }
 
 /**
@@ -181,43 +183,46 @@ function* recoverInline(
     })),
   );
 
-  // Prefill + grammar
-  yield* call(() => store.prefill([[agent.branch, tokens]]));
-  agent.branch.setGrammar(reportGrammar);
-
-  tw.write({
-    traceId: tw.nextId(), parentTraceId, ts: performance.now(),
-    type: 'branch:prefill', branchHandle: agent.id,
-    tokenCount: tokens.length, role: 'recovery',
-  });
-  yield* events.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId });
-
-  try { process.stderr.write(`[RECOVERY] inline agent=${agent.id} tokens=${tokens.length} remaining=${pressure.remaining}\n`); } catch {}
-
-  // Single-agent produce/commit loop
-  let output = '';
-  let tokenCount = 0;
-  for (;;) {
-    const { token, text, isStop } = agent.branch.produceSync();
-    if (isStop) break;
-    output += text;
-    tokenCount++;
-    yield* call(() => store.commit([[agent.branch, token]]));
-    yield* events.send({ type: 'agent:produce', agentId: agent.id, text, tokenCount });
-  }
-
-  // Parse + report
+  // Recovery runs in its own scope — if decode fails (KV exhaustion),
+  // the scope tears down cleanly without propagating to the pool.
+  // Mirrors the old prepare()-based recovery which used try/catch around
+  // a Resource with its own ensure().
   let reported = false;
   try {
-    const parsed = JSON.parse(output) as { result: string };
-    if (parsed?.result) {
-      agent.reportResult(parsed.result, 'scratchpad');
-      yield* events.send({ type: 'agent:report', agentId: agent.id, result: agent.result! });
-      reported = true;
-    }
-  } catch { /* malformed JSON — non-fatal */ }
+    yield* scoped(function*() {
+      yield* call(() => store.prefill([[agent.branch, tokens]]));
+      agent.branch.setGrammar(reportGrammar);
 
-  // Free KV for remaining agents
+      tw.write({
+        traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+        type: 'branch:prefill', branchHandle: agent.id,
+        tokenCount: tokens.length, role: 'recovery',
+      });
+      yield* events.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId });
+
+      // Single-agent produce/commit loop
+      let output = '';
+      let tokenCount = 0;
+      for (;;) {
+        const { token, text, isStop } = agent.branch.produceSync();
+        if (isStop) break;
+        output += text;
+        tokenCount++;
+        yield* call(() => store.commit([[agent.branch, token]]));
+        yield* events.send({ type: 'agent:produce', agentId: agent.id, text, tokenCount });
+      }
+
+      // Parse + report
+      const parsed = JSON.parse(output) as { result: string };
+      if (parsed?.result) {
+        agent.reportResult(parsed.result, 'scratchpad');
+        yield* events.send({ type: 'agent:report', agentId: agent.id, result: agent.result! });
+        reported = true;
+      }
+    });
+  } catch { /* decode failure or malformed JSON — non-fatal, prune below */ }
+
+  // Always prune after scope exits (success or decode failure)
   if (!agent.branch.disposed) agent.branch.pruneSync();
 
   // Emit tick so TUI updates pressure percentage after prune
@@ -227,6 +232,59 @@ function* recoverInline(
   return reported;
 }
 
+
+// ── PRODUCE action handlers ─────────────────────────────────────
+// Each handler encapsulates state transitions, events, and trace for one
+// policy action outcome. The PRODUCE switch dispatches to these.
+
+function* handleFreeTextReport(
+  a: Agent, content: string, events: Channel<AgentEvent, void>,
+): Operation<void> {
+  a.reportResult(content, 'free_text');
+  a.transition('idle');
+  yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
+  yield* events.send({ type: 'agent:done', agentId: a.id });
+}
+
+function* handleIdleDrop(
+  a: Agent, reason: IdleReason, events: Channel<AgentEvent, void>,
+  tw: TraceWriter, parentTraceId: number,
+): Operation<void> {
+  a.transition('idle');
+  if (reason !== 'free_text_stop') {
+    tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+      type: 'pool:agentDrop', agentId: a.id,
+      reason: reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut' });
+  }
+  yield* events.send({ type: 'agent:done', agentId: a.id });
+}
+
+function* handleNudge(
+  a: Agent, message: string, tc: ParsedToolCall | undefined,
+  ctx: SessionContext, tools: Map<string, Tool>,
+): Operation<SettledTool> {
+  const callId = tc?.id || `call_${a.toolCallCount}`;
+  const nudgeResult = { error: message };
+  a.incrementTurns();
+  a.transition('awaiting_tool');
+  const prefillTokens = buildToolResultDelta(ctx, JSON.stringify(nudgeResult), callId);
+  const probe = tools?.get(tc?.name || '')?.probe(nudgeResult) ?? undefined;
+  a.resetTurn();
+  return { agentId: a.id, prefillTokens, toolName: tc?.name || '', callId, probe };
+}
+
+function* handleReport(
+  a: Agent, result: string, tc: ParsedToolCall, terminalTool: string,
+  pruneOnReport: boolean, events: Channel<AgentEvent, void>,
+): Operation<void> {
+  a.reportResult(result, 'report_tool');
+  a.transition('idle');
+  a.incrementToolCalls();
+  yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: terminalTool, args: tc.arguments });
+  yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
+  yield* events.send({ type: 'agent:done', agentId: a.id });
+  if (pruneOnReport && !a.branch.disposed) a.branch.pruneSync();
+}
 
 /**
  * Fork an agent from a parent branch with its own system prompt and task.
@@ -457,25 +515,180 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     };
     for (const a of agents) applyLazyGrammar(a);
 
-    // ── Tool dispatch coordination ───────────────────────────
-    // Tool results land in settledBuffer during DISPATCH, drained by SETTLE
-    // in the next tick. DISPATCH awaits each tool to completion via
-    // scoped() + call() — no concurrent llama_decode possible.
-    const settledBuffer: SettledTool[] = [];
-    const dispatchedProbes = new Map<number, string>();
     const agentById = new Map(agents.map(a => [a.id, a]));
-
     let steps = 0;
     let totalToolCalls = 0;
-    const counters = {
-      warmPrefillCalls: 0,
-      warmPrefillBranches: 0,
-    };
+    const counters = { warmPrefillCalls: 0, warmPrefillBranches: 0 };
+
+    // ── Phase operations (close over pool scope) ────────────
+
+    /** SETTLE: prefill tool results that fit, defer oversized items for next tick */
+    function* settle(items: SettledTool[]): Operation<SettledTool[]> {
+      const settlePressure = new ContextPressure(ctx, pressureOpts);
+      let headroom = settlePressure.headroom;
+
+      if (trace) {
+        const desc = items.map(s => `${s.toolName}:${s.prefillTokens.length}`).join(', ');
+        try { process.stderr.write(`[SETTLE] remaining=${settlePressure.remaining} headroom=${headroom} cellsUsed=${settlePressure.cellsUsed} nCtx=${settlePressure.nCtx} items=[${desc}]\n`); } catch {}
+      }
+
+      const prefillPairs: [Branch, number[]][] = [];
+      const settledAgents: Agent[] = [];
+      const deferred: SettledTool[] = [];
+
+      for (const item of items) {
+        const a = agentById.get(item.agentId);
+        if (!a || a.status === 'idle') continue;
+
+        if (item.prefillTokens.length > headroom) {
+          if (trace) {
+            try { process.stderr.write(`[SETTLE] DEFER ${item.toolName}:${item.prefillTokens.length} > headroom=${headroom}\n`); } catch {}
+          }
+          deferred.push(item);
+          continue;
+        }
+
+        prefillPairs.push([a.branch, item.prefillTokens]);
+        settledAgents.push(a);
+        headroom -= item.prefillTokens.length;
+        const postSettle = new ContextPressure(ctx, pressureOpts);
+        a.recordToolResult({
+          name: item.toolName, args: item.callId,
+          resultTokenCount: item.prefillTokens.length,
+          contextAfterPercent: postSettle.percentAvailable,
+          timestamp: performance.now(),
+        });
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'branch:prefill', branchHandle: a.id,
+          tokenCount: item.prefillTokens.length, role: 'toolResult' });
+      }
+
+      if (prefillPairs.length > 0) {
+        if (trace) {
+          const total = prefillPairs.reduce((s, [, t]) => s + t.length, 0);
+          try { process.stderr.write(`[SETTLE] PREFILL ${prefillPairs.length} branches, ${total} tokens, headroom_after=${headroom}\n`); } catch {}
+        }
+        yield* call(() => store.prefill(prefillPairs));
+        counters.warmPrefillCalls++;
+        counters.warmPrefillBranches += prefillPairs.length;
+
+        // Probe prefill from DISPATCH
+        const probePairs: [Branch, number[]][] = [];
+        for (const a of settledAgents) {
+          const probe = items.find(s => s.agentId === a.id)?.probe;
+          if (probe) {
+            const probeTokens = ctx.tokenizeSync(probe, false);
+            probePairs.push([a.branch, probeTokens]);
+            tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+              type: 'branch:prefill', branchHandle: a.id,
+              tokenCount: probeTokens.length, role: 'probe', probeText: probe });
+          }
+        }
+        if (probePairs.length > 0) {
+          yield* call(() => store.prefill(probePairs));
+        }
+
+        for (const a of settledAgents) {
+          a.transition('active');
+          a.resetTurn();
+          applyLazyGrammar(a);
+        }
+      }
+
+      return deferred;
+    }
+
+    /** DISPATCH: execute tool calls sequentially, return settled items for next tick */
+    function* dispatch(calls: { agent: Agent; tc: ParsedToolCall }[]): Operation<SettledTool[]> {
+      const results: SettledTool[] = [];
+
+      for (const { agent, tc } of calls) {
+        let toolArgs: Record<string, unknown>;
+        try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
+        const callId = tc.id || `call_${agent.toolCallCount}`;
+
+        agent.incrementToolCalls();
+        totalToolCalls++;
+        agent.incrementTurns();
+
+        yield* events.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
+
+        const tool = tools.get(tc.name);
+        const dispatchPressure = new ContextPressure(ctx, pressureOpts);
+        const explore = policy.shouldExplore?.(agent, dispatchPressure) ?? true;
+
+        const dispatchTraceId = tw.nextId();
+        const toolT0 = performance.now();
+        tw.write({
+          traceId: dispatchTraceId, parentTraceId: poolScope.traceId, ts: toolT0,
+          type: 'tool:dispatch', agentId: agent.id, tool: tc.name,
+          toolIndex: toolIndexMap.get(tc.name) ?? -1, toolkitSize,
+          args: toolArgs, callId,
+          explore, percentAvailable: dispatchPressure.percentAvailable,
+        });
+        const toolContext: ToolContext = {
+          agentId: agent.id, branch: agent.branch,
+          onProgress: (p: { filled: number; total: number }) => {
+            progressBridge.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });
+          },
+          scorer: opts.scorer, explore,
+          pressurePercentAvailable: dispatchPressure.percentAvailable,
+        };
+
+        try {
+          yield* TraceParent.set(dispatchTraceId);
+          yield* CallingAgent.set(agent);
+
+          const result: unknown = yield* scoped(function*() {
+            return yield* call(() =>
+              tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({ error: `Unknown tool: ${tc.name}` })
+            );
+          });
+
+          const postToolPressure = new ContextPressure(ctx, pressureOpts);
+          const contextAvailablePercent = postToolPressure.percentAvailable;
+          if (result && typeof result === 'object' && !Array.isArray(result)) {
+            (result as Record<string, unknown>)._contextAvailablePercent = contextAvailablePercent;
+            const resultObj = result as Record<string, unknown>;
+            if (Array.isArray(resultObj.results)) {
+              agent.addNestedResults((resultObj.results as unknown[]).filter((f): f is string => typeof f === 'string'));
+            }
+            if (Array.isArray(resultObj.nestedResults)) {
+              agent.addNestedResults((resultObj.nestedResults as unknown[]).filter((f): f is string => typeof f === 'string'));
+            }
+          }
+
+          const resultStr = JSON.stringify(result);
+          yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr, contextAvailablePercent });
+
+          const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
+          const probe = tool?.probe(result) ?? undefined;
+          results.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId, probe });
+
+          tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+            type: 'tool:result', agentId: agent.id, tool: tc.name,
+            result, prefillTokenCount: prefillTokens.length,
+            durationMs: performance.now() - toolT0 });
+        } catch (err) {
+          agent.transition('idle');
+          agent.reportResult(`Tool error: ${(err as Error).message}`, 'tool_error');
+          tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+            type: 'tool:error', agentId: agent.id, tool: tc.name,
+            error: (err as Error).message });
+        }
+      }
+
+      return results;
+    }
+
+    // ── Four-phase tick loop ─────────────────────────────────
+    let pendingSettled: SettledTool[] = [];
 
     // ── Four-phase tick loop ─────────────────────────────────
     let recoveryAttempted = false;
     for (;;) {
       // -- Phase 1: PRODUCE -- sample from active agents, collect tool calls
+      policy.resetTick?.();
       const pressure = new ContextPressure(ctx, pressureOpts);
 
       if (trace && (pressure.critical || pressure.headroom < 0)) {
@@ -484,6 +697,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
       const entries: [Branch, number][] = [];
       const toolCalls: { agent: Agent; tc: ParsedToolCall }[] = [];
+      const nudges: SettledTool[] = [];
 
       for (const a of agents) {
         if (a.status !== 'active') continue;
@@ -523,54 +737,20 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
           switch (action.type) {
             case 'free_text_report':
-              a.reportResult(action.content, 'free_text');
-              a.transition('idle');
-              yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
-              yield* events.send({ type: 'agent:done', agentId: a.id });
+              yield* handleFreeTextReport(a, action.content, events);
               continue;
-
             case 'idle':
-              a.transition('idle');
-              if (action.reason !== 'free_text_stop') {
-                tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-                  type: 'pool:agentDrop', agentId: a.id,
-                  reason: action.reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut' });
-              }
-              yield* events.send({ type: 'agent:done', agentId: a.id });
+              yield* handleIdleDrop(a, action.reason, events, tw, poolScope.traceId);
               continue;
-
-            case 'nudge': {
-              const tc = parsed.toolCalls[0];
-              const callId = tc?.id || `call_${a.toolCallCount}`;
-              const nudgeResult = { error: action.message };
-              const nudgeMsg = JSON.stringify(nudgeResult);
-              a.incrementTurns();
-              a.transition('awaiting_tool');
-              const prefillTokens = buildToolResultDelta(ctx, nudgeMsg, callId);
-              settledBuffer.push({ agentId: a.id, prefillTokens, toolName: tc?.name || '', callId });
-              // Probe with nudge error so tool can steer toward reporting
-              const nudgeTool = tools?.get(tc?.name || '');
-              const nudgeProbe = nudgeTool?.probe(nudgeResult);
-              if (nudgeProbe) dispatchedProbes.set(a.id, nudgeProbe);
-              a.resetTurn();
+            case 'nudge':
+              nudges.push(yield* handleNudge(a, action.message, parsed.toolCalls[0], ctx, tools));
               tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
                 type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_softcut' });
               continue;
-            }
-
             case 'report':
-              a.reportResult(action.result, 'report_tool');
-              a.transition('idle');
-              a.incrementToolCalls();
+              yield* handleReport(a, action.result, parsed.toolCalls[0], terminalTool!, pruneOnReport, events);
               totalToolCalls++;
-              yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: terminalTool!, args: parsed.toolCalls[0].arguments });
-              yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
-              yield* events.send({ type: 'agent:done', agentId: a.id });
-              if (pruneOnReport && !a.branch.disposed) {
-                a.branch.pruneSync();
-              }
               continue;
-
             case 'tool_call':
               a.transition('awaiting_tool');
               toolCalls.push({ agent: a, tc: action.tc });
@@ -602,216 +782,30 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         yield* events.send({ type: 'agent:tick', cellsUsed: commitPressure.cellsUsed, nCtx: commitPressure.nCtx });
       }
 
-      // -- Phase 3: SETTLE -- drain settled tool buffer, batch prefill
-      const settled = settledBuffer.splice(0);
-      if (settled.length > 0) {
-        // Fresh snapshot — Phase 2 commits may have advanced positions.
-        // headroom is tracked locally because cellsUsed doesn't update
-        // until store.prefill() at the end of this phase. The local
-        // variable accounts for items queued but not yet prefilled,
-        // ensuring all items are evaluated against the same baseline.
-        const settlePressure = new ContextPressure(ctx, pressureOpts);
-        let headroom = settlePressure.headroom;
+      // -- Phase 3: SETTLE (settle what fits, defer what doesn't)
+      const toSettle = [...pendingSettled, ...nudges];
+      const deferred = toSettle.length > 0 ? yield* settle(toSettle) : [];
 
-        if (trace) {
-          const items = settled.map(s => `${s.toolName}:${s.prefillTokens.length}`).join(', ');
-          try { process.stderr.write(`[SETTLE] remaining=${settlePressure.remaining} headroom=${headroom} cellsUsed=${settlePressure.cellsUsed} nCtx=${settlePressure.nCtx} items=[${items}]\n`); } catch {}
-        }
-
-        const prefillPairs: [Branch, number[]][] = [];
-        const settledAgents: Agent[] = [];
-
-        for (const item of settled) {
-          const a = agentById.get(item.agentId);
-          if (!a || a.status === 'idle') continue;
-
-          if (item.prefillTokens.length > headroom) {
-            if (trace) {
-              try { process.stderr.write(`[SETTLE] REJECT ${item.toolName}:${item.prefillTokens.length} > headroom=${headroom}\n`); } catch {}
-            }
-            const settleAction = policy.onSettleReject(a, item.prefillTokens.length, settlePressure, policyConfig);
-            if (settleAction.type === 'nudge') {
-              const nudgeResult = { error: settleAction.message };
-              const nudgeMsg = JSON.stringify(nudgeResult);
-              const nudgeTokens = buildToolResultDelta(ctx, nudgeMsg, item.callId);
-              if (nudgeTokens.length <= headroom) {
-                prefillPairs.push([a.branch, nudgeTokens]);
-                settledAgents.push(a);
-                headroom -= nudgeTokens.length;
-                // Re-probe with nudge error so tool can steer toward reporting
-                const nudgeTool = tools?.get(item.toolName);
-                const nudgeProbe = nudgeTool?.probe(nudgeResult);
-                if (nudgeProbe) dispatchedProbes.set(a.id, nudgeProbe);
-                tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-                  type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_settle_reject' });
-                continue;
-              }
-            }
-            // Nudge failed (tokens don't fit) or policy said kill
-            tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-              type: 'pool:agentDrop', agentId: a.id, reason: 'pressure_settle_reject' });
-            a.transition('idle');
-            yield* events.send({ type: 'agent:done', agentId: a.id });
-            continue;
-          }
-
-          prefillPairs.push([a.branch, item.prefillTokens]);
-          settledAgents.push(a);
-          headroom -= item.prefillTokens.length;
-          // Record tool history for policy decisions
-          const postSettle = new ContextPressure(ctx, pressureOpts);
-          a.recordToolResult({
-            name: item.toolName,
-            args: item.callId,
-            resultTokenCount: item.prefillTokens.length,
-            contextAfterPercent: postSettle.percentAvailable,
-            timestamp: performance.now(),
-          });
+      // Stall-breaker: if items are deferred and no active agents remain,
+      // sacrifice an awaiting_tool agent to free KV. Without this, agents
+      // with oversized results stay awaiting_tool indefinitely — PRODUCE
+      // skips them, headroom never recovers, the pool loops forever.
+      if (deferred.length > 0 && !agents.some(a => a.status === 'active')) {
+        const victim = agents.find(a => a.status === 'awaiting_tool' && !a.branch.disposed);
+        if (victim) {
+          victim.transition('idle');
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-            type: 'branch:prefill', branchHandle: a.id,
-            tokenCount: item.prefillTokens.length, role: 'toolResult' });
-        }
-
-        if (prefillPairs.length > 0) {
-          if (trace) {
-            const totalPrefill = prefillPairs.reduce((s, [, t]) => s + t.length, 0);
-            try { process.stderr.write(`[SETTLE] PREFILL ${prefillPairs.length} branches, ${totalPrefill} tokens, headroom_after=${headroom}\n`); } catch {}
-          }
-          yield* call(() => store.prefill(prefillPairs));
-          counters.warmPrefillCalls++;
-          counters.warmPrefillBranches += prefillPairs.length;
-
-          // Prefill per-tool reasoning probes for agents that just got real
-          // tool results. Each tool can optionally return a probe string via
-          // its `probe` getter — prefilled after the tool result to nudge the
-          // model into prose reasoning before the next tool call.
-          const probePairs: [Branch, number[]][] = [];
-          for (const a of settledAgents) {
-            const probe = dispatchedProbes.get(a.id);
-            if (probe) {
-              const probeTokens = ctx.tokenizeSync(probe, false);
-              probePairs.push([a.branch, probeTokens]);
-              tw.write({
-                traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-                type: 'branch:prefill', branchHandle: a.id,
-                tokenCount: probeTokens.length, role: 'probe', probeText: probe,
-              });
-            }
-          }
-          if (probePairs.length > 0) {
-            yield* call(() => store.prefill(probePairs));
-          }
-          dispatchedProbes.clear();
-
-          // Only NOW transition state + reset grammar
-          for (const a of settledAgents) {
-            a.transition('active');
-            a.resetTurn();
-            applyLazyGrammar(a);
-          }
+            type: 'pool:agentDrop', agentId: victim.id, reason: 'pressure_settle_reject' });
+          yield* events.send({ type: 'agent:done', agentId: victim.id });
+          yield* recoverInline(victim, policy, ctx, store, tw, poolScope.traceId, events);
         }
       }
 
-      // -- Phase 4: DISPATCH -- execute collected tool calls sequentially
-      // scoped() creates an error boundary — inner pool errors are caught
-      // here instead of crashing the outer pool. call() yields the Operation
-      // directly, ensuring exclusive llama_context access (no concurrent
-      // AsyncWorkers). See docs/agents/concurrency.md.
-      for (const { agent, tc } of toolCalls) {
-        let toolArgs: Record<string, unknown>;
-        try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
-        const callId = tc.id || `call_${agent.toolCallCount}`;
+      // -- Phase 4: DISPATCH
+      const dispatched = yield* dispatch(toolCalls);
 
-        agent.incrementToolCalls();
-        totalToolCalls++;
-        agent.incrementTurns();
-
-        yield* events.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
-
-        const tool = tools.get(tc.name);
-        // Fresh pressure snapshot — SETTLE may have consumed significant KV
-        // since the PRODUCE-phase snapshot at tick-top. On 16K context, a
-        // single SETTLE pass can drain 12-18% of capacity (3 agents' tool
-        // results). Using stale PRODUCE pressure here would keep agents in
-        // explore mode past the threshold.
-        const dispatchPressure = new ContextPressure(ctx, pressureOpts);
-        const explore = policy.shouldExplore?.(agent, dispatchPressure) ?? true;
-
-        const dispatchTraceId = tw.nextId();
-        const toolT0 = performance.now();
-        tw.write({
-          traceId: dispatchTraceId, parentTraceId: poolScope.traceId, ts: toolT0,
-          type: 'tool:dispatch', agentId: agent.id, tool: tc.name,
-          toolIndex: toolIndexMap.get(tc.name) ?? -1, toolkitSize,
-          args: toolArgs, callId,
-          explore, percentAvailable: dispatchPressure.percentAvailable,
-        });
-        const toolContext: ToolContext = {
-          agentId: agent.id,
-          branch: agent.branch,
-          onProgress: (p: { filled: number; total: number }) => {
-            progressBridge.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });
-          },
-          scorer: opts.scorer,
-          explore,
-          pressurePercentAvailable: dispatchPressure.percentAvailable,
-        };
-
-        try {
-          // Set TraceParent + CallingAgent so inner pools inherit lineage
-          yield* TraceParent.set(dispatchTraceId);
-          yield* CallingAgent.set(agent);
-
-          const result: unknown = yield* scoped(function*() {
-            return yield* call(() =>
-              tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({ error: `Unknown tool: ${tc.name}` })
-            );
-          });
-
-          // Inject context availability into tool result so agent can make pressure-aware decisions
-          const postToolPressure = new ContextPressure(ctx, pressureOpts);
-          const contextAvailablePercent = postToolPressure.percentAvailable;
-          if (result && typeof result === 'object' && !Array.isArray(result)) {
-            (result as Record<string, unknown>)._contextAvailablePercent = contextAvailablePercent;
-
-            // Collect nested results from recursive tool returns
-            const resultObj = result as Record<string, unknown>;
-            if (Array.isArray(resultObj.results)) {
-              agent.addNestedResults(
-                (resultObj.results as unknown[]).filter((f): f is string => typeof f === 'string')
-              );
-            }
-            if (Array.isArray(resultObj.nestedResults)) {
-              agent.addNestedResults(
-                (resultObj.nestedResults as unknown[]).filter((f): f is string => typeof f === 'string')
-              );
-            }
-          }
-
-          const resultStr = JSON.stringify(result);
-          yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr, contextAvailablePercent });
-
-          const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
-          settledBuffer.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId });
-          const probe = tool?.probe(result);
-          if (probe) dispatchedProbes.set(agent.id, probe);
-
-          tw.write({
-            traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
-            type: 'tool:result', agentId: agent.id, tool: tc.name,
-            result, prefillTokenCount: prefillTokens.length,
-            durationMs: performance.now() - toolT0,
-          });
-        } catch (err) {
-          agent.transition('idle');
-          agent.reportResult(`Tool error: ${(err as Error).message}`, 'tool_error');
-          tw.write({
-            traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
-            type: 'tool:error', agentId: agent.id, tool: tc.name,
-            error: (err as Error).message,
-          });
-        }
-      }
+      // Deferred + new dispatch results → next tick's SETTLE
+      pendingSettled = [...deferred, ...dispatched];
 
       // -- Termination + recovery
       if (agents.every(a => a.status === 'idle' || a.status === 'disposed')) {

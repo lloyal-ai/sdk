@@ -100,13 +100,6 @@ async function runPool(opts: {
     yield* Events.set(events as any);
     yield* Trace.set(traceWriter);
 
-    yield* spawn(function* () {
-      for (const ev of yield* each(events)) {
-        collectedEvents.push(ev);
-        yield* each.next();
-      }
-    });
-
     const taskCount = opts.taskCount ?? 1;
     const tasks: AgentTaskSpec[] = Array.from({ length: taskCount }, (_, i) => ({
       systemPrompt: 'You are an agent.',
@@ -119,7 +112,7 @@ async function runPool(opts: {
     }));
 
     return yield* scoped(function* () {
-      return yield* useAgentPool({
+      const sub = yield* useAgentPool({
         tasks,
         tools: opts.tools ?? new Map(),
         policy: opts.policy,
@@ -128,6 +121,13 @@ async function runPool(opts: {
         trace: opts.trace ?? false,
         pruneOnReport: opts.pruneOnReport ?? false,
       });
+      // Drain Subscription — collect events, return close value
+      let next = yield* sub.next();
+      while (!next.done) {
+        collectedEvents.push(next.value);
+        next = yield* sub.next();
+      }
+      return next.value;
     });
   });
 
@@ -1006,12 +1006,15 @@ describe('tool probe lifecycle hook', () => {
       yield* spawn(function* () { for (const ev of yield* each(events)) { yield* each.next(); } });
 
       return yield* scoped(function* () {
-        return yield* useAgentPool({
+        const sub = yield* useAgentPool({
           tasks: [{ systemPrompt: 'Agent', content: 'Task', tools: JSON.stringify([probeTool.schema]), parent: root, seed: 0 }],
           tools: toolMap,
           policy: toolCallPolicy(),
           maxTurns: 100,
         });
+        let next = yield* sub.next();
+        while (!next.done) { next = yield* sub.next(); }
+        return next.value;
       });
     });
 
@@ -1068,12 +1071,15 @@ describe('tool probe lifecycle hook', () => {
       yield* spawn(function* () { for (const ev of yield* each(events)) { yield* each.next(); } });
 
       return yield* scoped(function* () {
-        return yield* useAgentPool({
+        const sub = yield* useAgentPool({
           tasks: [{ systemPrompt: 'Agent', content: 'Task', tools: JSON.stringify([noProbeTool.schema]), parent: root, seed: 0 }],
           tools: toolMap,
           policy: toolCallPolicy(),
           maxTurns: 100,
         });
+        let next = yield* sub.next();
+        while (!next.done) { next = yield* sub.next(); }
+        return next.value;
       });
     });
 
@@ -1233,7 +1239,7 @@ describe('tool probe lifecycle hook', () => {
       yield* spawn(function* () { for (const ev of yield* each(events)) { yield* each.next(); } });
 
       return yield* scoped(function* () {
-        return yield* useAgentPool({
+        const sub = yield* useAgentPool({
           tasks: [
             { systemPrompt: 'Agent 0', content: 'Task 0', tools: JSON.stringify([tool.schema]), parent: root, seed: 0 },
             { systemPrompt: 'Agent 1', content: 'Task 1', tools: JSON.stringify([tool.schema]), parent: root, seed: 1 },
@@ -1256,6 +1262,9 @@ describe('tool probe lifecycle hook', () => {
           })(),
           maxTurns: 10,
         });
+        let next = yield* sub.next();
+        while (!next.done) { next = yield* sub.next(); }
+        return next.value;
       });
     });
 

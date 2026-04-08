@@ -1,13 +1,22 @@
 import type { Operation } from 'effection';
 import { call } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
+import type { Session } from '@lloyal-labs/sdk';
 import { Tool } from './Tool';
 import type { JsonSchema, ToolContext } from './types';
-import type { AgentPoolResult, PressureThresholds } from './types';
+import type { AgentPoolResult } from './types';
+
+/** Task input for createAgentPool — systemPrompt applied from pool opts */
+export interface PoolTaskSpec {
+  /** User message content — the agent's specific sub-question or task */
+  content: string;
+  /** PRNG seed for sampler diversity */
+  seed?: number;
+}
 import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
 import type { Agent } from './Agent';
-import { Trace, CallingAgent } from './context';
+import { Trace, Events, CallingAgent } from './context';
 import { traceScope } from './trace-scope';
 import { createToolkit } from './toolkit';
 import type { Toolkit } from './toolkit';
@@ -38,32 +47,27 @@ export interface RecursiveOpts {
   extractTasks?: (args: Record<string, unknown>) => string[];
 }
 
-// ── SpawnAgents opts ─────────────────────────────────────────
+// ── CreateAgentPool opts ────────────────────────────────────
 
 /**
- * Options for {@link spawnAgents}.
+ * Options for {@link createAgentPool}.
  *
  * @category Agents
  */
-export interface SpawnAgentsOpts {
-  /** Data access tools (from a Source or custom). */
-  tools: Tool[];
-  /** System prompt for spawned agents. */
+export interface CreateAgentPoolOpts {
+  /** Agent task specifications — one per concurrent agent. systemPrompt applied from pool opts. */
+  tasks: PoolTaskSpec[];
+  /** Data access tools (array, createToolkit called internally). Optional — pool degenerates cleanly without tools. */
+  tools?: Tool[];
+  /** System prompt for all agents. */
   systemPrompt: string;
-  /** One task per agent — content string for each. */
-  tasks: string[];
-  /** Terminal tool name + instance. Pool intercepts calls to this tool and extracts results. */
-  terminalTool?: { name: string; tool: Tool };
+  /** Terminal tool name — tool must be in the tools array. Pool intercepts and extracts result. */
+  terminalTool?: string;
   /** Max tool-use turns per agent before hard cut. @default 100 */
   maxTurns?: number;
   /**
    * Enable self-referential recursion. When truthy, a wrapper tool is
-   * added to the toolkit that calls `spawnAgents()` recursively with
-   * the same config. Agents can delegate sub-tasks at arbitrary depth,
-   * bounded by KV pressure.
-   *
-   * Pass `true` for defaults, or an object to configure the tool's
-   * name, description, args schema, and task extraction.
+   * added to the toolkit that calls `createAgentPool()` recursively.
    */
   recursive?: boolean | RecursiveOpts;
   /** Prune agent branches immediately on report, freeing KV mid-pool. */
@@ -72,18 +76,22 @@ export interface SpawnAgentsOpts {
   policy?: AgentPolicy;
   /** Enable structured trace events. */
   trace?: boolean;
-  /** Parent branch for warm path (Continuous Context). Sub-agents inherit full attention state. */
+  /**
+   * Explicit parent branch for warm path (Continuous Context).
+   * Used by DelegateTool to fork from the calling agent's branch.
+   * Sub-agents inherit full attention state.
+   */
   parent?: Branch;
-  /** Entailment scorer for semantic coherence across recursive depths.
-   *  Created via {@link Source.createScorer}. Propagated to all inner pools. */
+  /**
+   * Session for warm path via trunk. When session.trunk exists,
+   * the shared root forks from it. When absent, cold start at position 0.
+   */
+  session?: Session;
+  /** Entailment scorer for semantic coherence across recursive depths. */
   scorer?: EntailmentScorer;
-  /** Similarity threshold for echo detection. If all proposed sub-questions
-   *  score above this against the agent's own task, the delegation is rejected
-   *  as a paraphrase rather than a decomposition. @default 0.8 */
+  /** Echo detection threshold. @default 0.8 */
   echoThreshold?: number;
-  /** When true, also check proposed questions against ancestor tasks via
-   *  walkAncestors(). Disabled by default to avoid false positives on
-   *  genuine narrowing. Enable after observing local echo check behaviour. */
+  /** Check ancestor tasks for echo. @default false */
   checkAncestorEcho?: boolean;
 }
 
@@ -102,15 +110,15 @@ const DEFAULT_ARGS_SCHEMA: JsonSchema = {
 };
 
 /**
- * Internal tool that calls spawnAgents() recursively.
- * Created by spawnAgents() when `recursive` is enabled.
+ * Internal tool that calls createAgentPool() recursively.
+ * Created by createAgentPool() when `recursive` is enabled.
  */
 class DelegateTool extends Tool<Record<string, unknown>> {
   readonly name: string;
   readonly description: string;
   readonly parameters: JsonSchema;
 
-  private _spawnOpts: SpawnAgentsOpts;
+  private _poolOpts: CreateAgentPoolOpts;
   private _extractTasks: (args: Record<string, unknown>) => string[];
   private _toolkit: Toolkit | null = null;
 
@@ -119,14 +127,14 @@ class DelegateTool extends Tool<Record<string, unknown>> {
     description: string,
     argsSchema: JsonSchema,
     extractTasks: (args: Record<string, unknown>) => string[],
-    spawnOpts: SpawnAgentsOpts,
+    poolOpts: CreateAgentPoolOpts,
   ) {
     super();
     this.name = name;
     this.description = description;
     this.parameters = argsSchema;
     this._extractTasks = extractTasks;
-    this._spawnOpts = spawnOpts;
+    this._poolOpts = poolOpts;
   }
 
   /** Wire the circular toolkit reference. Called after createToolkit(). */
@@ -168,7 +176,6 @@ class DelegateTool extends Tool<Record<string, unknown>> {
       }
       if (rejected.length > 0) filtered = rejected;
 
-      // Read calling agent for diagnostic — same read the echo guard will do
       let _diagAgent: Agent | undefined;
       try { _diagAgent = yield* CallingAgent.get(); } catch { /* top-level */ }
 
@@ -191,8 +198,8 @@ class DelegateTool extends Tool<Record<string, unknown>> {
       }
       tasks = surviving;
 
-      // Echo guard: reject if all surviving questions are paraphrases of the agent's task
-      const echoThreshold = this._spawnOpts.echoThreshold ?? 0.8;
+      // Echo guard
+      const echoThreshold = this._poolOpts.echoThreshold ?? 0.8;
       let callingAgent: Agent | undefined;
       try { callingAgent = yield* CallingAgent.get(); } catch { /* top-level */ }
 
@@ -221,8 +228,7 @@ class DelegateTool extends Tool<Record<string, unknown>> {
           };
         }
 
-        // Optional: check ancestor tasks
-        if (this._spawnOpts.checkAncestorEcho) {
+        if (this._poolOpts.checkAncestorEcho) {
           const ancestorTasks = callingAgent.walkAncestors(a => a.task ? [a.task] : [])
             .filter(t => t !== callingAgent!.task);
           for (const ancestorTask of ancestorTasks) {
@@ -250,31 +256,17 @@ class DelegateTool extends Tool<Record<string, unknown>> {
       }
     }
 
-    const opts = this._spawnOpts;
-    const toolkit = this._toolkit;
+    const opts = this._poolOpts;
     const scope = traceScope(tw, null, `delegate:${this.name}`, { taskCount: tasks.length, filtered: filtered?.length ?? 0 });
 
-    // Scorer propagation: same immutable scorer reaches all descendant pools
-    const pool = yield* withSharedRoot(
-      { systemPrompt: opts.systemPrompt, tools: toolkit.toolsJson, parent: context?.branch },
-      function* (root) {
-        return yield* useAgentPool({
-          tasks: tasks.map((t) => ({
-            systemPrompt: opts.systemPrompt,
-            content: t,
-            tools: toolkit.toolsJson,
-            parent: root,
-          })),
-          tools: toolkit.toolMap,
-          terminalTool: opts.terminalTool?.name,
-          pruneOnReport: opts.pruneOnReport ?? true,
-          maxTurns: opts.maxTurns,
-          trace: opts.trace,
-          policy: opts.policy,
-          scorer: context?.scorer,
-        });
-      },
-    );
+    // Recursive call — createAgentPool handles shared root, toolkit, broadcast forwarding
+    const pool = yield* createAgentPool({
+      ...opts,
+      tasks: tasks.map(t => ({ systemPrompt: opts.systemPrompt, content: t })),
+      parent: context?.branch, // Continuous Context — sub-agents inherit calling agent's KV state
+      pruneOnReport: opts.pruneOnReport ?? true,
+      scorer: context?.scorer,
+    });
 
     const result = {
       results: pool.agents.map((a) => a.result).filter(Boolean),
@@ -289,34 +281,36 @@ class DelegateTool extends Tool<Record<string, unknown>> {
   }
 }
 
-// ── spawnAgents ──────────────────────────────────────────────
+// ── createAgentPool ─────────────────────────────────────────
 
 /**
- * Spawn parallel agents with tools, optionally self-referential.
+ * Create a parallel agent pool with tools, optionally self-referential.
  *
- * Creates a shared root, forks one agent per task, runs the four-phase
- * tick loop, and returns results. When `recursive` is enabled, a
- * delegate tool is added to the toolkit that calls `spawnAgents()`
- * again — enabling agents to delegate sub-tasks at arbitrary depth.
+ * Composes `withSharedRoot` + `createToolkit` + `useAgentPool` internally.
+ * Drains the Subscription inside `withSharedRoot`'s body and forwards
+ * events to the broadcast Channel. Returns `AgentPoolResult` with
+ * branches pruned.
  *
- * This is the general-purpose orchestration primitive. The harness
- * controls the prompt, tools, recursion shape, and policy. Sources
- * just provide data access tools.
+ * When `recursive` is enabled, a delegate tool is added that calls
+ * `createAgentPool()` again — enabling agents to delegate at arbitrary
+ * depth, bounded by KV pressure.
  *
  * @example Research harness
  * ```typescript
- * const result = yield* spawnAgents({
- *   tools: source.tools,
+ * const pool = yield* createAgentPool({
+ *   tools: [...source.tools, reportTool],
  *   systemPrompt: RESEARCH_PROMPT,
- *   tasks: questions,
- *   terminalTool: { name: 'report', tool: reportTool },
+ *   tasks: questions.map(q => ({ content: q })),
+ *   terminalTool: 'report',
  *   recursive: { name: 'web_research', extractTasks: (a) => a.questions as string[] },
  * });
  * ```
  *
  * @category Agents
  */
-export function* spawnAgents(opts: SpawnAgentsOpts): Operation<AgentPoolResult> {
+export function* createAgentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult> {
+  const broadcast = yield* Events.expect();
+
   // Build the recursive delegate tool if enabled
   let delegateTool: DelegateTool | undefined;
 
@@ -330,10 +324,9 @@ export function* spawnAgents(opts: SpawnAgentsOpts): Operation<AgentPoolResult> 
     delegateTool = new DelegateTool(name, description, argsSchema, extractTasks, opts);
   }
 
-  // Compose toolkit: data tools + terminal tool + optional delegate tool
+  // Compose toolkit: data tools + optional delegate tool
   const allTools: Tool[] = [
-    ...opts.tools,
-    ...(opts.terminalTool ? [opts.terminalTool.tool] : []),
+    ...(opts.tools ?? []),
     ...(delegateTool ? [delegateTool] : []),
   ];
   const toolkit = createToolkit(allTools);
@@ -343,25 +336,36 @@ export function* spawnAgents(opts: SpawnAgentsOpts): Operation<AgentPoolResult> 
     delegateTool.setToolkit(toolkit);
   }
 
-  // Run the pool
+  // Warm path priority: explicit parent > session trunk > cold
+  const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
+
   return yield* withSharedRoot(
-    { systemPrompt: opts.systemPrompt, tools: toolkit.toolsJson, parent: opts.parent },
+    { systemPrompt: opts.systemPrompt, tools: toolkit.toolsJson, parent: warmParent },
     function* (root) {
-      return yield* useAgentPool({
+      const sub = yield* useAgentPool({
         tasks: opts.tasks.map((t) => ({
           systemPrompt: opts.systemPrompt,
-          content: t,
+          content: t.content,
           tools: toolkit.toolsJson,
           parent: root,
+          seed: t.seed,
         })),
         tools: toolkit.toolMap,
-        terminalTool: opts.terminalTool?.name,
+        terminalTool: opts.terminalTool,
         pruneOnReport: opts.pruneOnReport,
         maxTurns: opts.maxTurns,
         trace: opts.trace,
         policy: opts.policy,
         scorer: opts.scorer,
       });
+
+      // Drain Subscription inside body — before withSharedRoot's finally fires
+      let next = yield* sub.next();
+      while (!next.done) {
+        yield* broadcast.send(next.value);
+        next = yield* sub.next();
+      }
+      return next.value;
     },
   );
 }

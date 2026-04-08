@@ -1,9 +1,7 @@
-import { call } from 'effection';
 import type { Operation } from 'effection';
-import { Tool, Ctx, generate } from '@lloyal-labs/lloyal-agents';
+import { Tool, createAgent } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 import { Session } from '@lloyal-labs/sdk';
-import type { SessionContext } from '@lloyal-labs/sdk';
 
 /**
  * Configuration for {@link PlanTool}.
@@ -56,10 +54,6 @@ export interface PlanResult {
  * structured output. Returns an empty array if the query is focused
  * enough to research directly.
  *
- * The harness interprets the result: all-research triggers parallel
- * dispatch, all-clarify returns to the user, mixed drops clarify
- * questions and dispatches only research ones.
- *
  * @category Rig
  */
 export class PlanTool extends Tool<{ query: string; context?: string }> {
@@ -88,10 +82,9 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
   }
 
   *execute(args: { query: string; context?: string }): Operation<unknown> {
-    const ctx: SessionContext = yield* Ctx.expect();
     const t = performance.now();
 
-    const schema = {
+    const schema: JsonSchema = {
       type: 'object',
       properties: {
         questions: {
@@ -109,7 +102,6 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
       },
       required: ['questions'],
     };
-    const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(schema)));
 
     let userContent = this._prompt.user
       .replace('{{count}}', String(this._maxQuestions))
@@ -118,25 +110,19 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
       userContent += `\n\nUser clarification:\n${args.context}`;
     }
 
-    const messages = [
-      { role: 'system', content: this._prompt.system },
-      { role: 'user', content: userContent },
-    ];
-    const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
-
-    const parent = this._session.trunk ?? undefined;
-    const result = yield* generate({
-      prompt,
-      grammar,
+    const agent = yield* createAgent({
+      systemPrompt: this._prompt.system,
+      task: userContent,
+      schema,
       params: { temperature: this._temperature },
-      parent,
+      session: this._session,
     });
-    const { output, tokenCount } = result;
 
     const timeMs = performance.now() - t;
+    const tokenCount = agent.tokenCount;
 
     try {
-      const parsed = JSON.parse(output);
+      const parsed = JSON.parse(agent.rawOutput);
       const raw = (parsed.questions || []) as { text?: string; intent?: string }[];
       const questions: PlanQuestion[] = raw
         .slice(0, this._maxQuestions)

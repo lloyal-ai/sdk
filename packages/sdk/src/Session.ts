@@ -1,4 +1,4 @@
-import type { Branch } from './Branch';
+import { Branch } from './Branch';
 import type { BranchStore } from './BranchStore';
 import type { SessionContext } from './types';
 import { buildUserDelta, buildToolResultDelta } from './deltas';
@@ -95,5 +95,38 @@ export class Session {
   async prefillToolResult(resultStr: string, callId: string): Promise<void> {
     const tokens = buildToolResultDelta(this._ctx, resultStr, callId);
     await this._trunk!.prefill(tokens);
+  }
+
+  /**
+   * Commit a query/response turn to the conversation trunk
+   *
+   * Handles warm/cold internally:
+   * - **Warm** (trunk exists): appends turn separator + formatted delta to existing trunk
+   * - **Cold** (no trunk): creates branch at position 0, prefills, promotes to trunk
+   *
+   * @param query - User message
+   * @param response - Assistant response
+   */
+  async commitTurn(query: string, response: string): Promise<void> {
+    const messages = [
+      { role: 'user', content: query },
+      { role: 'assistant', content: response },
+    ];
+    if (this._trunk) {
+      const sep = this._ctx.getTurnSeparator();
+      const { prompt } = this._ctx.formatChatSync(
+        JSON.stringify(messages), { enableThinking: false },
+      );
+      const tokens = this._ctx.tokenizeSync(prompt, false);
+      await this._trunk.prefill([...sep, ...tokens]);
+    } else {
+      const { prompt } = this._ctx.formatChatSync(
+        JSON.stringify(messages), { enableThinking: false },
+      );
+      const tokens = this._ctx.tokenizeSync(prompt, false);
+      const trunk = Branch.create(this._ctx, 0, {});
+      await trunk.prefill(tokens);
+      await this.promote(trunk);
+    }
   }
 }

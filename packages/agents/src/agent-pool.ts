@@ -1,9 +1,9 @@
-import { resource, call, ensure, createSignal, spawn, scoped, each} from 'effection';
-import type { Operation, Channel } from 'effection';
+import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each} from 'effection';
+import type { Operation, Subscription } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Events, Trace, TraceParent, CallingAgent } from './context';
+import { Ctx, Store, Trace, TraceParent, CallingAgent } from './context';
 import { buildToolResultDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
 import type { TraceWriter } from './trace-writer';
@@ -28,6 +28,9 @@ import type {
 // awaiting_tool → active (tool result settled)
 // awaiting_tool → idle   (settle reject + kill)
 // idle → disposed        (branch pruned)
+
+/** Minimal event sender interface — accepts any Channel close type */
+type EventSender = { send(value: AgentEvent): Operation<void> };
 
 interface SettledTool {
   agentId: number;
@@ -149,7 +152,7 @@ function* recoverInline(
   store: BranchStore,
   tw: TraceWriter,
   parentTraceId: number,
-  events: Channel<AgentEvent, void>,
+  events: EventSender,
 ): Operation<boolean> {
   const recovery = policy.onRecovery?.(agent);
   if (!recovery || recovery.type === 'skip') {
@@ -238,7 +241,7 @@ function* recoverInline(
 // policy action outcome. The PRODUCE switch dispatches to these.
 
 function* handleFreeTextReport(
-  a: Agent, content: string, events: Channel<AgentEvent, void>,
+  a: Agent, content: string, events: EventSender,
 ): Operation<void> {
   a.reportResult(content, 'free_text');
   a.transition('idle');
@@ -247,7 +250,7 @@ function* handleFreeTextReport(
 }
 
 function* handleIdleDrop(
-  a: Agent, reason: IdleReason, events: Channel<AgentEvent, void>,
+  a: Agent, reason: IdleReason, events: EventSender,
   tw: TraceWriter, parentTraceId: number,
 ): Operation<void> {
   a.transition('idle');
@@ -275,7 +278,7 @@ function* handleNudge(
 
 function* handleReport(
   a: Agent, result: string, tc: ParsedToolCall, terminalTool: string,
-  pruneOnReport: boolean, events: Channel<AgentEvent, void>,
+  pruneOnReport: boolean, events: EventSender,
 ): Operation<void> {
   a.reportResult(result, 'report_tool');
   a.transition('idle');
@@ -386,18 +389,18 @@ function* setupAgent(
  *
  * @category Agents
  */
-export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult> {
+export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<AgentEvent, AgentPoolResult>> {
   return resource(function*(provide) {
     const ctx: SessionContext = yield* Ctx.expect();
     const store: BranchStore = yield* Store.expect();
-    const events: Channel<AgentEvent, void> = yield* Events.expect();
+    const poolChannel = createChannel<AgentEvent, AgentPoolResult>();
 
     // Bridge for onProgress callbacks — Signal is correct here (external callback).
-    // A spawned forwarder drains the bridge into the Channel with proper scope context.
+    // A spawned forwarder drains the bridge into the poolChannel with proper scope context.
     const progressBridge = createSignal<AgentEvent, void>();
     yield* spawn(function*() {
       for (const ev of yield* each(progressBridge)) {
-        yield* events.send(ev);
+        yield* poolChannel.send(ev);
         yield* each.next();
       }
     });
@@ -492,12 +495,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       pressure: { remaining: initPressure.remaining, softLimit: initPressure.softLimit, headroom: initPressure.headroom },
     });
 
-    // Emit spawn events and activate agents
-    for (const a of agents) {
-      a.transition('active');
-      yield* events.send({ type: 'agent:spawn', agentId: a.id, parentAgentId: a.parentId });
-    }
-
     // ── Lazy grammar setup ───────────────────────────────────
     const applyLazyGrammar = (a: Agent): void => {
       if (a.fmt.grammar && a.fmt.grammarLazy && a.fmt.grammarTriggers.length > 0) {
@@ -516,9 +513,25 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
     for (const a of agents) applyLazyGrammar(a);
 
     const agentById = new Map(agents.map(a => [a.id, a]));
+
+    // Subscribe BEFORE spawning tick loop — no events missed
+    const subscription = yield* poolChannel;
+
+    // Spawn tick loop — runs concurrently with Subscription consumption.
+    // scoped() creates an error boundary: if llama_decode fails (KV exhaustion),
+    // the scope tears down and the channel closes with whatever results exist.
+    yield* spawn(function*() {
     let steps = 0;
     let totalToolCalls = 0;
     const counters = { warmPrefillCalls: 0, warmPrefillBranches: 0 };
+
+      try {
+
+    // Emit spawn events and activate agents
+    for (const a of agents) {
+      a.transition('active');
+      yield* poolChannel.send({ type: 'agent:spawn', agentId: a.id, parentAgentId: a.parentId });
+    }
 
     // ── Phase operations (close over pool scope) ────────────
 
@@ -611,7 +624,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         totalToolCalls++;
         agent.incrementTurns();
 
-        yield* events.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
+        yield* poolChannel.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
 
         const tool = tools.get(tc.name);
         const dispatchPressure = new ContextPressure(ctx, pressureOpts);
@@ -659,7 +672,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           }
 
           const resultStr = JSON.stringify(result);
-          yield* events.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr, contextAvailablePercent });
+          yield* poolChannel.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr, contextAvailablePercent });
 
           const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
           const probe = tool?.probe(result) ?? undefined;
@@ -710,9 +723,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
             : 'pressure_critical' as const;
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: exitReason });
-          yield* events.send({ type: 'agent:done', agentId: a.id });
+          yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
           // Trailing stop: extract findings inline, free KV for remaining agents
-          yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, events);
+          yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel);
           continue;
         }
 
@@ -737,10 +750,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
 
           switch (action.type) {
             case 'free_text_report':
-              yield* handleFreeTextReport(a, action.content, events);
+              yield* handleFreeTextReport(a, action.content, poolChannel);
               continue;
             case 'idle':
-              yield* handleIdleDrop(a, action.reason, events, tw, poolScope.traceId);
+              yield* handleIdleDrop(a, action.reason, poolChannel, tw, poolScope.traceId);
               continue;
             case 'nudge':
               nudges.push(yield* handleNudge(a, action.message, parsed.toolCalls[0], ctx, tools));
@@ -748,7 +761,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
                 type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_softcut' });
               continue;
             case 'report':
-              yield* handleReport(a, action.result, parsed.toolCalls[0], terminalTool!, pruneOnReport, events);
+              yield* handleReport(a, action.result, parsed.toolCalls[0], terminalTool!, pruneOnReport, poolChannel);
               totalToolCalls++;
               continue;
             case 'tool_call':
@@ -764,13 +777,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           const entropy = a.branch.modelEntropy();
           const surprisal = a.branch.modelSurprisal(token);
           a.accumulateTokenWithTrace(text, entropy, surprisal);
-          yield* events.send({
+          yield* poolChannel.send({
             type: 'agent:produce', agentId: a.id, text, tokenCount: a.tokenCount,
             entropy, surprisal,
           });
         } else {
           a.accumulateToken(text);
-          yield* events.send({ type: 'agent:produce', agentId: a.id, text, tokenCount: a.tokenCount });
+          yield* poolChannel.send({ type: 'agent:produce', agentId: a.id, text, tokenCount: a.tokenCount });
         }
       }
 
@@ -779,7 +792,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
         yield* call(() => store.commit(entries));
         steps++;
         const commitPressure = new ContextPressure(ctx, pressureOpts);
-        yield* events.send({ type: 'agent:tick', cellsUsed: commitPressure.cellsUsed, nCtx: commitPressure.nCtx });
+        yield* poolChannel.send({ type: 'agent:tick', cellsUsed: commitPressure.cellsUsed, nCtx: commitPressure.nCtx });
       }
 
       // -- Phase 3: SETTLE (settle what fits, defer what doesn't)
@@ -796,8 +809,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           victim.transition('idle');
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: victim.id, reason: 'pressure_settle_reject' });
-          yield* events.send({ type: 'agent:done', agentId: victim.id });
-          yield* recoverInline(victim, policy, ctx, store, tw, poolScope.traceId, events);
+          yield* poolChannel.send({ type: 'agent:done', agentId: victim.id });
+          yield* recoverInline(victim, policy, ctx, store, tw, poolScope.traceId, poolChannel);
         }
       }
 
@@ -815,7 +828,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           // (e.g., killed by max_turns, time budget, or free_text_stop)
           for (const a of agents) {
             if (a.status === 'idle' && !a.result && !a.branch.disposed) {
-              yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, events);
+              yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel);
             }
           }
         }
@@ -823,7 +836,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       }
     }
 
-    // ── Provide result — suspends, branches stay alive ───────
+    // ── Close channel with result — consumers get AgentPoolResult as close value ───────
     // Branch cleanup is handled by each branch's ensure() from setupAgent —
     // when this resource's scope exits, all ensure() callbacks fire.
     tw.write({
@@ -844,6 +857,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
           agentId: a.id,
           parentAgentId: a.parentId,
           branch: a.branch,
+          agent: a,
           result: a.result,
           toolCallCount: a.toolCallCount,
           tokenCount: a.tokenCount,
@@ -858,6 +872,28 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<AgentPoolResult>
       counters,
     };
 
-    yield* provide(result);
+    yield* poolChannel.close(result);
+
+      } catch {
+        // KV exhaustion or other decode failure — close with partial results
+        poolScope.close();
+        const partial: AgentPoolResult = {
+          agents: agents.map(a => ({
+            agentId: a.id, parentAgentId: a.parentId, branch: a.branch, agent: a,
+            result: a.result, toolCallCount: a.toolCallCount, tokenCount: a.tokenCount,
+            ppl: a.branch.disposed ? 0 : a.branch.perplexity,
+            samplingPpl: a.branch.disposed ? 0 : a.branch.samplingPerplexity,
+            trace: trace ? a.traceBuffer : undefined,
+            nestedResults: [...a.nestedResults],
+          })),
+          totalTokens: agents.reduce((s, a) => s + a.tokenCount, 0),
+          totalToolCalls, steps, counters,
+        };
+        yield* poolChannel.close(partial);
+      }
+
+    }); // end spawn — tick loop
+
+    yield* provide(subscription);
   });
 }

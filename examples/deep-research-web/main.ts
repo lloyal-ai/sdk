@@ -45,7 +45,6 @@ import {
   chunkResources,
 } from "@lloyal-labs/rig/node";
 import { handleQuery } from "./harness";
-import type { WorkflowOpts } from "./harness";
 
 // ── CLI args ─────────────────────────────────────────────────────
 
@@ -199,22 +198,18 @@ main(function* () {
     yield* view.subscribe(events);
   });
 
-  const harnessOpts: WorkflowOpts = {
-    session,
-    reranker,
-    events,
+  const harnessOpts = {
     agentCount: AGENT_COUNT,
     verifyCount: VERIFY_COUNT,
     maxTurns: MAX_TOOL_TURNS,
     trace,
     findingsMaxChars,
-    sources,
     strategy,
   };
 
   // Initial query — clarify falls through to passthrough in non-interactive mode
   if (initialQuery) {
-    const result = yield* handleQuery(initialQuery, harnessOpts);
+    const result = yield* handleQuery(initialQuery, session, sources, reranker, harnessOpts);
     if (result.type === "clarify" && !jsonlMode) {
       log(
         `  ${c.dim}Clarification needed but running in --query mode, treating as passthrough${c.reset}`,
@@ -254,8 +249,8 @@ main(function* () {
     if (!input || input === "/quit") break;
     try {
       const result = pendingClarify
-        ? yield* handleQuery(pendingClarify.query, harnessOpts, input)
-        : yield* handleQuery(input, harnessOpts);
+        ? yield* handleQuery(pendingClarify.query, session, sources, reranker, harnessOpts, input)
+        : yield* handleQuery(input, session, sources, reranker, harnessOpts);
       pendingClarify =
         result.type === "clarify"
           ? { query: pendingClarify?.query || input }

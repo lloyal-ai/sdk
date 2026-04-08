@@ -256,6 +256,8 @@ export interface AgentResult {
   parentAgentId: number;
   /** The agent's branch — still alive when returned from {@link useAgentPool} */
   branch: Branch;
+  /** The Agent class instance — carries full state (tool history, format config, lineage) */
+  agent: import('./Agent').Agent;
   /** Agent's result (from terminal tool or final output), or null */
   result: string | null;
   /** Number of tool calls the agent made */

@@ -9,19 +9,20 @@ export { CallingAgent } from './context';
 export { Source, NULL_SCORER } from './source';
 export type { EntailmentScorer, ScorerReranker } from './source';
 export { buildUserDelta, buildToolResultDelta } from '@lloyal-labs/sdk';
-export { prepare, generate } from './generate';
+export { useAgent, createAgent } from './use-agent';
+export type { UseAgentOpts } from './use-agent';
+export { createAgentPool } from './create-agent-pool';
+export type { CreateAgentPoolOpts, PoolTaskSpec, RecursiveOpts } from './create-agent-pool';
 export { diverge } from './diverge';
 export { useAgentPool, ContextPressure } from './agent-pool';
-export { runAgents } from './run-agents';
 export { createToolkit } from './toolkit';
 export { initAgents } from './init';
 export { withSharedRoot } from './shared-root';
 export { NullTraceWriter, JsonlTraceWriter } from './trace-writer';
 export { traceScope } from './trace-scope';
-export { spawnAgents } from './spawn-agents';
-export type { SpawnAgentsOpts, RecursiveOpts } from './spawn-agents';
 export { composePrompt, renderPrompt, renderTemplate } from './prompt';
 export type { PromptState, PromptSection, PromptStep } from './prompt';
+export { reduce } from './combinators';
 
 export type { Toolkit } from './toolkit';
 export type { TraceWriter } from './trace-writer';
@@ -39,8 +40,6 @@ export type {
   AgentPoolOptions,
   AgentResult,
   AgentPoolResult,
-  GenerateOptions,
-  GenerateResult,
   DivergeOptions,
   DivergeAttempt,
   DivergeResult,

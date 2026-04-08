@@ -260,6 +260,26 @@ export class Agent {
     return !this.fmt.grammarLazy || !this.fmt.grammar;
   }
 
+  // ── Async iteration ─────────────────────────────────────
+
+  /**
+   * Async iterator — delegates to Branch, accumulates state
+   *
+   * Each yielded token is already committed to KV (Branch's commit-before-yield
+   * semantics). Agent accumulates rawOutput and tokenCount as tokens flow.
+   *
+   * Available for Layer 1 users who create Agents directly and want to
+   * stream with state accumulation. The pool's tick loop does NOT use this
+   * iterator — it calls `produceSync()`/`store.commit()` directly for
+   * batched multi-agent generation.
+   */
+  async *[Symbol.asyncIterator](): AsyncIterableIterator<{ token: number; text: string }> {
+    for await (const produced of this.branch) {
+      this.accumulateToken(produced.text);
+      yield produced;
+    }
+  }
+
   // ── Lifecycle ───────────────────────────────────────────
 
   /** Mark agent as disposed — called by pool when branch is pruned */

@@ -23,5 +23,12 @@ export function createMockBranch(opts?: {
     modelSurprisal: () => 1.0,
     forkSync() { return createMockBranch({ position, forkHead: position, handle: (opts?.handle ?? 1) + 1000 }); },
     pruneSync() { disposed = true; },
+    /** Mock async iterator — yields from a pre-set token sequence, then stops. */
+    _tokens: [] as Array<{ token: number; text: string }>,
+    async *[Symbol.asyncIterator](): AsyncIterableIterator<{ token: number; text: string }> {
+      for (const t of this._tokens) {
+        yield t;
+      }
+    },
   };
 }

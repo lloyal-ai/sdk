@@ -26,6 +26,14 @@ Research notes:
 
 <%= it.agentFindings %>
 
+<% if (it.observations) { %>
+---
+
+Cross-agent analysis:
+
+<%= it.observations.map(function(o, i) { return (i + 1) + '. ' + o }).join('\n') %>
+
+<% } -%>
 <% if (it.conflicts) { %>
 ---
 

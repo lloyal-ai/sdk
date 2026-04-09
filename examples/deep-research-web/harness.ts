@@ -41,7 +41,7 @@ function loadEtaTemplate(name: string): string {
 }
 
 const PLAN = loadTask("plan");
-const ROOT = loadTask("root");
+const FALLBACK = loadTask("fallback");
 const BRIDGE = loadTask("bridge");
 const VERIFY = loadTask("verify");
 const EVAL = loadTask("eval");
@@ -72,20 +72,28 @@ export type QueryResult =
 
 // ── Helpers ─────────────────────────────────────────────────────
 
+interface ResearchContext {
+  strategy: Strategy;
+  tools: { name: string; description: string }[];
+  agentCount: number;
+  siblingQuestions: string[];
+  maxTurns: number;
+}
+
 function sourcePromptFor(
   source: { name: string; promptData?: () => { toc: string } },
-  strategy: Strategy,
+  ctx: ResearchContext,
 ): string {
   if (source.promptData) {
     return renderTemplate(CORPUS_RESEARCH_TEMPLATE, {
       ...source.promptData(),
-      strategy,
+      ...ctx,
     });
   }
   if (source.name === "web") {
-    return renderTemplate(WEB_RESEARCH_TEMPLATE, { strategy });
+    return renderTemplate(WEB_RESEARCH_TEMPLATE, ctx);
   }
-  return ROOT.system;
+  return FALLBACK.system;
 }
 
 function recursiveOpts(source: Source<SourceContext, Chunk>) {
@@ -225,12 +233,34 @@ export function* handleQuery(
       yield* source.bind({ reranker });
       const scorer = source.createScorer(query);
 
+      const tools = [...source.tools, reportTool];
+      const recOpts = recursiveOpts(source);
+      const toolCtx = [
+        ...tools.map((t) => ({ name: t.name, description: t.description })),
+        { name: recOpts.name, description: recOpts.description },
+      ];
       const pool = yield* createAgentPool({
-        tasks: acc.questions.map((q) => ({ content: q })),
-        tools: [...source.tools, reportTool],
-        systemPrompt: sourcePromptFor(source, opts.strategy),
+        tasks: acc.questions.map((q, idx) => ({
+          content: q,
+          systemPrompt: sourcePromptFor(source, {
+            strategy: opts.strategy,
+            tools: toolCtx,
+            agentCount: acc.questions.length,
+            siblingQuestions: acc.questions.filter((_, j) => j !== idx),
+            maxTurns: r.maxTurns,
+          }),
+        })),
+        tools,
+        systemPrompt: sourcePromptFor(source, {
+          strategy: opts.strategy,
+          tools: toolCtx,
+          agentCount: acc.questions.length,
+          siblingQuestions: [],
+          maxTurns: r.maxTurns,
+        }),
         terminalTool: "report",
         recursive: recursiveOpts(source),
+        maxTurns: r.maxTurns,
         policy: createResearchPolicy(),
         pruneOnReport: true,
         trace: opts.trace,
@@ -286,7 +316,7 @@ export function* handleQuery(
           tools: [reportTool],
           systemPrompt: BRIDGE.system,
           terminalTool: "report",
-          maxTurns: r.maxTurns,
+          maxTurns: 2,
           trace: opts.trace,
         });
 
@@ -340,10 +370,18 @@ export function* handleQuery(
   const findingsEvalSchema = {
     type: "object",
     properties: {
-      converged: { type: "boolean" },
-      conflicts: { type: "array", items: { type: "string" } },
+      conflicts: {
+        type: "array",
+        items: { type: "string" },
+        description: "Genuine factual contradictions only — mutually exclusive claims about the same topic. Empty array if none.",
+      },
+      observations: {
+        type: "array",
+        items: { type: "string" },
+        description: "Cross-agent analysis: coverage gaps, complementary findings, notable claim comparisons.",
+      },
     },
-    required: ["converged", "conflicts"],
+    required: ["conflicts", "observations"],
   };
 
   const findingsEvalAgent = yield* createAgent({
@@ -353,8 +391,8 @@ export function* handleQuery(
   });
 
   let findingsEvalParsed: {
-    converged: boolean;
     conflicts: string[];
+    observations: string[];
   } | null = null;
   try {
     findingsEvalParsed = JSON.parse(findingsEvalAgent.rawOutput);
@@ -362,21 +400,23 @@ export function* handleQuery(
     /* malformed */
   }
 
+  const conflicts =
+    findingsEvalParsed?.conflicts?.length
+      ? findingsEvalParsed.conflicts
+      : undefined;
+  const observations =
+    findingsEvalParsed?.observations?.length
+      ? findingsEvalParsed.observations
+      : undefined;
+
   yield* send({
     type: "findings:eval",
-    converged: findingsEvalParsed?.converged ?? null,
+    converged: !conflicts,
     conflicts: findingsEvalParsed?.conflicts ?? [],
+    observations: findingsEvalParsed?.observations ?? [],
     tokenCount: findingsEvalAgent.tokenCount,
     timeMs: 0, // TODO: track timing
   });
-
-  const conflicts =
-    findingsEvalParsed &&
-    !findingsEvalParsed.converged &&
-    findingsEvalParsed.conflicts &&
-    findingsEvalParsed.conflicts.length > 0
-      ? findingsEvalParsed.conflicts
-      : undefined;
 
   // ── Synthesize ────────────────────────────────────────────
   yield* send({ type: "synthesize:start" });
@@ -386,6 +426,7 @@ export function* handleQuery(
     agentFindings,
     sourcePassages: sourcePassages || null,
     conflicts: conflicts ?? null,
+    observations: observations ?? null,
     query,
   });
   const sepIdx = rendered.indexOf("\n---\n");
@@ -484,9 +525,9 @@ export function* handleQuery(
     {
       label: "Findings Eval",
       tokens: findingsEvalAgent.tokenCount,
-      detail: findingsEvalParsed?.converged
+      detail: !conflicts
         ? "converged"
-        : `${findingsEvalParsed?.conflicts?.length ?? 0} conflicts`,
+        : `${conflicts.length} conflicts`,
       timeMs: 0,
     },
     {

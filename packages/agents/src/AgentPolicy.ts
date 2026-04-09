@@ -21,12 +21,18 @@ export interface ToolGuard {
 }
 
 /** Default guards for deduplication and recursion discipline */
+function parseHistoryArgs(argsStr: string): Record<string, unknown> {
+  try { return JSON.parse(argsStr); } catch { return {}; }
+}
+
 export const defaultToolGuards: ToolGuard[] = [
   {
     tools: ['fetch_page'],
     reject: (args, history) => {
       const url = args.url as string | undefined;
-      return !!url && history.some(h => h.name === 'fetch_page' && h.args === url);
+      return !!url && history.some(h =>
+        h.name === 'fetch_page' && parseHistoryArgs(h.args).url === url,
+      );
     },
     message: 'This URL was already fetched. Try a different source.',
   },
@@ -34,7 +40,10 @@ export const defaultToolGuards: ToolGuard[] = [
     tools: ['web_search'],
     reject: (args, history) => {
       const query = (args.query as string | undefined)?.toLowerCase();
-      return !!query && history.some(h => h.name === 'web_search' && h.args.toLowerCase() === query);
+      return !!query && history.some(h => {
+        const prev = (parseHistoryArgs(h.args).query as string | undefined)?.toLowerCase();
+        return h.name === 'web_search' && prev === query;
+      });
     },
     message: 'This query was already searched. Refine your search or report findings.',
   },

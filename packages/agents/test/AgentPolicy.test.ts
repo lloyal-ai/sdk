@@ -123,7 +123,7 @@ describe('DefaultAgentPolicy', () => {
     it('rejects fetch_page with duplicate URL in lineage', () => {
       const a = makeAgent({
         toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: 'https://example.com' }],
+        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'https://example.com' }) }],
       });
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
@@ -133,7 +133,7 @@ describe('DefaultAgentPolicy', () => {
     it('allows fetch_page with new URL', () => {
       const a = makeAgent({
         toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: 'https://other.com' }],
+        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'https://other.com' }) }],
       });
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);

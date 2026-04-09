@@ -31,7 +31,7 @@ export type StepEvent =
   | { type: 'bridge:done'; findings: string; timeMs: number }
   | { type: 'synthesize:start' }
   | { type: 'synthesize:done'; pool: AgentPoolResult; timeMs: number }
-  | { type: 'findings:eval'; converged: boolean | null; conflicts: string[]; tokenCount: number; timeMs: number }
+  | { type: 'findings:eval'; converged: boolean | null; conflicts: string[]; observations: string[]; tokenCount: number; timeMs: number }
   | { type: 'eval:done'; converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }
   | { type: 'answer'; text: string }
   | { type: 'stats'; timings: OpTiming[]; kvLine?: string; ctxPct: number; ctxPos: number; ctxTotal: number }

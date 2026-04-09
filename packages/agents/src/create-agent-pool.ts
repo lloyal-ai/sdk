@@ -6,10 +6,12 @@ import { Tool } from './Tool';
 import type { JsonSchema, ToolContext } from './types';
 import type { AgentPoolResult } from './types';
 
-/** Task input for createAgentPool — systemPrompt applied from pool opts */
+/** Task input for createAgentPool */
 export interface PoolTaskSpec {
   /** User message content — the agent's specific sub-question or task */
   content: string;
+  /** Per-task system prompt. Falls back to pool-level systemPrompt when absent. */
+  systemPrompt?: string;
   /** PRNG seed for sampler diversity */
   seed?: number;
 }
@@ -344,7 +346,7 @@ export function* createAgentPool(opts: CreateAgentPoolOpts): Operation<AgentPool
     function* (root) {
       const sub = yield* useAgentPool({
         tasks: opts.tasks.map((t) => ({
-          systemPrompt: opts.systemPrompt,
+          systemPrompt: t.systemPrompt ?? opts.systemPrompt,
           content: t.content,
           tools: toolkit.toolsJson,
           parent: root,

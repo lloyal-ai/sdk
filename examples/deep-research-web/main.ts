@@ -68,7 +68,13 @@ function argVal(flag: string): string | null {
 }
 const corpusDir = argVal("--corpus");
 const flagIndices = new Set(
-  ["--reranker", "--query", "--findings-budget", "--corpus", "--strategy"].flatMap((f) => {
+  [
+    "--reranker",
+    "--query",
+    "--findings-budget",
+    "--corpus",
+    "--strategy",
+  ].flatMap((f) => {
     const i = args.indexOf(f);
     return i !== -1 ? [i, i + 1] : [];
   }),
@@ -110,7 +116,7 @@ if (!verbose && !jsonlMode && !trace) {
 
 const AGENT_COUNT = 3;
 const VERIFY_COUNT = 3;
-const MAX_TOOL_TURNS = 20;
+const MAX_TOOL_TURNS = 10;
 
 // ── Main ─────────────────────────────────────────────────────────
 
@@ -209,7 +215,13 @@ main(function* () {
 
   // Initial query — clarify falls through to passthrough in non-interactive mode
   if (initialQuery) {
-    const result = yield* handleQuery(initialQuery, session, sources, reranker, harnessOpts);
+    const result = yield* handleQuery(
+      initialQuery,
+      session,
+      sources,
+      reranker,
+      harnessOpts,
+    );
     if (result.type === "clarify" && !jsonlMode) {
       log(
         `  ${c.dim}Clarification needed but running in --query mode, treating as passthrough${c.reset}`,
@@ -249,7 +261,14 @@ main(function* () {
     if (!input || input === "/quit") break;
     try {
       const result = pendingClarify
-        ? yield* handleQuery(pendingClarify.query, session, sources, reranker, harnessOpts, input)
+        ? yield* handleQuery(
+            pendingClarify.query,
+            session,
+            sources,
+            reranker,
+            harnessOpts,
+            input,
+          )
         : yield* handleQuery(input, session, sources, reranker, harnessOpts);
       pendingClarify =
         result.type === "clarify"

@@ -37,6 +37,7 @@ interface SettledTool {
   prefillTokens: number[];
   toolName: string;
   callId: string;
+  args: string;
   probe?: string;
 }
 
@@ -160,6 +161,9 @@ function* recoverInline(
     return false;
   }
 
+  // Build the nudge prompt — a minimal turn injection that triggers
+  // report behavior. The agent's KV already contains the full
+  // conversation context; the prompt is just a nudge.
   const { prompt } = ctx.formatChatSync(
     JSON.stringify([
       { role: 'system', content: recovery.prompt.system },
@@ -170,14 +174,7 @@ function* recoverInline(
   const delta = ctx.tokenizeSync(prompt, false);
   const tokens = [...sep, ...delta];
 
-  // Check if extraction prompt fits
-  const pressure = new ContextPressure(ctx);
-  if (pressure.remaining < tokens.length) {
-    if (!agent.branch.disposed) agent.branch.pruneSync();
-    return false;
-  }
-
-  // Eager report grammar
+  // Eager report grammar — forces { result: string } output
   const reportGrammar: string = yield* call(() =>
     ctx.jsonSchemaToGrammar(JSON.stringify({
       type: 'object',
@@ -186,10 +183,8 @@ function* recoverInline(
     })),
   );
 
-  // Recovery runs in its own scope — if decode fails (KV exhaustion),
-  // the scope tears down cleanly without propagating to the pool.
-  // Mirrors the old prepare()-based recovery which used try/catch around
-  // a Resource with its own ensure().
+  // Recovery runs in its own scope — if prefill or decode fails
+  // (KV exhaustion), the scope tears down cleanly.
   let reported = false;
   try {
     yield* scoped(function*() {
@@ -201,7 +196,6 @@ function* recoverInline(
         type: 'branch:prefill', branchHandle: agent.id,
         tokenCount: tokens.length, role: 'recovery',
       });
-      yield* events.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId });
 
       // Single-agent produce/commit loop
       let output = '';
@@ -223,9 +217,9 @@ function* recoverInline(
         reported = true;
       }
     });
-  } catch { /* decode failure or malformed JSON — non-fatal, prune below */ }
+  } catch { /* prefill overflow, decode failure, or malformed JSON — non-fatal */ }
 
-  // Always prune after scope exits (success or decode failure)
+  // Always prune after scope exits (success or failure)
   if (!agent.branch.disposed) agent.branch.pruneSync();
 
   // Emit tick so TUI updates pressure percentage after prune
@@ -273,7 +267,7 @@ function* handleNudge(
   const prefillTokens = buildToolResultDelta(ctx, JSON.stringify(nudgeResult), callId);
   const probe = tools?.get(tc?.name || '')?.probe(nudgeResult) ?? undefined;
   a.resetTurn();
-  return { agentId: a.id, prefillTokens, toolName: tc?.name || '', callId, probe };
+  return { agentId: a.id, prefillTokens, toolName: tc?.name || '', callId, args: tc?.arguments || '', probe };
 }
 
 function* handleReport(
@@ -566,7 +560,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         headroom -= item.prefillTokens.length;
         const postSettle = new ContextPressure(ctx, pressureOpts);
         a.recordToolResult({
-          name: item.toolName, args: item.callId,
+          name: item.toolName, args: item.args,
           resultTokenCount: item.prefillTokens.length,
           contextAfterPercent: postSettle.percentAvailable,
           timestamp: performance.now(),
@@ -676,7 +670,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
           const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
           const probe = tool?.probe(result) ?? undefined;
-          results.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId, probe });
+          results.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe });
 
           tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
             type: 'tool:result', agentId: agent.id, tool: tc.name,

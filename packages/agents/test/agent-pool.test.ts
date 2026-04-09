@@ -516,9 +516,9 @@ describe('recovery loop', () => {
       }),
     });
 
-    // agent:spawn emitted twice: once for initial setup, once for recovery
+    // agent:spawn emitted once for initial setup (recovery uses existing branch)
     const spawns = events.filter(e => e.type === 'agent:spawn');
-    expect(spawns.length).toBe(2);
+    expect(spawns.length).toBe(1);
     // agent:produce events from the extraction generation
     const produces = events.filter(e => e.type === 'agent:produce');
     expect(produces.length).toBeGreaterThanOrEqual(1);

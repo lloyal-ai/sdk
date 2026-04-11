@@ -39,7 +39,7 @@ export class TavilyProvider implements SearchProvider {
     });
     if (!res.ok) throw new Error(`Tavily ${res.status}: ${await res.text()}`);
     const data = (await res.json()) as {
-      results: { title: string; url: string; content: string }[];
+      results: { title: string; url: string; content: string; score?: number }[];
     };
     const max = this._snippetMaxLength;
     return data.results.map((r) => ({
@@ -49,6 +49,7 @@ export class TavilyProvider implements SearchProvider {
         r.content.length > max
           ? r.content.slice(0, max) + " [\u2026]"
           : r.content,
+      score: r.score,
     }));
   }
 }
@@ -67,7 +68,7 @@ export class TavilyProvider implements SearchProvider {
 export class WebSearchTool extends Tool<{ query: string }> {
   readonly name = "web_search";
   readonly description =
-    "Search the web. Returns results with titles, snippets, and URLs. Use fetch_page to read full content of promising results.";
+    "Search the web. Returns results with titles, snippets, and URLs.";
   readonly parameters: JsonSchema = {
     type: "object",
     properties: { query: { type: "string", description: "Search query" } },
@@ -97,12 +98,27 @@ export class WebSearchTool extends Tool<{ query: string }> {
       return { error: `Search failed: ${(err as Error).message}` };
     }
 
-    // Rerank by entailment against original query when scorer is available
+    // Explore mode: preserve provider ordering — the search engine's
+    // ranking reflects the agent's local query intent. Reranking in
+    // explore mode kills topically divergent results with high
+    // information gain (e.g. an HN discussion thread scored lower
+    // on entailment but linking to the entire landscape).
+    //
+    // Exploit mode: rerank by min(provider score, entailment score).
+    // Provider score is the search engine's local-query relevance.
+    // Entailment score is original-query relevance. Both must be
+    // high — same contract as fetch_page and corpus search.
     const scorer = context?.scorer;
-    if (scorer && results.length > 1) {
+    if (!context?.explore && scorer && results.length > 1) {
       const snippets = results.map((r) => `${r.title}. ${r.snippet}`);
-      const scores: number[] = yield* call(() =>
+      const entailment: number[] = yield* call(() =>
         scorer.scoreEntailmentBatch(snippets),
+      );
+
+      // Combine: min(provider score, entailment) when provider score
+      // is available; entailment-only as fallback for providers without scores
+      const combined = results.map((r, i) =>
+        r.score != null ? Math.min(r.score, entailment[i]) : entailment[i],
       );
 
       let tw;
@@ -119,16 +135,19 @@ export class WebSearchTool extends Tool<{ query: string }> {
           type: "entailment:search",
           tool: "web_search",
           query,
+          mode: "exploit",
           before: results.map((r, i) => ({
             title: r.title,
             url: r.url,
-            score: scores[i],
+            providerScore: r.score ?? null,
+            entailment: entailment[i],
+            combined: combined[i],
           })),
         });
       }
 
       results = results
-        .map((r, i) => ({ result: r, score: scores[i] }))
+        .map((r, i) => ({ result: r, score: combined[i] }))
         .sort((a, b) => b.score - a.score)
         .map((entry) => entry.result);
 

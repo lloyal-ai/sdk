@@ -259,7 +259,8 @@ describe('nudge execution', () => {
 
     const nudges = trace.ofType('pool:agentNudge');
     expect(nudges.length).toBeGreaterThanOrEqual(1);
-    expect(nudges[0].reason).toBe('pressure_softcut');
+    expect(nudges[0].reason).toBe('nudge');
+    expect(nudges[0].message).toBeDefined();
   });
 
   it('2b: nudge settles → agent continues generating → eventually idles', async () => {

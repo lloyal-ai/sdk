@@ -15,10 +15,10 @@ import {
 } from "@lloyal-labs/lloyal-agents";
 import type { Source, AgentEvent } from "@lloyal-labs/lloyal-agents";
 import type { OpTiming, StepEvent } from "./tui";
-import { reportTool, PlanTool } from "@lloyal-labs/rig";
+import { reportTool, PlanTool, taskToContent } from "@lloyal-labs/rig";
 import type {
   PlanResult,
-  PlanQuestion,
+  ResearchTask,
   Reranker,
   ScoredChunk,
   Chunk,
@@ -28,9 +28,11 @@ import type {
 // ── Prompts ─────────────────────────────────────────────────────
 
 function loadTask(name: string): { system: string; user: string } {
-  const raw = fs
-    .readFileSync(path.resolve(__dirname, `tasks/${name}.md`), "utf8")
-    .trim();
+  const etaPath = path.resolve(__dirname, `tasks/${name}.eta`);
+  const mdPath = path.resolve(__dirname, `tasks/${name}.md`);
+  const raw = fs.existsSync(etaPath)
+    ? fs.readFileSync(etaPath, "utf8").trim()
+    : fs.readFileSync(mdPath, "utf8").trim();
   const sep = raw.indexOf("\n---\n");
   if (sep === -1) return { system: raw, user: "" };
   return { system: raw.slice(0, sep).trim(), user: raw.slice(sep + 5).trim() };
@@ -76,7 +78,7 @@ interface ResearchContext {
   strategy: Strategy;
   tools: { name: string; description: string }[];
   agentCount: number;
-  siblingQuestions: string[];
+  siblingTasks: string[];
   maxTurns: number;
 }
 
@@ -99,7 +101,7 @@ function sourcePromptFor(
 function recursiveOpts(source: Source<SourceContext, Chunk>) {
   return {
     name: source.name === "web" ? "web_research" : "research",
-    description: "Spawn parallel sub-agents to investigate sub-questions.",
+    description: "Spawn parallel sub-agents — one per question. Each sub-agent inherits your full context and can search and fetch independently.",
     argsSchema: {
       type: "object",
       properties: {
@@ -151,22 +153,24 @@ function* rerankChunks(
 
 type Route =
   | { type: "clarify"; questions: string[] }
-  | { type: "research"; questions: string[]; maxTurns: number };
+  | { type: "research"; tasks: ResearchTask[]; maxTurns: number };
 
 function route(
-  plan: { questions: PlanQuestion[] },
+  plan: PlanResult,
   query: string,
   maxTurns: number,
 ): Route {
-  const research = plan.questions.filter((q) => q.intent === "research");
-  const clarify = plan.questions.filter((q) => q.intent === "clarify");
+  const research = plan.tasks.filter((t) => t.intent === "research");
+  const clarify = plan.tasks.filter((t) => t.intent === "clarify");
 
   if (research.length === 0 && clarify.length > 0)
-    return { type: "clarify", questions: clarify.map((q) => q.text) };
+    return { type: "clarify", questions: clarify.map((t) => t.description) };
 
-  const questions = research.length > 0 ? research.map((q) => q.text) : [query];
-  const effectiveMaxTurns = questions.length === 1 ? maxTurns * 2 : maxTurns;
-  return { type: "research", questions, maxTurns: effectiveMaxTurns };
+  const tasks = research.length > 0
+    ? research
+    : [{ description: query, intent: "research" as const }];
+  const effectiveMaxTurns = tasks.length === 1 ? maxTurns * 2 : maxTurns;
+  return { type: "research", tasks, maxTurns: effectiveMaxTurns };
 }
 
 // ── Entry point ─────────────────────────────────────────────────
@@ -204,7 +208,7 @@ export function* handleQuery(
   const intent =
     r.type === "clarify"
       ? "clarify"
-      : plan.questions.length === 0
+      : plan.tasks.length === 0
         ? "passthrough"
         : "decompose";
   yield* send({
@@ -218,14 +222,14 @@ export function* handleQuery(
   if (r.type === "clarify") return { type: "clarify", questions: r.questions };
 
   // ── Research across sources ───────────────────────────────
-  yield* send({ type: "research:start", agentCount: r.questions.length });
+  yield* send({ type: "research:start", agentCount: r.tasks.length });
   const researchT = performance.now();
 
   const findings = yield* reduce(
     sources,
     {
       sections: [] as string[],
-      questions: r.questions,
+      tasks: r.tasks,
       totalTokens: 0,
       totalToolCalls: 0,
     },
@@ -240,13 +244,13 @@ export function* handleQuery(
         { name: recOpts.name, description: recOpts.description },
       ];
       const pool = yield* createAgentPool({
-        tasks: acc.questions.map((q, idx) => ({
-          content: q,
+        tasks: acc.tasks.map((task, idx) => ({
+          content: taskToContent(task),
           systemPrompt: sourcePromptFor(source, {
             strategy: opts.strategy,
             tools: toolCtx,
-            agentCount: acc.questions.length,
-            siblingQuestions: acc.questions.filter((_, j) => j !== idx),
+            agentCount: acc.tasks.length,
+            siblingTasks: acc.tasks.filter((_, j) => j !== idx).map(t => t.description),
             maxTurns: r.maxTurns,
           }),
         })),
@@ -254,8 +258,8 @@ export function* handleQuery(
         systemPrompt: sourcePromptFor(source, {
           strategy: opts.strategy,
           tools: toolCtx,
-          agentCount: acc.questions.length,
-          siblingQuestions: [],
+          agentCount: acc.tasks.length,
+          siblingTasks: [],
           maxTurns: r.maxTurns,
         }),
         terminalTool: "report",
@@ -330,9 +334,10 @@ export function* handleQuery(
         if (discoveries) {
           return {
             sections,
-            questions: r.questions.map(
-              (q) => `${q}\n\nPrior research discoveries:\n${discoveries}`,
-            ),
+            tasks: acc.tasks.map((t) => ({
+              ...t,
+              description: `${t.description}\n\nPrior research discoveries:\n${discoveries}`,
+            })),
             totalTokens: totalTokens + bridge.totalTokens,
             totalToolCalls: totalToolCalls + bridge.totalToolCalls,
           };
@@ -341,7 +346,7 @@ export function* handleQuery(
 
       return {
         sections,
-        questions: acc.questions,
+        tasks: acc.tasks,
         totalTokens,
         totalToolCalls,
       };
@@ -563,7 +568,7 @@ export function* handleQuery(
       evalTokens: evalAgent.tokenCount,
       converged: evalConverged,
       totalToolCalls: findings.totalToolCalls + synth.totalToolCalls,
-      agentCount: r.questions.length,
+      agentCount: r.tasks.length,
       synthCount: synth.agents.length,
       wallTimeMs: Math.round(performance.now() - t0),
       planMs: Math.round(plan.timeMs),

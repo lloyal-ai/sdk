@@ -752,7 +752,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             case 'nudge':
               nudges.push(yield* handleNudge(a, action.message, parsed.toolCalls[0], ctx, tools));
               tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-                type: 'pool:agentNudge', agentId: a.id, reason: 'pressure_softcut' });
+                type: 'pool:agentNudge', agentId: a.id, reason: 'nudge', message: action.message });
               continue;
             case 'report':
               yield* handleReport(a, action.result, parsed.toolCalls[0], terminalTool!, pruneOnReport, poolChannel);

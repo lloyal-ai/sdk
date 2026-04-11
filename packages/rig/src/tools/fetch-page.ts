@@ -72,7 +72,7 @@ function selectTopChunks(
 export class FetchPageTool extends Tool<{ url: string; query?: string }> {
   readonly name = "fetch_page";
   readonly description =
-    "Fetch a web page and extract its article content. Returns readable text with title and excerpt. Use to read search results or follow links discovered in pages. Pass a query to get only the most relevant sections.";
+    "Fetch a web page and extract its article content. Returns readable text with title and excerpt. Pass a query to get only the most relevant sections.";
   readonly parameters: JsonSchema = {
     type: "object",
     properties: {

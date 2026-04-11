@@ -24,7 +24,15 @@ class BufferingFetchPage extends FetchPageTool {
   private _buffer: FetchedPage[];
   private _urlCache = new Map<string, unknown>();
 
-  constructor(buffer: FetchedPage[], opts?: { maxChars?: number; topK?: number; timeout?: number; tokenBudget?: number }) {
+  constructor(
+    buffer: FetchedPage[],
+    opts?: {
+      maxChars?: number;
+      topK?: number;
+      timeout?: number;
+      tokenBudget?: number;
+    },
+  ) {
     super(opts);
     this._buffer = buffer;
   }
@@ -33,7 +41,10 @@ class BufferingFetchPage extends FetchPageTool {
     this._urlCache.clear();
   }
 
-  *execute(args: { url: string; query?: string }, context?: ToolContext): Operation<unknown> {
+  *execute(
+    args: { url: string; query?: string },
+    context?: ToolContext,
+  ): Operation<unknown> {
     const cached = this._urlCache.get(args.url);
     if (cached) return cached;
 
@@ -42,8 +53,9 @@ class BufferingFetchPage extends FetchPageTool {
     this._urlCache.set(args.url, result);
 
     const r = result as Record<string, unknown>;
-    const hasContent = typeof r?.content === "string"
-      && r.content !== "[Could not extract article content]";
+    const hasContent =
+      typeof r?.content === "string" &&
+      r.content !== "[Could not extract article content]";
     if (hasContent) {
       this._buffer.push({
         url: (r.url as string) || args.url,

@@ -25,6 +25,8 @@ export interface UseAgentOpts {
   tools?: Tool[];
   /** Terminal tool name — tool must be in the tools array. */
   terminalTool?: string;
+  /** Max tool-use turns before hard cut. @default 100 */
+  maxTurns?: number;
   /** JSON Schema for eager grammar constraint (deferred: Zod support). */
   schema?: JsonSchema;
   /** Sampling parameters. */
@@ -120,6 +122,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       }],
       tools: toolkit.toolMap,
       terminalTool: opts.terminalTool,
+      maxTurns: opts.maxTurns,
       policy: opts.policy,
       trace: opts.trace,
     });

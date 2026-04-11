@@ -50,13 +50,16 @@ export const defaultToolGuards: ToolGuard[] = [
   {
     tools: ['web_research', 'research'],
     reject: (_args, _lineage, agent) => {
-      // Agent-local history: each agent must do its own research before delegating,
-      // regardless of what ancestors did. Lineage history would let children bypass
-      // this by inheriting parent's search+fetch — producing blind relay chains.
+      // Agent-local history: each agent must do its own research before delegating.
+      // Requires at least 2 research tool calls (any combination of search, fetch,
+      // read, grep). The old hasSearch && hasFetch requirement blocked fetch-first
+      // agents that start by reading entry points without searching.
       const local = agent.toolHistory;
-      const hasSearch = local.some(h => h.name === 'web_search' || h.name === 'search');
-      const hasFetch = local.some(h => h.name === 'fetch_page' || h.name === 'read_file');
-      return !hasSearch || !hasFetch;
+      const researchCalls = local.filter(h =>
+        h.name === 'web_search' || h.name === 'search' ||
+        h.name === 'fetch_page' || h.name === 'read_file' || h.name === 'grep',
+      ).length;
+      return researchCalls < 2;
     },
     message: 'Read your search results with fetch_page before spawning sub-agents.',
   },

@@ -140,22 +140,35 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('tool_call');
     });
 
-    it('rejects web_research when agent has no local search', () => {
+    it('rejects web_research when agent has fewer than 2 research calls', () => {
       const a = makeAgent({
-        toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: 'url' }],
+        toolCallCount: 1,
+        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'url' }) }],
       });
       const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('nudge');
     });
 
-    it('allows web_research when agent has local search AND fetch', () => {
+    it('allows web_research with 2 fetches (no search required)', () => {
+      const a = makeAgent({
+        toolCallCount: 2,
+        toolHistory: [
+          { name: 'fetch_page', args: JSON.stringify({ url: 'url1' }) },
+          { name: 'fetch_page', args: JSON.stringify({ url: 'url2' }) },
+        ],
+      });
+      const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('tool_call');
+    });
+
+    it('allows web_research with search + fetch', () => {
       const a = makeAgent({
         toolCallCount: 3,
         toolHistory: [
-          { name: 'web_search', args: 'query' },
-          { name: 'fetch_page', args: 'url' },
+          { name: 'web_search', args: JSON.stringify({ query: 'q' }) },
+          { name: 'fetch_page', args: JSON.stringify({ url: 'url' }) },
         ],
       });
       const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };

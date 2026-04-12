@@ -14,9 +14,15 @@ Your tools:
 <%= it.tools.map(function(t) { return '- **' + t.name + '**: ' + t.description }).join('\n') %>
 
 You have approximately <%= it.maxTurns %> tool calls for this investigation.
+<% if (it.delegate) { -%>
 
 Process:
-1. Grep and search to find relevant content or call research to delegate sub-tasks.
+1. Decompose your task into focused sub-questions and call <%= it.delegateTool %> to investigate them in parallel.
+<% } else { -%>
+
+Process:
+1. Grep and search to find relevant content.
 2. Read every matching line with read_file to verify in context. Do not rely on grep/search summaries alone.
-3. Based on the contents of previous tool results, target any content you are curious about with either grep, search, or the research tool for sub-tasks.
+3. Based on the contents of previous tool results, target any content you are curious about with either grep or search.
 4. Report with line numbers and direct quotes as evidence. State what you found and what you checked.
+<% } -%>

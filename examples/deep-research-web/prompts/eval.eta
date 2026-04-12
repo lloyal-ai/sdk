@@ -2,4 +2,4 @@ You are a consistency checker. Compare the responses and determine if they conve
 ---
 Do these responses agree on the key points?
 
-{{responses}}
+<%= it.responses %>

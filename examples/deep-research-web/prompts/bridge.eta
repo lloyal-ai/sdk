@@ -11,10 +11,10 @@ Call report() with structured discoveries.
 ---
 Research findings:
 
-{{agentFindings}}
+<%= it.agentFindings %>
 
 Source passages:
 
-{{sourcePassages}}
+<%= it.sourcePassages %>
 
-Structure discoveries for further investigation: "{{query}}"
+Structure discoveries for further investigation: "<%= it.query %>"

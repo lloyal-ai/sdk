@@ -140,64 +140,11 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('tool_call');
     });
 
-    it('rejects web_research when agent has fewer than 2 research calls', () => {
-      const a = makeAgent({
-        toolCallCount: 1,
-        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'url' }) }],
-      });
-      const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-    });
-
-    it('allows web_research with 2 fetches (no search required)', () => {
-      const a = makeAgent({
-        toolCallCount: 2,
-        toolHistory: [
-          { name: 'fetch_page', args: JSON.stringify({ url: 'url1' }) },
-          { name: 'fetch_page', args: JSON.stringify({ url: 'url2' }) },
-        ],
-      });
+    it('allows web_research without prior tool calls', () => {
+      const a = makeAgent({ toolCallCount: 0 });
       const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('tool_call');
-    });
-
-    it('allows web_research with search + fetch', () => {
-      const a = makeAgent({
-        toolCallCount: 3,
-        toolHistory: [
-          { name: 'web_search', args: JSON.stringify({ query: 'q' }) },
-          { name: 'fetch_page', args: JSON.stringify({ url: 'url' }) },
-        ],
-      });
-      const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('tool_call');
-    });
-
-    it('rejects web_research even when PARENT has search+fetch (local history only)', () => {
-      const parent = makeAgent({
-        toolCallCount: 3,
-        toolHistory: [
-          { name: 'web_search', args: 'parent query' },
-          { name: 'fetch_page', args: 'parent url' },
-        ],
-      });
-      const child = new Agent({
-        id: 2, parentId: 1,
-        branch: createMockBranch({ handle: 2 }) as any,
-        fmt: FMT,
-        parent,
-      });
-      child.transition('active');
-      child.incrementToolCalls();
-      child.incrementToolCalls();
-
-      const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
-      const action = policy.onProduced(child, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-      expect((action as any).message).toContain('fetch_page');
     });
   });
 

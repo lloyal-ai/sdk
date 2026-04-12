@@ -13,4 +13,4 @@ If you find yourself writing "no conflict" or "both agree" inside an entry, it b
 ---
 Evaluate these research findings:
 
-{{findings}}
+<%= it.findings %>

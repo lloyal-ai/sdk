@@ -73,7 +73,6 @@ const flagIndices = new Set(
     "--query",
     "--findings-budget",
     "--corpus",
-    "--strategy",
   ].flatMap((f) => {
     const i = args.indexOf(f);
     return i !== -1 ? [i, i + 1] : [];
@@ -85,7 +84,6 @@ const initialQuery = argVal("--query");
 const findingsMaxChars = argVal("--findings-budget")
   ? parseInt(argVal("--findings-budget")!, 10)
   : undefined;
-const strategy = (argVal("--strategy") || "deep") as "deep" | "wide";
 const modelPath =
   args.find((a, i) => !a.startsWith("--") && !flagIndices.has(i)) ||
   DEFAULT_MODEL;
@@ -139,7 +137,7 @@ main(function* () {
     createContext({
       modelPath,
       nCtx,
-      nSeqMax: Math.max(AGENT_COUNT, VERIFY_COUNT) * 4 + 3,
+      nSeqMax: 64,
       typeK: "q4_0",
       typeV: "q4_0",
     }),
@@ -205,12 +203,10 @@ main(function* () {
   });
 
   const harnessOpts = {
-    agentCount: AGENT_COUNT,
     verifyCount: VERIFY_COUNT,
     maxTurns: MAX_TOOL_TURNS,
     trace,
     findingsMaxChars,
-    strategy,
   };
 
   // Initial query — clarify falls through to passthrough in non-interactive mode

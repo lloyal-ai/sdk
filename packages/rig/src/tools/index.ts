@@ -10,6 +10,8 @@ import { ReportTool } from './report';
 export { WebSearchTool, TavilyProvider } from './web-search';
 export { FetchPageTool } from './fetch-page';
 export { ReportTool } from './report';
+export { DelegateTool } from './delegate';
+export type { DelegateToolOpts } from './delegate';
 export type { SearchProvider, SearchResult, Reranker, ScoredChunk, ScoredResult } from './types';
 export { PlanTool, taskToContent } from './plan';
 export type { PlanResult, PlanQuestion, PlanToolOpts, ResearchTask } from './plan';

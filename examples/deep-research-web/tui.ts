@@ -27,8 +27,9 @@ export type StepEvent =
   | { type: 'plan'; intent: 'decompose' | 'passthrough' | 'clarify' | 'mixed'; questions: PlanQuestion[]; tokenCount: number; timeMs: number }
   | { type: 'research:start'; agentCount: number }
   | { type: 'research:done'; totalTokens: number; totalToolCalls: number; timeMs: number }
-  | { type: 'bridge:start' }
-  | { type: 'bridge:done'; findings: string; timeMs: number }
+  | { type: 'spine:task'; taskIndex: number; taskCount: number; description: string }
+  | { type: 'spine:source'; taskIndex: number; source: string }
+  | { type: 'spine:task:done'; taskIndex: number; stageFindings: number; accumulated: number }
   | { type: 'synthesize:start' }
   | { type: 'synthesize:done'; pool: AgentPoolResult; timeMs: number }
   | { type: 'findings:eval'; converged: boolean | null; conflicts: string[]; observations: string[]; tokenCount: number; timeMs: number }
@@ -104,16 +105,20 @@ function findingsEvalHandler(): ViewHandler {
   };
 }
 
-function bridgeHandler(state: ViewState): ViewHandler {
+function spineHandler(state: ViewState): ViewHandler {
   return (ev) => {
     switch (ev.type) {
-      case 'bridge:start':
-        log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Bridge${c.reset}`);
+      case 'spine:task':
+        log(`\n    ${c.dim}\u250c${c.reset} ${c.bold}Task ${ev.taskIndex + 1}/${ev.taskCount}${c.reset} ${c.dim}${ev.description}${c.reset}`);
         resetLabels(state);
         break;
-      case 'bridge:done':
+      case 'spine:source':
+        log(`    ${c.dim}\u2502 \u250c ${ev.source}${c.reset}`);
+        resetLabels(state);
+        break;
+      case 'spine:task:done':
         statusClear();
-        log(`    ${c.dim}${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+        log(`    ${c.dim}\u2514 +${ev.stageFindings} chars [accumulated: ${ev.accumulated}]${c.reset}`);
         break;
     }
   };
@@ -182,8 +187,8 @@ export function createView(opts: ViewOpts) {
     gaugeHandler(gauge),       // update pressure before agentHandler reads it
     agentHandler(state, gauge),
     researchSummaryHandler(state),
+    spineHandler(state),
     findingsEvalHandler(),
-    bridgeHandler(state),
     synthesizeHandler(state),
     evalHandler(),
     answerHandler(),

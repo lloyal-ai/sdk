@@ -2,12 +2,12 @@ Answer the research question based on the inputs below.
 ---
 Research notes:
 
-{{agentFindings}}
+<%= it.agentFindings %>
 
 ---
 
 Source passages:
 
-{{sourcePassages}}
+<%= it.sourcePassages %>
 
-Answer: "{{query}}"
+Answer: "<%= it.query %>"

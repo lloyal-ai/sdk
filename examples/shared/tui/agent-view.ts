@@ -133,7 +133,7 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
         break;
       }
       case 'agent:tool_call': {
-        if (ev.tool === 'web_research' || ev.tool === 'research') {
+        if (ev.tool === 'worker_web' || ev.tool === 'web_worker' || ev.tool === 'web_research' || ev.tool === 'worker_corpus' || ev.tool === 'corpus_worker' || ev.tool === 'research') {
           state.spawningQueue.push(ev.agentId);
         }
         const ind = agentIndent(state, ev.agentId);
@@ -158,7 +158,7 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
           : ev.tool === 'grep'
           ? `/${toolArgs.pattern || ''}/`
           : ev.tool === 'report' ? ''
-          : ev.tool === 'research' || ev.tool === 'web_research'
+          : ev.tool === 'worker_corpus' || ev.tool === 'corpus_worker' || ev.tool === 'research' || ev.tool === 'worker_web' || ev.tool === 'web_worker' || ev.tool === 'web_research'
           ? `${(toolArgs.questions as string[] | undefined)?.length ?? 0} questions`
           : ev.tool === 'plan'
           ? `"${toolArgs.query || ''}"`
@@ -166,7 +166,7 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
           ? `${toolArgs.url || ''}`
           : `${toolArgs.filename}` + (toolArgs.startLine ? ` L${toolArgs.startLine}-${toolArgs.endLine}` : '');
         log(`${ind}${c.dim}\u251c${c.reset} ${c.yellow}${lbl}${c.reset} ${c.cyan}${ev.tool}${c.reset}${argSummary ? `(${argSummary})` : ''}`);
-        if (ev.tool === 'research' || ev.tool === 'web_research') {
+        if (ev.tool === 'worker_corpus' || ev.tool === 'corpus_worker' || ev.tool === 'research' || ev.tool === 'worker_web' || ev.tool === 'web_worker' || ev.tool === 'web_research') {
           const qs = (toolArgs as Record<string, unknown>).questions as string[] | undefined;
           qs?.forEach((q, i) => {
             log(`${ind}${c.dim}\u2502${c.reset}   ${c.dim}${i + 1}. ${q}${c.reset}`);
@@ -175,7 +175,7 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
         break;
       }
       case 'agent:tool_result': {
-        if (ev.tool === 'web_research' || ev.tool === 'research') {
+        if (ev.tool === 'worker_web' || ev.tool === 'web_worker' || ev.tool === 'web_research' || ev.tool === 'worker_corpus' || ev.tool === 'corpus_worker' || ev.tool === 'research') {
           const idx = state.spawningQueue.indexOf(ev.agentId);
           if (idx >= 0) state.spawningQueue.splice(idx, 1);
         }

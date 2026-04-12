@@ -47,22 +47,6 @@ export const defaultToolGuards: ToolGuard[] = [
     },
     message: 'This query was already searched. Refine your search or report findings.',
   },
-  {
-    tools: ['web_research', 'research'],
-    reject: (_args, _lineage, agent) => {
-      // Agent-local history: each agent must do its own research before delegating.
-      // Requires at least 2 research tool calls (any combination of search, fetch,
-      // read, grep). The old hasSearch && hasFetch requirement blocked fetch-first
-      // agents that start by reading entry points without searching.
-      const local = agent.toolHistory;
-      const researchCalls = local.filter(h =>
-        h.name === 'web_search' || h.name === 'search' ||
-        h.name === 'fetch_page' || h.name === 'read_file' || h.name === 'grep',
-      ).length;
-      return researchCalls < 2;
-    },
-    message: 'Read your search results with fetch_page before spawning sub-agents.',
-  },
 ];
 
 // ── Action types ────────────────────────────────────────────

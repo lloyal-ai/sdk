@@ -15,7 +15,12 @@ import {
 } from "@lloyal-labs/lloyal-agents";
 import type { Source, AgentEvent } from "@lloyal-labs/lloyal-agents";
 import type { OpTiming, StepEvent } from "./tui";
-import { reportTool, PlanTool, taskToContent } from "@lloyal-labs/rig";
+import {
+  reportTool,
+  PlanTool,
+  taskToContent,
+  DelegateTool,
+} from "@lloyal-labs/rig";
 import type {
   PlanResult,
   ResearchTask,
@@ -27,38 +32,40 @@ import type {
 
 // ── Prompts ─────────────────────────────────────────────────────
 
-function loadTask(name: string): { system: string; user: string } {
-  const etaPath = path.resolve(__dirname, `tasks/${name}.eta`);
-  const mdPath = path.resolve(__dirname, `tasks/${name}.md`);
-  const raw = fs.existsSync(etaPath)
-    ? fs.readFileSync(etaPath, "utf8").trim()
-    : fs.readFileSync(mdPath, "utf8").trim();
+/** Load a task prompt with --- separator → { system, user }. */
+function loadPrompt(name: string): { system: string; user: string } {
+  const raw = fs
+    .readFileSync(path.resolve(__dirname, `prompts/${name}.eta`), "utf8")
+    .trim();
   const sep = raw.indexOf("\n---\n");
   if (sep === -1) return { system: raw, user: "" };
   return { system: raw.slice(0, sep).trim(), user: raw.slice(sep + 5).trim() };
 }
 
-function loadEtaTemplate(name: string): string {
-  return fs.readFileSync(path.resolve(__dirname, `tasks/${name}.eta`), "utf8");
+/** Load a raw Eta template string for agent system prompts. */
+function loadTemplate(name: string): string {
+  return fs.readFileSync(
+    path.resolve(__dirname, `prompts/${name}.eta`),
+    "utf8",
+  );
 }
 
-const PLAN = loadTask("plan");
-const FALLBACK = loadTask("fallback");
-const BRIDGE = loadTask("bridge");
-const VERIFY = loadTask("verify");
-const EVAL = loadTask("eval");
-const FINDINGS_EVAL = loadTask("findings-eval");
-const REPORT = loadTask("report");
-const SYNTHESIZE_TEMPLATE = loadEtaTemplate("synthesize");
-const CORPUS_RESEARCH_TEMPLATE = loadEtaTemplate("corpus-research");
-const WEB_RESEARCH_TEMPLATE = loadEtaTemplate("web-research");
+const PLAN = loadPrompt("plan");
+const FALLBACK = loadPrompt("fallback");
+const VERIFY = loadPrompt("verify");
+const EVAL = loadPrompt("eval");
+const FINDINGS_EVAL = loadPrompt("findings-eval");
+const REPORT = loadPrompt("report");
+const SYNTHESIZE = loadPrompt("synthesize");
+const CORPUS_WORKER_TEMPLATE = loadTemplate("corpus-worker");
+const WEB_WORKER_TEMPLATE = loadTemplate("web-worker");
 
 /** Create a fresh research policy per query — time budget scopes to research, not process lifetime */
 function createResearchPolicy() {
   return new DefaultAgentPolicy({
     budget: {
       context: { softLimit: 2048, hardLimit: 2048 },
-      time: { softLimit: 600_000, hardLimit: 900_000 },
+      time: { softLimit: 60_000, hardLimit: 120_000 },
     },
     recovery: { prompt: REPORT },
   });
@@ -66,42 +73,47 @@ function createResearchPolicy() {
 
 // ── Types ───────────────────────────────────────────────────────
 
-export type Strategy = "deep" | "wide";
-
 export type QueryResult =
   | { type: "done" }
   | { type: "clarify"; questions: string[] };
 
 // ── Helpers ─────────────────────────────────────────────────────
 
-interface ResearchContext {
-  strategy: Strategy;
-  tools: { name: string; description: string }[];
-  agentCount: number;
-  siblingTasks: string[];
-  maxTurns: number;
-}
-
-function sourcePromptFor(
+function renderWorkerPrompt(
   source: { name: string; promptData?: () => { toc: string } },
-  ctx: ResearchContext,
+  ctx: {
+    tools: { name: string; description: string }[];
+    maxTurns: number;
+    delegate?: boolean;
+    delegateTool?: string;
+  },
 ): string {
   if (source.promptData) {
-    return renderTemplate(CORPUS_RESEARCH_TEMPLATE, {
+    return renderTemplate(CORPUS_WORKER_TEMPLATE, {
       ...source.promptData(),
       ...ctx,
+      agentCount: 1,
+      siblingTasks: [],
     });
   }
   if (source.name === "web") {
-    return renderTemplate(WEB_RESEARCH_TEMPLATE, ctx);
+    return renderTemplate(WEB_WORKER_TEMPLATE, {
+      ...ctx,
+      agentCount: 1,
+      siblingTasks: [],
+    });
   }
   return FALLBACK.system;
 }
 
-function recursiveOpts(source: Source<SourceContext, Chunk>) {
-  return {
-    name: source.name === "web" ? "web_research" : "research",
-    description: "Spawn parallel sub-agents — one per question. Each sub-agent inherits your full context and can search and fetch independently.",
+function createDelegateTool(
+  source: Source<SourceContext, Chunk>,
+  poolOpts: Parameters<typeof createAgentPool>[0],
+) {
+  return new DelegateTool({
+    name: source.name === "web" ? "worker_web" : "worker_corpus",
+    description:
+      "Investigate multiple questions in parallel. Pass an array of focused sub-questions.",
     argsSchema: {
       type: "object",
       properties: {
@@ -114,7 +126,9 @@ function recursiveOpts(source: Source<SourceContext, Chunk>) {
       required: ["questions"],
     },
     extractTasks: (args: Record<string, unknown>) => args.questions as string[],
-  };
+    poolOpts,
+    createPolicy: createResearchPolicy,
+  });
 }
 
 function* rerankChunks(
@@ -155,22 +169,18 @@ type Route =
   | { type: "clarify"; questions: string[] }
   | { type: "research"; tasks: ResearchTask[]; maxTurns: number };
 
-function route(
-  plan: PlanResult,
-  query: string,
-  maxTurns: number,
-): Route {
+function route(plan: PlanResult, query: string, maxTurns: number): Route {
   const research = plan.tasks.filter((t) => t.intent === "research");
   const clarify = plan.tasks.filter((t) => t.intent === "clarify");
 
   if (research.length === 0 && clarify.length > 0)
     return { type: "clarify", questions: clarify.map((t) => t.description) };
 
-  const tasks = research.length > 0
-    ? research
-    : [{ description: query, intent: "research" as const }];
-  const effectiveMaxTurns = tasks.length === 1 ? maxTurns * 2 : maxTurns;
-  return { type: "research", tasks, maxTurns: effectiveMaxTurns };
+  const tasks =
+    research.length > 0
+      ? research
+      : [{ description: query, intent: "research" as const }];
+  return { type: "research", tasks, maxTurns };
 }
 
 // ── Entry point ─────────────────────────────────────────────────
@@ -181,10 +191,8 @@ export function* handleQuery(
   sources: Source<SourceContext, Chunk>[],
   reranker: Reranker,
   opts: {
-    agentCount: number;
     verifyCount: number;
     maxTurns: number;
-    strategy: Strategy;
     trace: boolean;
     findingsMaxChars?: number;
   },
@@ -200,7 +208,7 @@ export function* handleQuery(
   const planTool = new PlanTool({
     prompt: PLAN,
     session,
-    maxQuestions: opts.agentCount,
+    maxQuestions: 10,
   });
   const plan = (yield* planTool.execute({ query, context })) as PlanResult;
   const r = route(plan, query, opts.maxTurns);
@@ -225,136 +233,162 @@ export function* handleQuery(
   yield* send({ type: "research:start", agentCount: r.tasks.length });
   const researchT = performance.now();
 
+  // Bind all sources upfront — WebSource.bind() is not idempotent (clears URL cache)
+  for (const source of sources) {
+    yield* source.bind({ reranker });
+  }
+  const scorers = new Map(sources.map((s) => [s, s.createScorer(query)]));
+
+  // Outer: tasks (sequential stages). Inner: sources (cross-source within each stage).
   const findings = yield* reduce(
-    sources,
+    r.tasks,
     {
       sections: [] as string[],
-      tasks: r.tasks,
       totalTokens: 0,
       totalToolCalls: 0,
+      priorFindings: "",
     },
-    function* (acc, source, i) {
-      yield* source.bind({ reranker });
-      const scorer = source.createScorer(query);
-
-      const tools = [...source.tools, reportTool];
-      const recOpts = recursiveOpts(source);
-      const toolCtx = [
-        ...tools.map((t) => ({ name: t.name, description: t.description })),
-        { name: recOpts.name, description: recOpts.description },
-      ];
-      const pool = yield* createAgentPool({
-        tasks: acc.tasks.map((task, idx) => ({
-          content: taskToContent(task),
-          systemPrompt: sourcePromptFor(source, {
-            strategy: opts.strategy,
-            tools: toolCtx,
-            agentCount: acc.tasks.length,
-            siblingTasks: acc.tasks.filter((_, j) => j !== idx).map(t => t.description),
-            maxTurns: r.maxTurns,
-          }),
-        })),
-        tools,
-        systemPrompt: sourcePromptFor(source, {
-          strategy: opts.strategy,
-          tools: toolCtx,
-          agentCount: acc.tasks.length,
-          siblingTasks: [],
-          maxTurns: r.maxTurns,
-        }),
-        terminalTool: "report",
-        recursive: recursiveOpts(source),
-        maxTurns: r.maxTurns,
-        policy: createResearchPolicy(),
-        pruneOnReport: true,
-        trace: opts.trace,
-        scorer,
-        session,
+    function* (acc, task, i) {
+      yield* send({
+        type: "spine:task",
+        taskIndex: i,
+        taskCount: r.tasks.length,
+        description: task.description,
       });
 
-      const totalTokens = acc.totalTokens + pool.totalTokens;
-      const totalToolCalls = acc.totalToolCalls + pool.totalToolCalls;
+      const stageResult = yield* reduce(
+        sources,
+        {
+          sections: [] as string[],
+          totalTokens: 0,
+          totalToolCalls: 0,
+          stageFindings: "",
+        },
+        function* (srcAcc, source, j) {
+          yield* send({
+            type: "spine:source",
+            taskIndex: i,
+            source: source.name,
+          });
+          const scorer = scorers.get(source)!;
+          const dataTools = [...source.tools, reportTool];
 
-      const agentFindings = pool.agents
-        .map((a) => a.result)
-        .filter(Boolean)
-        .map((f, j) => `### Agent ${j + 1}\n${f}`)
-        .join("\n\n");
-      const supporting = pool.agents
-        .flatMap((a) => [...a.nestedResults])
-        .filter(Boolean)
-        .map((f, j) => `### Supporting finding ${j + 1}\n${f}`)
-        .join("\n\n");
+          // Inner prompt (search/fetch/report) — pool-level default, inherited by DelegateTool for sub-agents
+          const innerToolCtx = dataTools.map((t) => ({
+            name: t.name,
+            description: t.description,
+          }));
+          const innerPrompt = renderWorkerPrompt(source, {
+            tools: innerToolCtx,
+            maxTurns: r.maxTurns,
+          });
 
-      const sections = [
-        ...acc.sections,
-        ...(agentFindings
-          ? [`## ${source.name} research\n\n${agentFindings}`]
-          : []),
-        ...(supporting
-          ? [`## ${source.name} supporting research\n\n${supporting}`]
-          : []),
-      ];
-
-      // Bridge to next source
-      if (i < sources.length - 1 && agentFindings) {
-        const sourceChunks = source.getChunks();
-        const passages = yield* rerankChunks(
-          sourceChunks,
-          query,
-          reranker,
-          10,
-          opts.findingsMaxChars,
-        );
-
-        yield* send({ type: "bridge:start" });
-        const bt = performance.now();
-
-        const bridgeContent = BRIDGE.user
-          .replace("{{agentFindings}}", agentFindings)
-          .replace("{{sourcePassages}}", passages)
-          .replace("{{query}}", query);
-
-        const bridge = yield* createAgentPool({
-          tasks: [{ content: bridgeContent }],
-          tools: [reportTool],
-          systemPrompt: BRIDGE.system,
-          terminalTool: "report",
-          maxTurns: 2,
-          trace: opts.trace,
-        });
-
-        const discoveries = bridge.agents[0]?.result || "";
-        yield* send({
-          type: "bridge:done",
-          findings: discoveries,
-          timeMs: performance.now() - bt,
-        });
-
-        if (discoveries) {
-          return {
-            sections,
-            tasks: acc.tasks.map((t) => ({
-              ...t,
-              description: `${t.description}\n\nPrior research discoveries:\n${discoveries}`,
-            })),
-            totalTokens: totalTokens + bridge.totalTokens,
-            totalToolCalls: totalToolCalls + bridge.totalToolCalls,
+          // Pool opts for DelegateTool — inner pools inherit these
+          const innerPoolOpts = {
+            tasks: [] as { content: string }[],
+            tools: dataTools,
+            systemPrompt: innerPrompt,
+            terminalTool: "report" as const,
+            maxTurns: r.maxTurns,
+            pruneOnReport: true,
+            trace: opts.trace,
+            scorer,
+            session,
+            echoThreshold: 0.8,
           };
-        }
-      }
+
+          // DelegateTool first — grammar ordering bias makes it the default action
+          const delegate = createDelegateTool(source, innerPoolOpts);
+          const tools = [delegate, ...dataTools];
+
+          // Outer prompt (decompose, call delegate) — per-task override for the outer agent
+          const outerToolCtx = tools.map((t) => ({
+            name: t.name,
+            description: t.description,
+          }));
+          const outerPrompt = renderWorkerPrompt(source, {
+            tools: outerToolCtx,
+            maxTurns: r.maxTurns,
+            delegate: true,
+            delegateTool: delegate.name,
+          });
+
+          // Augment with: prior stage findings + within-stage cross-source findings
+          const priorContext = [acc.priorFindings, srcAcc.stageFindings]
+            .filter(Boolean)
+            .join("\n\n");
+          const augmentedContent = priorContext
+            ? `${taskToContent(task)}\n\nPrior research findings:\n${priorContext}`
+            : taskToContent(task);
+
+          const pool = yield* createAgentPool({
+            tasks: [{ content: augmentedContent, systemPrompt: outerPrompt }],
+            tools,
+            systemPrompt: innerPrompt,
+            terminalTool: "report",
+            maxTurns: 1,
+            pruneOnReport: true,
+            trace: opts.trace,
+            scorer,
+            session,
+          });
+
+          const taskFindings = pool.agents
+            .map((a) => a.result)
+            .filter(Boolean)
+            .map((f, k) => `### Agent ${k + 1}\n${f}`)
+            .join("\n\n");
+          const supporting = pool.agents
+            .flatMap((a) => [...a.nestedResults])
+            .filter(Boolean)
+            .map((f, k) => `### Supporting ${k + 1}\n${f}`)
+            .join("\n\n");
+          const allStageFindings = [srcAcc.stageFindings, taskFindings]
+            .filter(Boolean)
+            .join("\n\n");
+
+          return {
+            sections: [
+              ...srcAcc.sections,
+              ...(taskFindings
+                ? [`## Task ${i + 1} (${source.name})\n\n${taskFindings}`]
+                : []),
+              ...(supporting
+                ? [
+                    `## Task ${i + 1} (${source.name}) supporting\n\n${supporting}`,
+                  ]
+                : []),
+            ],
+            totalTokens: srcAcc.totalTokens + pool.totalTokens,
+            totalToolCalls: srcAcc.totalToolCalls + pool.totalToolCalls,
+            stageFindings: allStageFindings,
+          };
+        },
+      );
+
+      const allFindings = [acc.priorFindings, stageResult.stageFindings]
+        .filter(Boolean)
+        .join("\n\n");
+      yield* send({
+        type: "spine:task:done",
+        taskIndex: i,
+        stageFindings: stageResult.stageFindings.length,
+        accumulated: allFindings.length,
+      });
 
       return {
-        sections,
-        tasks: acc.tasks,
-        totalTokens,
-        totalToolCalls,
+        sections: [...acc.sections, ...stageResult.sections],
+        totalTokens: acc.totalTokens + stageResult.totalTokens,
+        totalToolCalls: acc.totalToolCalls + stageResult.totalToolCalls,
+        priorFindings: allFindings,
       };
     },
   );
 
-  const allChunks = sources.flatMap((s) => s.getChunks());
   const agentFindings = findings.sections.join("\n\n");
+
+  // Source passages for synthesis — one rerank pass over all accumulated chunks
+  const allChunks = sources.flatMap((s) => s.getChunks());
   const sourcePassages = yield* rerankChunks(
     allChunks,
     query,
@@ -378,12 +412,14 @@ export function* handleQuery(
       conflicts: {
         type: "array",
         items: { type: "string" },
-        description: "Genuine factual contradictions only — mutually exclusive claims about the same topic. Empty array if none.",
+        description:
+          "Genuine factual contradictions only — mutually exclusive claims about the same topic. Empty array if none.",
       },
       observations: {
         type: "array",
         items: { type: "string" },
-        description: "Cross-agent analysis: coverage gaps, complementary findings, notable claim comparisons.",
+        description:
+          "Cross-agent analysis: coverage gaps, complementary findings, notable claim comparisons.",
       },
     },
     required: ["conflicts", "observations"],
@@ -391,7 +427,7 @@ export function* handleQuery(
 
   const findingsEvalAgent = yield* createAgent({
     systemPrompt: FINDINGS_EVAL.system,
-    task: FINDINGS_EVAL.user.replace("{{findings}}", agentFindings),
+    task: renderTemplate(FINDINGS_EVAL.user, { findings: agentFindings }),
     schema: findingsEvalSchema,
   });
 
@@ -405,14 +441,12 @@ export function* handleQuery(
     /* malformed */
   }
 
-  const conflicts =
-    findingsEvalParsed?.conflicts?.length
-      ? findingsEvalParsed.conflicts
-      : undefined;
-  const observations =
-    findingsEvalParsed?.observations?.length
-      ? findingsEvalParsed.observations
-      : undefined;
+  const conflicts = findingsEvalParsed?.conflicts?.length
+    ? findingsEvalParsed.conflicts
+    : undefined;
+  const observations = findingsEvalParsed?.observations?.length
+    ? findingsEvalParsed.observations
+    : undefined;
 
   yield* send({
     type: "findings:eval",
@@ -427,17 +461,15 @@ export function* handleQuery(
   yield* send({ type: "synthesize:start" });
   const synthT = performance.now();
 
-  const rendered = renderTemplate(SYNTHESIZE_TEMPLATE, {
+  const synthCtx = {
     agentFindings,
     sourcePassages: sourcePassages || null,
     conflicts: conflicts ?? null,
     observations: observations ?? null,
     query,
-  });
-  const sepIdx = rendered.indexOf("\n---\n");
-  const synthSystem =
-    sepIdx >= 0 ? rendered.slice(0, sepIdx).trim() : rendered.trim();
-  const synthContent = sepIdx >= 0 ? rendered.slice(sepIdx + 5).trim() : "";
+  };
+  const synthSystem = renderTemplate(SYNTHESIZE.system, synthCtx);
+  const synthContent = renderTemplate(SYNTHESIZE.user, synthCtx);
 
   const groundingTools = conflicts?.length
     ? sources.flatMap((s) => s.tools)
@@ -459,10 +491,11 @@ export function* handleQuery(
   yield* send({ type: "answer", text: answer });
 
   // ── Verify (N samples, batched) ───────────────────────────
-  const verifyContent = VERIFY.user
-    .replace("{{agentFindings}}", agentFindings || "(none)")
-    .replace("{{sourcePassages}}", sourcePassages || "(none)")
-    .replace("{{query}}", query);
+  const verifyContent = renderTemplate(VERIFY.user, {
+    agentFindings: agentFindings || "(none)",
+    sourcePassages: sourcePassages || "(none)",
+    query,
+  });
 
   const verifyPool = yield* createAgentPool({
     tasks: Array.from({ length: opts.verifyCount }, (_, i) => ({
@@ -485,7 +518,7 @@ export function* handleQuery(
 
   const evalAgent = yield* createAgent({
     systemPrompt: EVAL.system,
-    task: EVAL.user.replace("{{responses}}", responsesText),
+    task: renderTemplate(EVAL.user, { responses: responsesText }),
     schema: evalSchema,
   });
 
@@ -530,9 +563,7 @@ export function* handleQuery(
     {
       label: "Findings Eval",
       tokens: findingsEvalAgent.tokenCount,
-      detail: !conflicts
-        ? "converged"
-        : `${conflicts.length} conflicts`,
+      detail: !conflicts ? "converged" : `${conflicts.length} conflicts`,
       timeMs: 0,
     },
     {

@@ -1,4 +1,4 @@
-import type { Branch } from '@lloyal-labs/sdk';
+import type { Branch, SessionContext, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import type { GrammarTrigger } from '@lloyal-labs/sdk';
 import type { TraceToken } from './types';
 
@@ -118,6 +118,9 @@ export class Agent {
   private _toolHistory: ToolHistoryEntry[] = [];
   private _nestedResults: string[] = [];
   private _traceBuffer: TraceToken[] = [];
+  private _currentTool: string | null = null;
+  private _toolObserved = false;
+  private _parsed: ParseChatOutputResult | null = null;
 
   /** The agent that called the tool which spawned this agent's pool (null for top-level) */
   readonly parent: Agent | null = null;
@@ -172,6 +175,8 @@ export class Agent {
   get toolCallCount(): number { return this._toolCallCount; }
   get turns(): number { return this._turns; }
   get traceBuffer(): TraceToken[] { return this._traceBuffer; }
+  get currentTool(): string | null { return this._currentTool; }
+  get parsed(): ParseChatOutputResult | null { return this._parsed; }
 
   /** Accumulate generated token text into the current turn */
   accumulateToken(text: string): void {
@@ -186,8 +191,50 @@ export class Agent {
     this._traceBuffer.push({ text, entropy, surprisal });
   }
 
+  /**
+   * Partial-parse the in-progress rawOutput to detect which tool the agent
+   * is generating. Uses parseChatOutput with isPartial:true — format-agnostic
+   * across all model families llama.cpp supports. Latches on first detection:
+   * subsequent calls short-circuit without parsing.
+   */
+  observe(ctx: SessionContext): void {
+    if (this._toolObserved) return;
+    this._parsed = ctx.parseChatOutput(this._rawOutput, this.fmt.format, {
+      reasoningFormat: this.fmt.reasoningFormat,
+      generationPrompt: this.fmt.generationPrompt,
+      parser: this.fmt.parser,
+      isPartial: true,
+    });
+    if (this._parsed.toolCalls.length > 0) {
+      this._currentTool = this._parsed.toolCalls[0].name;
+      this._toolObserved = true;
+    }
+  }
+
+  /**
+   * Strict parse at isStop — replaces the standalone parseChatOutput call in
+   * the pool's PRODUCE phase. Returns the full ParseChatOutputResult for
+   * downstream consumers (trace writer, policy.onProduced).
+   */
+  finalize(ctx: SessionContext): ParseChatOutputResult {
+    this._parsed = ctx.parseChatOutput(this._rawOutput, this.fmt.format, {
+      reasoningFormat: this.fmt.reasoningFormat,
+      generationPrompt: this.fmt.generationPrompt,
+      parser: this.fmt.parser,
+    });
+    if (!this._currentTool && this._parsed.toolCalls.length > 0) {
+      this._currentTool = this._parsed.toolCalls[0].name;
+    }
+    return this._parsed;
+  }
+
   /** Reset per-turn output after tool result is settled */
-  resetTurn(): void { this._rawOutput = ''; }
+  resetTurn(): void {
+    this._rawOutput = '';
+    this._currentTool = null;
+    this._toolObserved = false;
+    this._parsed = null;
+  }
 
   /** Increment turn counter */
   incrementTurns(): void { this._turns++; }

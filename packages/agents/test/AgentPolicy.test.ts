@@ -194,13 +194,13 @@ describe('DefaultAgentPolicy', () => {
       expect(policy.shouldExplore(makeAgent(), pressure(8000))).toBe(true);
     });
 
-    it('respects custom exploreThreshold', () => {
-      const lowThreshold = new DefaultAgentPolicy({ exploreThreshold: 20 });
-      // 30% > 20 → true
+    it('respects custom shouldExplore.context threshold', () => {
+      const lowThreshold = new DefaultAgentPolicy({ shouldExplore: { context: 0.2 } });
+      // 30% > 20% → true
       expect(lowThreshold.shouldExplore(makeAgent(), pressure(5000))).toBe(true);
 
-      const highThreshold = new DefaultAgentPolicy({ exploreThreshold: 70 });
-      // 48% < 70 → false
+      const highThreshold = new DefaultAgentPolicy({ shouldExplore: { context: 0.7 } });
+      // 48% < 70% → false
       expect(highThreshold.shouldExplore(makeAgent(), pressure(8000))).toBe(false);
     });
 
@@ -412,7 +412,7 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect((action as any).message).toBe('Time limit approaching — report your findings now.');
+      expect((action as any).message).toBe('Time limit reached — report your findings now.');
     });
   });
 

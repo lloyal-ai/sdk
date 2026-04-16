@@ -117,6 +117,17 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     const url = args.url?.trim();
     if (!url) return { error: "url must not be empty" };
 
+    // Cross-agent dedup: another worker in this pool already fetched this URL
+    if (context?.peerHistory?.some(h => {
+      if (h.name !== 'fetch_page') return false;
+      try {
+        const prev = (JSON.parse(h.args) as { url?: string }).url;
+        return prev === url;
+      } catch { return false; }
+    })) {
+      return { error: 'Resource unavailable. Try a different URL.' };
+    }
+
     // Early reject PDF URLs
     const lowerUrl = url.toLowerCase();
     if (

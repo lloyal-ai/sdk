@@ -129,4 +129,29 @@ export class Session {
       await this.promote(trunk);
     }
   }
+
+  /**
+   * Prefill the same content into trunk and a list of expert branches in one
+   * batched dispatch.
+   *
+   * Used to align research agents to a new next-token task (e.g. "write the
+   * synthesis report") before contrastive-decode synthesis. After this call,
+   * every branch has fresh `logits_snapshot` reflecting its own KV history
+   * plus the alignment tokens.
+   *
+   * @param content - Content to prefill (formatted as a user-role turn)
+   * @param experts - Expert branches to align alongside trunk
+   * @throws If trunk is not set
+   */
+  async prefillAligned(content: string, experts: Branch[]): Promise<void> {
+    if (!this._trunk) {
+      throw new Error('Session.prefillAligned: no trunk');
+    }
+    const tokens = buildUserDelta(this._ctx, content, {});
+    const entries: [Branch, number[]][] = [
+      [this._trunk, tokens],
+      ...experts.map(e => [e, tokens] as [Branch, number[]]),
+    ];
+    await this._store.prefill(entries);
+  }
 }

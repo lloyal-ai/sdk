@@ -633,6 +633,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           args: toolArgs, callId,
           explore, percentAvailable: dispatchPressure.percentAvailable,
         });
+        const peerHistory = agents
+          .filter(a => a.id !== agent.id)
+          .flatMap(a => a.toolHistory);
         const toolContext: ToolContext = {
           agentId: agent.id, branch: agent.branch,
           onProgress: (p: { filled: number; total: number }) => {
@@ -640,6 +643,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           },
           scorer: opts.scorer, explore,
           pressurePercentAvailable: dispatchPressure.percentAvailable,
+          peerHistory,
         };
 
         try {
@@ -725,11 +729,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
         const { token, text, isStop } = a.branch.produceSync();
         if (isStop) {
-          const parsed = ctx.parseChatOutput(a.rawOutput, a.fmt.format, {
-            reasoningFormat: a.fmt.reasoningFormat,
-            generationPrompt: a.fmt.generationPrompt,
-            parser: a.fmt.parser,
-          });
+          const parsed = a.finalize(ctx);
 
           tw.write({
             traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
@@ -771,12 +771,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const entropy = a.branch.modelEntropy();
           const surprisal = a.branch.modelSurprisal(token);
           a.accumulateTokenWithTrace(text, entropy, surprisal);
+          a.observe(ctx);
           yield* poolChannel.send({
             type: 'agent:produce', agentId: a.id, text, tokenCount: a.tokenCount,
             entropy, surprisal,
           });
         } else {
           a.accumulateToken(text);
+          a.observe(ctx);
           yield* poolChannel.send({ type: 'agent:produce', agentId: a.id, text, tokenCount: a.tokenCount });
         }
       }

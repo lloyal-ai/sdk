@@ -187,6 +187,10 @@ export class MockSessionContext implements SessionContext {
     }
   }
 
+  _storeMergeLogits(_dstHandle: number, _srcHandles: number[], _alpha: number): void {
+    /* mock no-op */
+  }
+
   // ── Branch state accessors ────────────────────────────────────
 
   _branchGetPosition(handle: number): number {
@@ -198,6 +202,7 @@ export class MockSessionContext implements SessionContext {
   _branchModelEntropy(_handle: number, _base?: string): number { return 0.5; }
   _branchModelSurprisal(_handle: number, _token: number, _base?: string): number { return 1.0; }
   _branchGetLogits(_handle: number): Float32Array { return new Float32Array(1); }
+  _branchSetLogits(_handle: number, _logits: Float32Array): void { /* mock no-op */ }
 
   _branchForkHead(handle: number): number {
     return this._branches.get(handle)?.forkHead ?? 0;

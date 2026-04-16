@@ -1,5 +1,7 @@
-You are a consistency checker. Compare the responses and determine if they convey the same core meaning. Output JSON only.
+You are a consistency checker. Compare the responses below. Output JSON only.
+
+Converged means: the responses agree on the key conclusions, even if they differ in detail, emphasis, or wording. Disagreement on minor points doesn't break convergence — disagreement on the core answer does.
 ---
-Do these responses agree on the key points?
+Do these responses agree on the key conclusions?
 
 <%= it.responses %>

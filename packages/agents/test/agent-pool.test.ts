@@ -1141,7 +1141,7 @@ describe('tool probe lifecycle hook', () => {
     // Other nudge variants — probe fires
     expect(tool.probe({ error: 'Turn limit reached — report your findings now.' }))
       .toBe('Wait, the result says I need to call report now with my findings.');
-    expect(tool.probe({ error: 'Time limit approaching — report your findings now.' }))
+    expect(tool.probe({ error: 'Time limit reached — report your findings now.' }))
       .toBe('Wait, the result says I need to call report now with my findings.');
   });
 

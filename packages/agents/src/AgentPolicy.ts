@@ -220,9 +220,23 @@ export interface DefaultAgentPolicyOpts {
   guards?: ToolGuard[];
   /** Append additional guards to the defaults. */
   extraGuards?: ToolGuard[];
-  /** KV availability threshold (0–100). Above → explore. Below → exploit.
-   *  Uses ContextPressure.percentAvailable. @default 40 */
-  exploreThreshold?: number;
+  /**
+   * Explore/exploit thresholds — both axes checked independently.
+   * Either falling below its threshold flips the policy into exploit mode
+   * (rerank tool results against the original query via the entailment
+   * scorer). Explore mode preserves the agent's local-query ordering.
+   */
+  shouldExplore?: {
+    /** Minimum fraction of KV capacity (0–1) that must remain free for
+     *  explore mode. Checks `pressure.percentAvailable / 100`. Below this
+     *  fraction, exploit mode kicks in. @default 0.4 */
+    context?: number;
+    /** Maximum fraction of the time soft limit (0–1) that can be consumed
+     *  before exploit mode kicks in. When `elapsed / timeSoftLimit >= time`,
+     *  `shouldExplore` returns false regardless of KV headroom. Only
+     *  applies when `budget.time.softLimit` is set. @default 0.5 */
+    time?: number;
+  };
   /** Scratchpad recovery for agents killed without reporting.
    *  Policy decides per-agent via {@link AgentPolicy.onRecovery}. */
   recovery?: {
@@ -241,26 +255,34 @@ export interface DefaultAgentPolicyOpts {
     /** Wall-time budget (ms since policy creation). */
     time?: { softLimit?: number; hardLimit?: number };
   };
+  /** Terminal tool name. When set, agents mid-generation of this tool are
+   *  protected from shouldExit — the hard limit is deferred until the tool
+   *  call completes naturally or KV pressure forces a kill. */
+  terminalTool?: string;
 }
 
 export class DefaultAgentPolicy implements AgentPolicy {
   private _minToolCalls: number;
   private _guards: ToolGuard[];
-  private _exploreThreshold: number;
+  private _exploreContext: number;
+  private _exploreTime: number;
   private _forceExploit = false;
   private _recovery: DefaultAgentPolicyOpts['recovery'] | null;
   private _budget: DefaultAgentPolicyOpts['budget'] | null;
+  private _terminalTool: string | null;
   private _startTime: number;
 
   constructor(opts?: DefaultAgentPolicyOpts) {
     this._minToolCalls = opts?.minToolCallsBeforeReport ?? 2;
-    this._exploreThreshold = opts?.exploreThreshold ?? 40;
+    this._exploreContext = opts?.shouldExplore?.context ?? 0.4;
+    this._exploreTime = opts?.shouldExplore?.time ?? 0.5;
     this._guards = opts?.guards ?? [
       ...defaultToolGuards,
       ...(opts?.extraGuards ?? []),
     ];
     this._recovery = opts?.recovery ?? null;
     this._budget = opts?.budget ?? null;
+    this._terminalTool = opts?.terminalTool ?? null;
     this._startTime = performance.now();
   }
 
@@ -341,7 +363,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
       if (!this._nudgedThisTick) {
         this._nudgedThisTick = true;
         const msg = timeNudge
-          ? 'Time limit approaching — report your findings now.'
+          ? 'Time limit reached — report your findings now.'
           : agent.turns >= config.maxTurns
             ? 'Turn limit reached — report your findings now.'
             : 'KV memory pressure — report your findings now.';
@@ -384,9 +406,29 @@ export class DefaultAgentPolicy implements AgentPolicy {
    */
   setExploitMode(force: boolean): void { this._forceExploit = force; }
 
+  shouldExit(agent: Agent, pressure: ContextPressure): boolean {
+    if (this._terminalTool && agent.currentTool === this._terminalTool) return false;
+
+    if (!pressure.critical) {
+      const timeHard = this._budget?.time?.hardLimit;
+      if (timeHard != null && this._elapsed() >= timeHard) return true;
+      return false;
+    }
+    if (this._killedThisTick) return false;
+    this._killedThisTick = true;
+    return true;
+  }
+
   shouldExplore(_agent: Agent, pressure: ContextPressure): boolean {
     if (this._forceExploit) return false;
-    return pressure.percentAvailable > this._exploreThreshold;
+    const contextOk =
+      pressure.percentAvailable / 100 > this._exploreContext;
+    const timeSoftLimit = this._budget?.time?.softLimit;
+    const timeOk =
+      timeSoftLimit == null
+        ? true
+        : this._elapsed() / timeSoftLimit < this._exploreTime;
+    return contextOk && timeOk;
   }
 
   /**
@@ -401,17 +443,6 @@ export class DefaultAgentPolicy implements AgentPolicy {
   resetTick(): void {
     this._killedThisTick = false;
     this._nudgedThisTick = false;
-  }
-
-  shouldExit(_agent: Agent, pressure: ContextPressure): boolean {
-    if (!pressure.critical) {
-      const timeHard = this._budget?.time?.hardLimit;
-      if (timeHard != null && this._elapsed() >= timeHard) return true;
-      return false;
-    }
-    if (this._killedThisTick) return false;
-    this._killedThisTick = true;
-    return true;
   }
 
   onRecovery(agent: Agent): RecoveryAction {

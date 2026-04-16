@@ -120,7 +120,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
             },
             required: ['description', 'intent'],
           },
-          maxItems: 10,
+          maxItems: 6,
         },
       },
       required: ['tasks'],

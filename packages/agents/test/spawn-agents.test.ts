@@ -372,7 +372,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
   it('exploit mode does not affect agent lifecycle — agent is active, not killed', () => {
     // Agent in exploit mode (low pressure → shouldExplore false)
     // but NOT nudged or killed (shouldExit false, onProduced returns tool_call)
-    const policy = new DefaultAgentPolicy({ exploreThreshold: 50 });
+    const policy = new DefaultAgentPolicy({ shouldExplore: { context: 0.5 } });
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
@@ -382,7 +382,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     a.incrementToolCalls();
     a.incrementToolCalls();
 
-    // Pressure at 45% — below exploreThreshold (50) → exploit mode
+    // Pressure at 45% — below context threshold (0.5) → exploit mode
     const p = {
       headroom: 5000, critical: false, remaining: 7372, nCtx: 16384,
       cellsUsed: 9012, percentAvailable: 45, canFit: () => true, softLimit: 1024, hardLimit: 128,
@@ -435,7 +435,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
   });
 
   it('explore and lifecycle states do not bleed into each other', () => {
-    const policy = new DefaultAgentPolicy({ exploreThreshold: 40 });
+    const policy = new DefaultAgentPolicy({ shouldExplore: { context: 0.4 } });
     const a = new Agent({
       id: 1, parentId: 0, branch: createMockBranch() as any,
       fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },

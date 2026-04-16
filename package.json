@@ -16,7 +16,7 @@
     "examples:supervise": "npx tsx examples/supervisor/main.ts"
   },
   "devDependencies": {
-    "@lloyal-labs/lloyal.node": "^2.0.5",
+    "@lloyal-labs/lloyal.node": "^2.1.0",
     "@types/node": "^25.3.0",
     "tsx": "^4.21.0",
     "typedoc": "^0.28.0",

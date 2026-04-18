@@ -5,7 +5,7 @@ import type { Operation, Channel } from 'effection';
 import { Branch, Session, buildUserDelta } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  Ctx, createAgentPool, diverge, DefaultAgentPolicy,
+  Ctx, agentPool, diverge, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult, DivergeResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
@@ -43,7 +43,7 @@ function* research(
   yield* opts.events.send({ type: 'research:start' });
   const t = performance.now();
 
-  const pool = yield* createAgentPool({
+  const pool = yield* agentPool({
     tasks: [{ content: query }],
     tools: [...opts.tools, reportTool],
     systemPrompt: RESEARCH.system,

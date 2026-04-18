@@ -12,7 +12,7 @@ import type { AgentPolicy } from './AgentPolicy';
 import type { JsonSchema, SamplingParams, AgentEvent } from './types';
 
 /**
- * Options for {@link useAgent} and {@link createAgent}.
+ * Options for {@link useAgent} and {@link agent}.
  *
  * @category Agents
  */
@@ -154,17 +154,17 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
  *
  * @example Plan step
  * ```typescript
- * const agent = yield* createAgent({
+ * const a = yield* agent({
  *   systemPrompt: PLAN.system,
  *   task: query,
  *   schema: planSchema,
  * });
- * const plan = JSON.parse(agent.rawOutput);
+ * const plan = JSON.parse(a.rawOutput);
  * ```
  *
  * @category Agents
  */
-export function* createAgent(opts: UseAgentOpts): Operation<Agent> {
+export function* agent(opts: UseAgentOpts): Operation<Agent> {
   return yield* scoped(function*() {
     return yield* useAgent(opts);
   });

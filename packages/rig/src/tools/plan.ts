@@ -1,5 +1,5 @@
 import type { Operation } from 'effection';
-import { Tool, createAgent, renderTemplate } from '@lloyal-labs/lloyal-agents';
+import { Tool, agent, renderTemplate } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 import { Session } from '@lloyal-labs/sdk';
 
@@ -132,7 +132,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
       context: args.context || null,
     });
 
-    const agent = yield* createAgent({
+    const planAgent = yield* agent({
       systemPrompt: this._prompt.system,
       task: userContent,
       schema,
@@ -141,10 +141,10 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     });
 
     const timeMs = performance.now() - t;
-    const tokenCount = agent.tokenCount;
+    const tokenCount = planAgent.tokenCount;
 
     try {
-      const parsed = JSON.parse(agent.rawOutput);
+      const parsed = JSON.parse(planAgent.rawOutput);
       const raw = (parsed.tasks || []) as {
         description?: string;
         intent?: string;

@@ -10,7 +10,7 @@ import { createToolkit } from './toolkit';
 import { withSharedRoot } from './shared-root';
 import { useAgentPool } from './agent-pool';
 
-/** Task input for createAgentPool */
+/** Task input for agentPool */
 export interface PoolTaskSpec {
   /** User message content — the agent's specific sub-question or task */
   content: string;
@@ -23,7 +23,7 @@ export interface PoolTaskSpec {
 // ── CreateAgentPool opts ────────────────────────────────────
 
 /**
- * Options for {@link createAgentPool}.
+ * Options for {@link agentPool}.
  *
  * @category Agents
  */
@@ -63,10 +63,10 @@ export interface CreateAgentPoolOpts {
   checkAncestorEcho?: boolean;
 }
 
-// ── createAgentPool ─────────────────────────────────────────
+// ── agentPool ───────────────────────────────────────────────
 
 /**
- * Create a parallel agent pool with tools.
+ * Run a parallel agent pool with tools.
  *
  * Composes `withSharedRoot` + `createToolkit` + `useAgentPool` internally.
  * Drains the Subscription inside `withSharedRoot`'s body and forwards
@@ -75,7 +75,7 @@ export interface CreateAgentPoolOpts {
  *
  * @example Research harness
  * ```typescript
- * const pool = yield* createAgentPool({
+ * const pool = yield* agentPool({
  *   tools: [delegateTool, ...source.tools, reportTool],
  *   systemPrompt: RESEARCH_PROMPT,
  *   tasks: questions.map(q => ({ content: q })),
@@ -85,7 +85,7 @@ export interface CreateAgentPoolOpts {
  *
  * @category Agents
  */
-export function* createAgentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult> {
+export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult> {
   const broadcast = yield* Events.expect();
 
   const toolkit = createToolkit(opts.tools ?? []);

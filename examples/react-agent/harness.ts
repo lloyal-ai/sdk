@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import type { Operation, Channel } from 'effection';
 import { Session } from '@lloyal-labs/sdk';
 import {
-  Ctx, createAgentPool, DefaultAgentPolicy,
+  Ctx, agentPool, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
@@ -36,7 +36,7 @@ export function* handleQuery(query: string, opts: HarnessOpts): Operation<void> 
   const t = performance.now();
   yield* opts.events.send({ type: 'research:start' });
 
-  const pool = yield* createAgentPool({
+  const pool = yield* agentPool({
     tasks: [{ content: query }],
     tools: [...opts.tools, reportTool],
     systemPrompt: RESEARCH.system,

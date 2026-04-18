@@ -4,7 +4,7 @@ import {
   Tool,
   Trace,
   CallingAgent,
-  createAgentPool,
+  agentPool,
   traceScope,
 } from '@lloyal-labs/lloyal-agents';
 import type {
@@ -29,7 +29,7 @@ export interface DelegateToolOpts {
   argsSchema?: JsonSchema;
   /** Extract task strings from parsed tool arguments. */
   extractTasks?: (args: Record<string, unknown>) => string[];
-  /** Pool options propagated to the inner createAgentPool call. */
+  /** Pool options propagated to the inner agentPool call. */
   poolOpts: CreateAgentPoolOpts;
   /** Factory for per-invocation policy. Called fresh each time the tool fires so time budgets start from delegation, not from pool setup. */
   createPolicy?: () => AgentPolicy;
@@ -48,7 +48,7 @@ const DEFAULT_ARGS_SCHEMA: JsonSchema = {
 };
 
 /**
- * Tool that calls createAgentPool() recursively.
+ * Tool that calls agentPool() recursively.
  *
  * Agents can delegate sub-tasks to parallel sub-agents at arbitrary depth,
  * bounded by KV pressure. Sub-agents fork from the calling agent's branch
@@ -193,7 +193,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
     const opts = this._poolOpts;
     const scope = traceScope(tw, null, `delegate:${this.name}`, { taskCount: tasks.length, filtered: filtered?.length ?? 0 });
 
-    const pool = yield* createAgentPool({
+    const pool = yield* agentPool({
       ...opts,
       ...(this._createPolicy ? { policy: this._createPolicy() } : {}),
       tasks: tasks.map(t => ({ systemPrompt: opts.systemPrompt, content: t })),

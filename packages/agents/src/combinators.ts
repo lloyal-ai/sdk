@@ -18,7 +18,7 @@ import type { Operation } from 'effection';
  *   sources,
  *   { sections: [], questions },
  *   function*(acc, source, i) {
- *     const pool = yield* createAgentPool({ tasks: acc.questions, ... });
+ *     const pool = yield* agentPool({ tasks: acc.questions, ... });
  *     return { sections: [...acc.sections, ...collected], questions: enriched };
  *   },
  * );

@@ -7,8 +7,8 @@ import {
   Ctx,
   Events,
   Store,
-  createAgent,
-  createAgentPool,
+  agent,
+  agentPool,
   reduce,
   renderTemplate,
   withSharedRoot,
@@ -191,7 +191,7 @@ function* runResearchTask(args: RunTaskArgs): Operation<{ totalTokens: number; t
     taskIndex,
   });
 
-  const pool = yield* createAgentPool({
+  const pool = yield* agentPool({
     tasks: [{ content: taskToContent(task), systemPrompt: taskWorkerPrompt }],
     tools: [...allDataTools, reportTool],
     systemPrompt: baseWorkerPrompt,
@@ -322,7 +322,7 @@ export function* handleQuery(
         const synthT = startTimer();
 
         const synthCtx = { query };
-        const synth = yield* createAgentPool({
+        const synth = yield* agentPool({
           tasks: [{ content: renderTemplate(SYNTHESIZE.user, synthCtx) }],
           tools: [reportTool],
           systemPrompt: renderTemplate(SYNTHESIZE.system, synthCtx),
@@ -361,7 +361,7 @@ export function* handleQuery(
     query,
   });
 
-  const verifyPool = yield* createAgentPool({
+  const verifyPool = yield* agentPool({
     tasks: Array.from({ length: opts.verifyCount }, (_, i) => ({ content: verifyContent, seed: 2000 + i })),
     systemPrompt: VERIFY.system,
   });
@@ -372,7 +372,7 @@ export function* handleQuery(
     .join("\n\n");
 
   const evalTimer = startTimer();
-  const evalAgent = yield* createAgent({
+  const evalAgent = yield* agent({
     systemPrompt: EVAL.system,
     task: renderTemplate(EVAL.user, { responses: responsesText }),
     schema: { type: "object", properties: { converged: { type: "boolean" } }, required: ["converged"] },

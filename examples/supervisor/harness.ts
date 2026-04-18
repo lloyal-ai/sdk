@@ -5,7 +5,7 @@ import type { Operation, Channel } from 'effection';
 import { Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  Ctx, createAgent, createAgentPool, DefaultAgentPolicy,
+  Ctx, agent, agentPool, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
@@ -62,7 +62,7 @@ function* classify(
   };
 
   const userContent = CLASSIFY.user.replace('{{query}}', query);
-  const agent = yield* createAgent({
+  const classifier = yield* agent({
     systemPrompt: CLASSIFY.system,
     task: userContent,
     schema,
@@ -72,7 +72,7 @@ function* classify(
   let routes: string[];
   let rationale: string;
   try {
-    const parsed = JSON.parse(agent.rawOutput) as { specialists: string[]; rationale: string };
+    const parsed = JSON.parse(classifier.rawOutput) as { specialists: string[]; rationale: string };
     routes = parsed.specialists.filter(s => s in SPECIALISTS);
     rationale = parsed.rationale;
     if (!routes.length) routes = ['factual'];
@@ -82,8 +82,8 @@ function* classify(
   }
 
   const timeMs = performance.now() - t;
-  yield* opts.events.send({ type: 'classify:done', routes, rationale, tokenCount: agent.tokenCount, timeMs });
-  return { routes, rationale, tokenCount: agent.tokenCount, timeMs };
+  yield* opts.events.send({ type: 'classify:done', routes, rationale, tokenCount: classifier.tokenCount, timeMs });
+  return { routes, rationale, tokenCount: classifier.tokenCount, timeMs };
 }
 
 // ── Phase 2: Dispatch ────────────────────────────────────────────
@@ -96,7 +96,7 @@ function* dispatch(
   yield* opts.events.send({ type: 'dispatch:start', routes });
   const t = performance.now();
 
-  const pool = yield* createAgentPool({
+  const pool = yield* agentPool({
     tasks: routes.map((route, i) => ({
       content: `${SPECIALISTS[route]}\n\nQuestion: ${query}`,
       seed: Date.now() + i,

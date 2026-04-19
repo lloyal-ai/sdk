@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/rig",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Retrieval-Interleaved Generation for lloyal-agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -40,8 +40,8 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/lloyal-agents": "^1.5.8",
-    "@lloyal-labs/sdk": "^1.5.8",
+    "@lloyal-labs/lloyal-agents": "^1.7.0",
+    "@lloyal-labs/sdk": "^1.7.0",
     "@mozilla/readability": "^0.6.0",
     "effection": "^4.0.2",
     "linkedom": "^0.18.12"

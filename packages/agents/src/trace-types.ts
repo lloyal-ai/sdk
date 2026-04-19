@@ -123,7 +123,8 @@ export type TraceEvent =
   | TraceEventBase & {
       type: 'pool:agentNudge';
       agentId: number;
-      reason: 'pressure_softcut' | 'pressure_settle_reject' | 'time_nudge';
+      reason: 'pressure_softcut' | 'pressure_settle_reject' | 'time_nudge' | 'nudge';
+      message?: string;
     }
 
   // ── Agent per-turn output ────────────────────

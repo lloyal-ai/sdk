@@ -53,14 +53,18 @@ export class JsonlTraceWriter implements TraceWriter {
   private _fd: number;
   private _nextId = 1;
   private _buffer: string[] = [];
+  private _bufferSize: number;
 
-  constructor(fd: number) { this._fd = fd; }
+  constructor(fd: number, opts?: { bufferSize?: number }) {
+    this._fd = fd;
+    this._bufferSize = opts?.bufferSize ?? 1;
+  }
 
   nextId(): TraceId { return this._nextId++; }
 
   write(event: TraceEvent): void {
     this._buffer.push(JSON.stringify(event));
-    if (this._buffer.length >= 64) this.flush();
+    if (this._buffer.length >= this._bufferSize) this.flush();
   }
 
   flush(): void {

@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/rig",
-  "version": "1.5.8",
+  "version": "1.6.0",
   "description": "Retrieval-Interleaved Generation for lloyal-agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -47,7 +47,7 @@
     "linkedom": "^0.18.12"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal.node": "^2.0.2"
+    "@lloyal-labs/lloyal.node": "^2.1.0"
   },
   "files": [
     "dist/"

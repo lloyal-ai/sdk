@@ -1,0 +1,13 @@
+Based on the research notes and source passages below, answer the question in 3-5 sentences. Use your own judgment to identify the key conclusions — do not paraphrase the research notes.
+---
+Research notes:
+
+<%= it.agentFindings %>
+
+---
+
+Source passages:
+
+<%= it.sourcePassages %>
+
+Answer: "<%= it.query %>"

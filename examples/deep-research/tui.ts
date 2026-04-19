@@ -1,7 +1,8 @@
 /**
  * Deep Research Web — TUI composition layer
  *
- * Same event-driven architecture as deep-research/tui.ts.
+ * Event-driven view: one handler per concern, composed inside createView().
+ * All log formatting lives here; the harness only emits plain data events.
  */
 
 import { each } from 'effection';
@@ -9,12 +10,11 @@ import type { Channel, Operation } from 'effection';
 import type { AgentEvent, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { PlanQuestion } from '@lloyal-labs/rig';
 import type { OpTiming, ViewState, ViewHandler } from '../shared/tui/types';
-import {
-  c, log, emit, statusClear,
-} from '../shared/tui/primitives';
+import { c, log, emit, statusClear } from '../shared/tui/primitives';
 import { createViewState, agentHandler, label, resetLabels } from '../shared/tui/agent-view';
 import { statsHandler, completeHandler } from '../shared/tui/stats-view';
 import { createGaugeState, gaugeHandler } from '../shared/tui/gauge';
+import { tree, section } from '../shared/tui/tree';
 
 // Re-export shared primitives for main.ts
 export { c, log, setJsonlMode, setVerboseMode, fmtSize } from '../shared/tui/primitives';
@@ -27,11 +27,11 @@ export type StepEvent =
   | { type: 'plan'; intent: 'decompose' | 'passthrough' | 'clarify' | 'mixed'; questions: PlanQuestion[]; tokenCount: number; timeMs: number }
   | { type: 'research:start'; agentCount: number }
   | { type: 'research:done'; totalTokens: number; totalToolCalls: number; timeMs: number }
-  | { type: 'bridge:start' }
-  | { type: 'bridge:done'; findings: string; timeMs: number }
+  | { type: 'spine:task'; taskIndex: number; taskCount: number; description: string }
+  | { type: 'spine:source'; taskIndex: number; source: string }
+  | { type: 'spine:task:done'; taskIndex: number; stageFindings: number; accumulated: number }
   | { type: 'synthesize:start' }
   | { type: 'synthesize:done'; pool: AgentPoolResult; timeMs: number }
-  | { type: 'findings:eval'; converged: boolean | null; conflicts: string[]; tokenCount: number; timeMs: number }
   | { type: 'eval:done'; converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }
   | { type: 'answer'; text: string }
   | { type: 'stats'; timings: OpTiming[]; kvLine?: string; ctxPct: number; ctxPos: number; ctxTotal: number }
@@ -39,21 +39,25 @@ export type StepEvent =
 
 export type WorkflowEvent = AgentEvent | StepEvent;
 
+// ── Formatting helpers ───────────────────────────────────
+
+const ms = (t: number): string => `${(t / 1000).toFixed(1)}s`;
+const detail = (text: string): string => `${c.dim}${text}${c.reset}`;
+
 // ── Handlers ─────────────────────────────────────────────
 
 function queryHandler(state: ViewState, opts: ViewOpts): ViewHandler {
   return (ev) => {
     if (ev.type !== 'query') return;
     state.traceQuery = ev.query;
-    if (!ev.warm) {
-      emit('start', {
-        model: opts.model, reranker: opts.reranker, query: ev.query,
-        agentCount: opts.agentCount, verifyCount: opts.verifyCount,
-      });
-      log();
-      log(`  ${c.dim}Query${c.reset}`);
-      log(`  ${c.bold}${ev.query}${c.reset}`);
-    }
+    if (ev.warm) return;
+    emit('start', {
+      model: opts.model, reranker: opts.reranker, query: ev.query,
+      agentCount: opts.agentCount, verifyCount: opts.verifyCount,
+    });
+    log();
+    log(`  ${detail('Query')}`);
+    log(`  ${c.bold}${ev.query}${c.reset}`);
   };
 }
 
@@ -61,13 +65,13 @@ function planHandler(): ViewHandler {
   return (ev) => {
     if (ev.type !== 'plan') return;
     emit('plan', { intent: ev.intent, questions: ev.questions, planTokens: ev.tokenCount });
-    log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Plan${c.reset} ${c.dim}${ev.intent} \u00b7 ${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+    log(section('Plan') + ' ' + detail(`${ev.intent} · ${ev.tokenCount} tok · ${ms(ev.timeMs)}`));
     let ri = 0;
     for (const q of ev.questions) {
       if (q.intent === 'clarify') {
-        log(`    ${c.dim}?${c.reset} ${q.text}`);
+        log(`    ${detail('?')} ${q.text}`);
       } else {
-        log(`    ${c.dim}${++ri}.${c.reset} ${q.text}`);
+        log(`    ${detail(`${++ri}.`)} ${q.text}`);
       }
     }
   };
@@ -75,67 +79,58 @@ function planHandler(): ViewHandler {
 
 function researchSummaryHandler(state: ViewState): ViewHandler {
   return (ev) => {
-    switch (ev.type) {
-      case 'research:start': {
-        log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Research${c.reset} ${c.dim}${ev.agentCount} agents${c.reset}`);
-        resetLabels(state);
-        break;
-      }
-      case 'research:done': {
-        statusClear();
-        log(`    ${c.dim}${ev.totalTokens} tok \u00b7 ${ev.totalToolCalls} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
-        break;
-      }
+    if (ev.type === 'research:start') {
+      log(section('Research') + ' ' + detail(`${ev.agentCount} agents`));
+      resetLabels(state);
+    } else if (ev.type === 'research:done') {
+      statusClear();
+      log(`    ${detail(`${ev.totalTokens} tok · ${ev.totalToolCalls} tools · ${ms(ev.timeMs)}`)}`);
     }
   };
 }
 
-function findingsEvalHandler(): ViewHandler {
+function spineHandler(state: ViewState): ViewHandler {
   return (ev) => {
-    if (ev.type !== 'findings:eval') return;
-    if (ev.converged) {
-      log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Findings Eval${c.reset} ${c.dim}converged \u00b7 ${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
-    } else {
-      log(`\n  ${c.yellow}\u25cf${c.reset} ${c.bold}Findings Eval${c.reset} ${c.dim}${ev.conflicts.length} conflicts \u00b7 ${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
-      for (const conflict of ev.conflicts) {
-        log(`    ${c.dim}\u2502${c.reset} ${conflict}`);
-      }
-    }
-  };
-}
-
-function bridgeHandler(state: ViewState): ViewHandler {
-  return (ev) => {
-    switch (ev.type) {
-      case 'bridge:start':
-        log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Bridge${c.reset}`);
-        resetLabels(state);
-        break;
-      case 'bridge:done':
-        statusClear();
-        log(`    ${c.dim}${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
-        break;
+    if (ev.type === 'spine:task') {
+      log(`\n    ${detail('┌')} ${c.bold}Task ${ev.taskIndex + 1}/${ev.taskCount}${c.reset} ${detail(ev.description)}`);
+      resetLabels(state);
+    } else if (ev.type === 'spine:source') {
+      log(`    ${detail(`│ ┌ ${ev.source}`)}`);
+      resetLabels(state);
+    } else if (ev.type === 'spine:task:done') {
+      statusClear();
+      log(`    ${detail(`└ +${ev.stageFindings} tok [accumulated: ${ev.accumulated} tok]`)}`);
     }
   };
 }
 
 function synthesizeHandler(state: ViewState): ViewHandler {
   return (ev) => {
-    switch (ev.type) {
-      case 'synthesize:start':
-        log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Synthesize${c.reset}`);
-        resetLabels(state);
-        break;
-      case 'synthesize:done': {
+    if (ev.type === 'synthesize:start') {
+      log(section('Synthesize'));
+      resetLabels(state);
+      state.synthStreamed = false;
+      state.synthStream.open();
+      return;
+    }
+    if (ev.type === 'agent:produce') {
+      if (state.synthStream.isOpen) state.synthStream.append(ev.text);
+      return;
+    }
+    if (ev.type === 'synthesize:done') {
+      if (state.synthStream.isOpen) {
+        state.synthStream.close();
+        state.synthStreamed = state.synthStream.hadContent;
+        log();  // extra blank line between streamed page and stats tree
+      } else {
         statusClear();
-        ev.pool.agents.forEach((a: AgentPoolResult['agents'][number], i: number) => {
-          const tree = i === ev.pool.agents.length - 1 ? '\u2514' : '\u251c';
-          const pplStr = Number.isFinite(a.ppl) ? ` \u00b7 ppl ${a.ppl.toFixed(2)}` : '';
-          log(`    ${c.dim}${tree}${c.reset} ${c.yellow}${label(state, a.agentId)}${c.reset} ${c.green}done${c.reset} ${c.dim}${a.tokenCount} tok \u00b7 ${a.toolCallCount} tools${pplStr}${c.reset}`);
-        });
-        log(`    ${c.dim}${ev.pool.totalTokens} tok \u00b7 ${ev.pool.totalToolCalls} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
-        break;
       }
+      ev.pool.agents.forEach((a, i) => {
+        const glyph = i === ev.pool.agents.length - 1 ? tree.leaf : tree.branch;
+        const pplStr = Number.isFinite(a.ppl) ? ` · ppl ${a.ppl.toFixed(2)}` : '';
+        log(`    ${glyph} ${c.yellow}${label(state, a.agentId)}${c.reset} ${c.green}done${c.reset} ${detail(`${a.tokenCount} tok · ${a.toolCallCount} tools${pplStr}`)}`);
+      });
+      log(`    ${detail(`${ev.pool.totalTokens} tok · ${ev.pool.totalToolCalls} tools · ${ms(ev.timeMs)}`)}`);
     }
   };
 }
@@ -147,18 +142,20 @@ function evalHandler(): ViewHandler {
     const verdict = ev.converged === true ? `${c.green}yes${c.reset}`
       : ev.converged === false ? `${c.red}no${c.reset}`
       : `${c.yellow}unknown${c.reset}`;
-    log(`\n  ${c.green}\u25cf${c.reset} ${c.bold}Eval${c.reset} ${c.dim}${ev.sampleCount} samples \u00b7 ${ev.tokenCount} tok \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+    log(section('Eval') + ' ' + detail(`${ev.sampleCount} samples · ${ev.tokenCount} tok · ${ms(ev.timeMs)}`));
     log(`    Converged: ${verdict}`);
   };
 }
 
-function answerHandler(): ViewHandler {
+function answerHandler(state: ViewState): ViewHandler {
   return (ev) => {
     if (ev.type !== 'answer') return;
-    log(`\n  ${c.dim}${'\u2500'.repeat(58)}${c.reset}\n`);
+    // Synth phase already streamed the answer in place — skip re-render.
+    if (state.synthStreamed) return;
+    log(`\n  ${detail('─'.repeat(58))}\n`);
     const prose = ev.text.trim()
       .replace(/\*\*(.+?)\*\*/g, `${c.bold}$1${c.reset}`)
-      .split('\n').map((l: string) => `  ${l}`).join('\n');
+      .split('\n').map((l) => `  ${l}`).join('\n');
     log(prose);
   };
 }
@@ -182,11 +179,10 @@ export function createView(opts: ViewOpts) {
     gaugeHandler(gauge),       // update pressure before agentHandler reads it
     agentHandler(state, gauge),
     researchSummaryHandler(state),
-    findingsEvalHandler(),
-    bridgeHandler(state),
+    spineHandler(state),
     synthesizeHandler(state),
     evalHandler(),
-    answerHandler(),
+    answerHandler(state),
     statsHandler(),
     completeHandler(),
   ];
@@ -200,3 +196,4 @@ export function createView(opts: ViewOpts) {
     },
   };
 }
+

@@ -5,7 +5,7 @@ import type { Operation, Channel } from 'effection';
 import { Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  Ctx, generate, useAgentPool, runAgents, withSharedRoot, DefaultAgentPolicy,
+  Ctx, agent, agentPool, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
@@ -20,7 +20,6 @@ function loadTask(name: string): { system: string; user: string } {
 
 const CLASSIFY = loadTask('classify');
 const SPECIALIST = loadTask('specialist');
-const SYNTHESIZE = loadTask('synthesize');
 
 const SPECIALISTS: Record<string, string> = {
   factual: 'Find specific facts, definitions, data points. Quote exact passages. Do not infer.',
@@ -28,43 +27,11 @@ const SPECIALISTS: Record<string, string> = {
   comparative: 'Identify entities being compared. List dimensions. Note similarities and differences.',
 };
 
-const reportOnlyTools = JSON.stringify([reportTool.schema]);
-
-function* reportPass(
-  pool: AgentPoolResult,
-  opts: HarnessOpts,
-): Operation<void> {
-  const hardCut = pool.agents.filter(a => !a.findings && !a.branch.disposed);
-  if (hardCut.length === 0) return;
-
-  for (const a of pool.agents) {
-    if (a.findings && !a.branch.disposed) a.branch.pruneSync();
-  }
-
-  const reporters = yield* runAgents({
-    tasks: hardCut.map(a => ({
-      systemPrompt: 'You are a research reporter. Call the report tool with a concise summary of the key findings from the research above.',
-      content: 'Report your findings.',
-      tools: reportOnlyTools,
-      parent: a.branch,
-    })),
-    tools: new Map([['report', reportTool]]),
-    terminalTool: 'report',
-    trace: opts.trace,
-    policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 200, hardLimit: 64 } } }),
-  });
-
-  hardCut.forEach((a, i) => {
-    if (reporters.agents[i]?.findings) a.findings = reporters.agents[i].findings;
-  });
-}
-
 // ── Options ──────────────────────────────────────────────────────
 
 export interface HarnessOpts {
   session: Session;
-  toolMap: Map<string, Tool>;
-  toolsJson: string;
+  tools: Tool[];
   events: Channel<WorkflowEvent, void>;
   maxTurns: number;
   trace: boolean;
@@ -76,7 +43,6 @@ function* classify(
   query: string,
   opts: HarnessOpts,
 ): Operation<{ routes: string[]; rationale: string; tokenCount: number; timeMs: number }> {
-  const ctx: SessionContext = yield* Ctx.expect();
   const t = performance.now();
 
   yield* opts.events.send({ type: 'classify:start' });
@@ -94,26 +60,19 @@ function* classify(
     },
     required: ['specialists', 'rationale'],
   };
-  const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(schema)));
 
   const userContent = CLASSIFY.user.replace('{{query}}', query);
-  const messages = [
-    { role: 'system', content: CLASSIFY.system },
-    { role: 'user', content: userContent },
-  ];
-  const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages)));
-
-  const result = yield* generate({
-    prompt,
-    grammar,
+  const classifier = yield* agent({
+    systemPrompt: CLASSIFY.system,
+    task: userContent,
+    schema,
     params: { temperature: 0.3 },
-    parse: (o: string) => JSON.parse(o) as { specialists: string[]; rationale: string },
   });
 
   let routes: string[];
   let rationale: string;
   try {
-    const parsed = result.parsed as { specialists: string[]; rationale: string };
+    const parsed = JSON.parse(classifier.rawOutput) as { specialists: string[]; rationale: string };
     routes = parsed.specialists.filter(s => s in SPECIALISTS);
     rationale = parsed.rationale;
     if (!routes.length) routes = ['factual'];
@@ -123,8 +82,8 @@ function* classify(
   }
 
   const timeMs = performance.now() - t;
-  yield* opts.events.send({ type: 'classify:done', routes, rationale, tokenCount: result.tokenCount, timeMs });
-  return { routes, rationale, tokenCount: result.tokenCount, timeMs };
+  yield* opts.events.send({ type: 'classify:done', routes, rationale, tokenCount: classifier.tokenCount, timeMs });
+  return { routes, rationale, tokenCount: classifier.tokenCount, timeMs };
 }
 
 // ── Phase 2: Dispatch ────────────────────────────────────────────
@@ -137,30 +96,18 @@ function* dispatch(
   yield* opts.events.send({ type: 'dispatch:start', routes });
   const t = performance.now();
 
-  const { result: pool } = yield* withSharedRoot(
-    { systemPrompt: SPECIALIST.system, tools: opts.toolsJson },
-    function*(root) {
-      const tasks = routes.map((route, i) => ({
-        systemPrompt: SPECIALIST.system,
-        content: `${SPECIALISTS[route]}\n\nQuestion: ${query}`,
-        tools: opts.toolsJson,
-        parent: root,
-        seed: Date.now() + i,
-      }));
-
-      const pool = yield* useAgentPool({
-        tasks,
-        tools: opts.toolMap,
-        maxTurns: opts.maxTurns,
-        terminalTool: 'report',
-        trace: opts.trace,
-        policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } }),
-      });
-
-      yield* reportPass(pool, opts);
-      return { result: pool };
-    },
-  );
+  const pool = yield* agentPool({
+    tasks: routes.map((route, i) => ({
+      content: `${SPECIALISTS[route]}\n\nQuestion: ${query}`,
+      seed: Date.now() + i,
+    })),
+    tools: [...opts.tools, reportTool],
+    systemPrompt: SPECIALIST.system,
+    terminalTool: 'report',
+    maxTurns: opts.maxTurns,
+    trace: opts.trace,
+    policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } }),
+  });
 
   const timeMs = performance.now() - t;
   yield* opts.events.send({ type: 'dispatch:done', pool, routes, timeMs });
@@ -176,7 +123,7 @@ function* synthesize(
   opts: HarnessOpts,
 ): Operation<{ tokenCount: number; timeMs: number }> {
   const findings = pool.agents
-    .map((a, i) => `[${routes[i]}] ${(a.findings || '').trim()}`)
+    .map((a, i) => `[${routes[i]}] ${(a.result || '').trim()}`)
     .join('\n\n');
 
   yield* call(() => opts.session.prefillUser(

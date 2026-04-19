@@ -15,11 +15,13 @@
 export {
   createTools, reportTool, ReportTool,
   WebSearchTool, TavilyProvider, FetchPageTool,
-  PlanTool,
+  DelegateTool,
+  PlanTool, taskToContent,
 } from './tools';
 export type {
+  DelegateToolOpts,
   PlanToolOpts,
-  PlanResult, PlanQuestion,
+  PlanResult, PlanQuestion, ResearchTask,
   SearchProvider, SearchResult,
   Reranker, ScoredChunk, ScoredResult,
 } from './tools';

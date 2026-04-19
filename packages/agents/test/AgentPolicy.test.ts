@@ -123,7 +123,7 @@ describe('DefaultAgentPolicy', () => {
     it('rejects fetch_page with duplicate URL in lineage', () => {
       const a = makeAgent({
         toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: 'https://example.com' }],
+        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'https://example.com' }) }],
       });
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
@@ -133,58 +133,18 @@ describe('DefaultAgentPolicy', () => {
     it('allows fetch_page with new URL', () => {
       const a = makeAgent({
         toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: 'https://other.com' }],
+        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'https://other.com' }) }],
       });
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('tool_call');
     });
 
-    it('rejects web_research when agent has no local search', () => {
-      const a = makeAgent({
-        toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: 'url' }],
-      });
-      const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-    });
-
-    it('allows web_research when agent has local search AND fetch', () => {
-      const a = makeAgent({
-        toolCallCount: 3,
-        toolHistory: [
-          { name: 'web_search', args: 'query' },
-          { name: 'fetch_page', args: 'url' },
-        ],
-      });
+    it('allows web_research without prior tool calls', () => {
+      const a = makeAgent({ toolCallCount: 0 });
       const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('tool_call');
-    });
-
-    it('rejects web_research even when PARENT has search+fetch (local history only)', () => {
-      const parent = makeAgent({
-        toolCallCount: 3,
-        toolHistory: [
-          { name: 'web_search', args: 'parent query' },
-          { name: 'fetch_page', args: 'parent url' },
-        ],
-      });
-      const child = new Agent({
-        id: 2, parentId: 1,
-        branch: createMockBranch({ handle: 2 }) as any,
-        fmt: FMT,
-        parent,
-      });
-      child.transition('active');
-      child.incrementToolCalls();
-      child.incrementToolCalls();
-
-      const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
-      const action = policy.onProduced(child, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-      expect((action as any).message).toContain('fetch_page');
     });
   });
 
@@ -234,13 +194,13 @@ describe('DefaultAgentPolicy', () => {
       expect(policy.shouldExplore(makeAgent(), pressure(8000))).toBe(true);
     });
 
-    it('respects custom exploreThreshold', () => {
-      const lowThreshold = new DefaultAgentPolicy({ exploreThreshold: 20 });
-      // 30% > 20 → true
+    it('respects custom shouldExplore.context threshold', () => {
+      const lowThreshold = new DefaultAgentPolicy({ shouldExplore: { context: 0.2 } });
+      // 30% > 20% → true
       expect(lowThreshold.shouldExplore(makeAgent(), pressure(5000))).toBe(true);
 
-      const highThreshold = new DefaultAgentPolicy({ exploreThreshold: 70 });
-      // 48% < 70 → false
+      const highThreshold = new DefaultAgentPolicy({ shouldExplore: { context: 0.7 } });
+      // 48% < 70% → false
       expect(highThreshold.shouldExplore(makeAgent(), pressure(8000))).toBe(false);
     });
 
@@ -452,7 +412,7 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect((action as any).message).toBe('Time limit approaching — report your findings now.');
+      expect((action as any).message).toBe('Time limit reached — report your findings now.');
     });
   });
 

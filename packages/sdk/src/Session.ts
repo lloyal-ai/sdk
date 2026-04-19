@@ -1,4 +1,4 @@
-import type { Branch } from './Branch';
+import { Branch } from './Branch';
 import type { BranchStore } from './BranchStore';
 import type { SessionContext } from './types';
 import { buildUserDelta, buildToolResultDelta } from './deltas';
@@ -95,5 +95,63 @@ export class Session {
   async prefillToolResult(resultStr: string, callId: string): Promise<void> {
     const tokens = buildToolResultDelta(this._ctx, resultStr, callId);
     await this._trunk!.prefill(tokens);
+  }
+
+  /**
+   * Commit a query/response turn to the conversation trunk
+   *
+   * Handles warm/cold internally:
+   * - **Warm** (trunk exists): appends turn separator + formatted delta to existing trunk
+   * - **Cold** (no trunk): creates branch at position 0, prefills, promotes to trunk
+   *
+   * @param query - User message
+   * @param response - Assistant response
+   */
+  async commitTurn(query: string, response: string): Promise<void> {
+    const messages = [
+      { role: 'user', content: query },
+      { role: 'assistant', content: response },
+    ];
+    if (this._trunk) {
+      const sep = this._ctx.getTurnSeparator();
+      const { prompt } = this._ctx.formatChatSync(
+        JSON.stringify(messages), { enableThinking: false },
+      );
+      const tokens = this._ctx.tokenizeSync(prompt, false);
+      await this._trunk.prefill([...sep, ...tokens]);
+    } else {
+      const { prompt } = this._ctx.formatChatSync(
+        JSON.stringify(messages), { enableThinking: false },
+      );
+      const tokens = this._ctx.tokenizeSync(prompt, false);
+      const trunk = Branch.create(this._ctx, 0, {});
+      await trunk.prefill(tokens);
+      await this.promote(trunk);
+    }
+  }
+
+  /**
+   * Prefill the same content into trunk and a list of expert branches in one
+   * batched dispatch.
+   *
+   * Used to align research agents to a new next-token task (e.g. "write the
+   * synthesis report") before contrastive-decode synthesis. After this call,
+   * every branch has fresh `logits_snapshot` reflecting its own KV history
+   * plus the alignment tokens.
+   *
+   * @param content - Content to prefill (formatted as a user-role turn)
+   * @param experts - Expert branches to align alongside trunk
+   * @throws If trunk is not set
+   */
+  async prefillAligned(content: string, experts: Branch[]): Promise<void> {
+    if (!this._trunk) {
+      throw new Error('Session.prefillAligned: no trunk');
+    }
+    const tokens = buildUserDelta(this._ctx, content, {});
+    const entries: [Branch, number[]][] = [
+      [this._trunk, tokens],
+      ...experts.map(e => [e, tokens] as [Branch, number[]]),
+    ];
+    await this._store.prefill(entries);
   }
 }

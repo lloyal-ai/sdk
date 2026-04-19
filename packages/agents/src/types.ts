@@ -2,6 +2,7 @@ import type { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
+import type { ToolHistoryEntry } from './Agent';
 
 // ── Tool base class types ──────────────────────────────────────
 
@@ -86,6 +87,12 @@ export interface ToolContext {
    * a SessionContext reference.
    */
   pressurePercentAvailable?: number;
+  /**
+   * Tool histories of sibling agents in the same pool (excluding self).
+   * Used by tools to detect cross-agent duplicate calls and return
+   * a "resource unavailable" error to force diversification.
+   */
+  peerHistory?: ToolHistoryEntry[];
 }
 
 // ── Trace types ───────────────────────────────────────────────
@@ -256,6 +263,8 @@ export interface AgentResult {
   parentAgentId: number;
   /** The agent's branch — still alive when returned from {@link useAgentPool} */
   branch: Branch;
+  /** The Agent class instance — carries full state (tool history, format config, lineage) */
+  agent: import('./Agent').Agent;
   /** Agent's result (from terminal tool or final output), or null */
   result: string | null;
   /** Number of tool calls the agent made */

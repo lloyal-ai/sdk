@@ -119,6 +119,7 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
 
   /** Late-bind runtime deps not available at construction. Called before tools are used. */
   *bind(_ctx: TCtx): Operation<void> {}
+
   /** Post-use chunks for reranking. Called after agents have used the tools. */
   getChunks(): TChunk[] { return []; }
 }

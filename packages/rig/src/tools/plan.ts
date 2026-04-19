@@ -1,9 +1,7 @@
-import { call } from 'effection';
 import type { Operation } from 'effection';
-import { Tool, Ctx, generate } from '@lloyal-labs/lloyal-agents';
+import { Tool, agent, renderTemplate } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 import { Session } from '@lloyal-labs/sdk';
-import type { SessionContext } from '@lloyal-labs/sdk';
 
 /**
  * Configuration for {@link PlanTool}.
@@ -11,19 +9,41 @@ import type { SessionContext } from '@lloyal-labs/sdk';
  * @category Rig
  */
 export interface PlanToolOpts {
-  /** System and user prompt templates. User prompt supports `{{count}}` and `{{query}}` placeholders. */
+  /** System prompt + user template. User template is rendered via Eta with `{ query, count, context? }`. */
   prompt: { system: string; user: string };
   /** Active session whose trunk is used as the parent branch for generation. */
   session: Session;
-  /** Maximum number of sub-questions the planner may produce. */
+  /** Maximum number of tasks the planner may produce. */
   maxQuestions: number;
   /** Sampling temperature for plan generation. @default 0.3 */
   temperature?: number;
 }
 
 /**
+ * A structured research task produced by the planner.
+ *
+ * @category Rig
+ */
+export interface ResearchTask {
+  /** What to find out — a specific, actionable research assignment. */
+  description: string;
+  /** Whether the task is answerable via research or needs user clarification. */
+  intent: 'research' | 'clarify';
+}
+
+/**
+ * Convert a ResearchTask to agent content string.
+ *
+ * @category Rig
+ */
+export function taskToContent(task: ResearchTask): string {
+  return task.description;
+}
+
+/**
  * A single sub-question produced by the planner with intent classification.
  *
+ * @deprecated Use {@link ResearchTask} instead.
  * @category Rig
  */
 export interface PlanQuestion {
@@ -39,7 +59,9 @@ export interface PlanQuestion {
  * @category Rig
  */
 export interface PlanResult {
-  /** Classified sub-questions (may be empty if the query needs no decomposition). */
+  /** Structured research tasks with optional entry points. */
+  tasks: ResearchTask[];
+  /** @deprecated Use tasks. Adapter — maps tasks to the old PlanQuestion shape. */
   questions: PlanQuestion[];
   /** Number of tokens generated during planning. */
   tokenCount: number;
@@ -50,21 +72,16 @@ export interface PlanResult {
 /**
  * Grammar-constrained query decomposition and intent classification.
  *
- * Analyzes a research query and produces an array of {@link PlanQuestion}
- * sub-questions, each classified as `"research"` (answerable via search)
+ * Analyzes a research query and produces an array of {@link ResearchTask}
+ * tasks, each classified as `"research"` (answerable via search)
  * or `"clarify"` (needs user input). Uses a JSON grammar to guarantee
- * structured output. Returns an empty array if the query is focused
- * enough to research directly.
- *
- * The harness interprets the result: all-research triggers parallel
- * dispatch, all-clarify returns to the user, mixed drops clarify
- * questions and dispatches only research ones.
+ * structured output.
  *
  * @category Rig
  */
 export class PlanTool extends Tool<{ query: string; context?: string }> {
   readonly name = 'plan';
-  readonly description = 'Analyze a research query. Return sub-questions classified as "research" (answerable via web search) or "clarify" (needs user input). Return empty array if the query is focused enough to research directly.';
+  readonly description = 'Analyze a research query. Return research tasks classified as "research" (answerable via web search) or "clarify" (needs user input). Return empty array if the query is focused enough to research directly.';
   readonly parameters: JsonSchema = {
     type: 'object',
     properties: {
@@ -88,63 +105,62 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
   }
 
   *execute(args: { query: string; context?: string }): Operation<unknown> {
-    const ctx: SessionContext = yield* Ctx.expect();
     const t = performance.now();
 
-    const schema = {
+    const schema: JsonSchema = {
       type: 'object',
       properties: {
-        questions: {
+        tasks: {
           type: 'array',
           items: {
             type: 'object',
             properties: {
-              text: { type: 'string' },
+              description: { type: 'string' },
               intent: { type: 'string', enum: ['research', 'clarify'] },
             },
-            required: ['text', 'intent'],
+            required: ['description', 'intent'],
           },
           maxItems: this._maxQuestions,
         },
       },
-      required: ['questions'],
+      required: ['tasks'],
     };
-    const grammar: string = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(schema)));
 
-    let userContent = this._prompt.user
-      .replace('{{count}}', String(this._maxQuestions))
-      .replace('{{query}}', args.query);
-    if (args.context) {
-      userContent += `\n\nUser clarification:\n${args.context}`;
-    }
-
-    const messages = [
-      { role: 'system', content: this._prompt.system },
-      { role: 'user', content: userContent },
-    ];
-    const { prompt }: { prompt: string } = yield* call(() => ctx.formatChat(JSON.stringify(messages), { enableThinking: false }));
-
-    const parent = this._session.trunk ?? undefined;
-    const result = yield* generate({
-      prompt,
-      grammar,
-      params: { temperature: this._temperature },
-      parent,
+    const userContent = renderTemplate(this._prompt.user, {
+      query: args.query,
+      count: this._maxQuestions,
+      context: args.context || null,
     });
-    const { output, tokenCount } = result;
+
+    const planAgent = yield* agent({
+      systemPrompt: this._prompt.system,
+      task: userContent,
+      schema,
+      params: { temperature: this._temperature },
+      session: this._session,
+    });
 
     const timeMs = performance.now() - t;
+    const tokenCount = planAgent.tokenCount;
 
     try {
-      const parsed = JSON.parse(output);
-      const raw = (parsed.questions || []) as { text?: string; intent?: string }[];
-      const questions: PlanQuestion[] = raw
+      const parsed = JSON.parse(planAgent.rawOutput);
+      const raw = (parsed.tasks || []) as {
+        description?: string;
+        intent?: string;
+      }[];
+      const tasks: ResearchTask[] = raw
         .slice(0, this._maxQuestions)
-        .filter(q => typeof q.text === 'string' && (q.intent === 'research' || q.intent === 'clarify'))
-        .map(q => ({ text: q.text!, intent: q.intent as 'research' | 'clarify' }));
-      return { questions, tokenCount, timeMs } satisfies PlanResult;
+        .filter(t => typeof t.description === 'string' && (t.intent === 'research' || t.intent === 'clarify'))
+        .map(t => ({
+          description: t.description!,
+          intent: t.intent as 'research' | 'clarify',
+        }));
+      // Adapter: populate deprecated questions from tasks
+      const questions: PlanQuestion[] = tasks.map(t => ({ text: t.description, intent: t.intent }));
+      return { tasks, questions, tokenCount, timeMs } satisfies PlanResult;
     } catch {
-      return { questions: [], tokenCount, timeMs } satisfies PlanResult;
+      return { tasks: [], questions: [], tokenCount, timeMs } satisfies PlanResult;
     }
   }
 }

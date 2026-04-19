@@ -1398,6 +1398,9 @@ export interface SessionContext {
   _branchGetLogits(handle: number): Float32Array;
 
   /** @internal */
+  _branchSetLogits(handle: number, logits: Float32Array): void;
+
+  /** @internal */
   _branchPrune(handle: number): void;
 
   /** @internal */
@@ -1458,6 +1461,10 @@ export interface SessionContext {
 
   /** @internal */
   _storePrefill(handles: number[], tokenArrays: number[][]): Promise<void>;
+
+  /** @internal — additively merge experts' logits_snapshot into dst's:
+   *  dst[t] += alpha * sum(experts[i][t]). Pure CPU op, no GPU dispatch. */
+  _storeMergeLogits(dstHandle: number, srcHandles: number[], alpha: number): void;
 
   /** @internal */
   _storeRetainOnly(handle: number): void;

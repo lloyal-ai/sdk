@@ -149,6 +149,35 @@ export class BranchStore {
     this._ctx._storeRetainOnly(winner.handle);
   }
 
+  /**
+   * Merge experts' logit snapshots into dst's, additively weighted by alpha.
+   *
+   * Mutates `dst.logits_snapshot` in place:
+   *   `dst[t] += alpha * sum(experts[i][t])`
+   *
+   * After this call, `dst.produceSync()` samples from the combined distribution
+   * via dst's existing sampler chain (temperature, top-p, grammar, logit_bias
+   * all still apply on top of the merged values).
+   *
+   * Pure CPU op — no GPU dispatch. Backend-agnostic (transformer and recurrent).
+   * Synchronous: mutation completes before return.
+   *
+   * @param dst - Destination branch (must have captured logits)
+   * @param experts - Expert branches whose logits get added to dst's
+   * @param alpha - Per-expert weight (additive in log space)
+   */
+  mergeLogits(dst: Branch, experts: Branch[], alpha: number): void {
+    if (dst.disposed) throw new Error('BranchStore.mergeLogits: dst is disposed');
+    for (const e of experts) {
+      if (e.disposed) throw new Error('BranchStore.mergeLogits: expert is disposed');
+    }
+    this._ctx._storeMergeLogits(
+      dst.handle,
+      experts.map(e => e.handle),
+      alpha,
+    );
+  }
+
   get available(): number {
     return this._ctx._storeAvailable();
   }

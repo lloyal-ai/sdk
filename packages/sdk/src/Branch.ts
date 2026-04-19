@@ -129,6 +129,23 @@ export class Branch {
   }
 
   /**
+   * Overwrite this branch's cached logits snapshot with caller-provided values.
+   *
+   * The provided Float32Array is copied into the branch's internal snapshot.
+   * The branch's KV state is NOT modified — only the cached next-token
+   * distribution. After this call, sample() / produce() reads the new values.
+   *
+   * Companion to {@link getLogits}: read out, compute, write back.
+   *
+   * @param logits - Float32Array of length n_vocab
+   * @throws If logits length does not match n_vocab
+   */
+  setLogits(logits: Float32Array): void {
+    this._ensureNotDisposed();
+    this._ctx._branchSetLogits(this._handle, logits);
+  }
+
+  /**
    * Bulk-decode tokens into the branch's KV cache and capture logits.
    *
    * `tokens.length` is the total count to process; the branch's `nBatch`

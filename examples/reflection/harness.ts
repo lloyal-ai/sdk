@@ -5,7 +5,7 @@ import type { Operation, Channel } from 'effection';
 import { Branch, Session, buildUserDelta } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  Ctx, useAgentPool, runAgents, diverge, withSharedRoot, DefaultAgentPolicy,
+  Ctx, agentPool, diverge, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult, DivergeResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
@@ -23,43 +23,11 @@ const DRAFT = loadTask('draft');
 const CRITIQUE = loadTask('critique');
 const REVISE = loadTask('revise');
 
-const reportOnlyTools = JSON.stringify([reportTool.schema]);
-
-function* reportPass(
-  pool: AgentPoolResult,
-  opts: HarnessOpts,
-): Operation<void> {
-  const hardCut = pool.agents.filter(a => !a.findings && !a.branch.disposed);
-  if (hardCut.length === 0) return;
-
-  for (const a of pool.agents) {
-    if (a.findings && !a.branch.disposed) a.branch.pruneSync();
-  }
-
-  const reporters = yield* runAgents({
-    tasks: hardCut.map(a => ({
-      systemPrompt: 'You are a research reporter. Call the report tool with a concise summary of the key findings from the research above.',
-      content: 'Report your findings.',
-      tools: reportOnlyTools,
-      parent: a.branch,
-    })),
-    tools: new Map([['report', reportTool]]),
-    terminalTool: 'report',
-    trace: opts.trace,
-    policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 200, hardLimit: 64 } } }),
-  });
-
-  hardCut.forEach((a, i) => {
-    if (reporters.agents[i]?.findings) a.findings = reporters.agents[i].findings;
-  });
-}
-
 // ── Options ──────────────────────────────────────────────────────
 
 export interface HarnessOpts {
   session: Session;
-  toolMap: Map<string, Tool>;
-  toolsJson: string;
+  tools: Tool[];
   events: Channel<WorkflowEvent, void>;
   maxTurns: number;
   critiqueAttempts: number;
@@ -75,30 +43,18 @@ function* research(
   yield* opts.events.send({ type: 'research:start' });
   const t = performance.now();
 
-  const { result: pool } = yield* withSharedRoot(
-    { systemPrompt: RESEARCH.system, tools: opts.toolsJson },
-    function*(root) {
-      const pool = yield* useAgentPool({
-        tasks: [{
-          systemPrompt: RESEARCH.system,
-          content: query,
-          tools: opts.toolsJson,
-          parent: root,
-        }],
-        tools: opts.toolMap,
-        maxTurns: opts.maxTurns,
-        terminalTool: 'report',
-        trace: opts.trace,
-        policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } }),
-      });
-
-      yield* reportPass(pool, opts);
-      return { result: pool };
-    },
-  );
+  const pool = yield* agentPool({
+    tasks: [{ content: query }],
+    tools: [...opts.tools, reportTool],
+    systemPrompt: RESEARCH.system,
+    terminalTool: 'report',
+    maxTurns: opts.maxTurns,
+    trace: opts.trace,
+    policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } }),
+  });
 
   const timeMs = performance.now() - t;
-  const findings = pool.agents[0]?.findings ?? '(no findings)';
+  const findings = pool.agents[0]?.result ?? '(no findings)';
   yield* opts.events.send({ type: 'research:done', pool, timeMs });
   return { findings, pool, timeMs };
 }

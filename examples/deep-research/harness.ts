@@ -290,8 +290,8 @@ export function* handleQuery(
 
   let synthTimeMs = 0;
 
-  const { answer, totalTokens: researchTotalTokens, totalToolCalls: researchTotalToolCalls } =
-    yield* withSharedRoot<{ answer: string; totalTokens: number; totalToolCalls: number }>(
+  const { answer, totalTokens: researchTotalTokens, totalToolCalls: researchTotalToolCalls, synthTokens: synthTotalTokens } =
+    yield* withSharedRoot<{ answer: string; totalTokens: number; totalToolCalls: number; synthTokens: number }>(
       {
         systemPrompt: baseWorkerPrompt,
         tools: queryToolkit.toolsJson,
@@ -341,6 +341,7 @@ export function* handleQuery(
           answer: synthAnswer,
           totalTokens: stats.totalTokens,
           totalToolCalls: stats.totalToolCalls,
+          synthTokens: synth.totalTokens,
         };
       },
     );
@@ -400,7 +401,7 @@ export function* handleQuery(
   const timings: OpTiming[] = [
     { label: "Plan",       tokens: plan.tokenCount,     detail: intent,                                 timeMs: plan.timeMs },
     { label: "Research",   tokens: researchTotalTokens, detail: `${researchTotalToolCalls} tools`,      timeMs: researchTimeMs },
-    { label: "Synthesize", tokens: researchTotalTokens, detail: "spine fork",                            timeMs: synthTimeMs },
+    { label: "Synthesize", tokens: synthTotalTokens,     detail: "spine fork",                            timeMs: synthTimeMs },
     { label: "Eval",       tokens: evalAgent.tokenCount, detail: `converged: ${evalConverged ? "yes" : "no"}`, timeMs: evalTimeMs },
   ];
 
@@ -417,7 +418,7 @@ export function* handleQuery(
       intent,
       planTokens: plan.tokenCount,
       agentTokens: researchTotalTokens,
-      synthTokens: answer.length,
+      synthTokens: synthTotalTokens,
       evalTokens: evalAgent.tokenCount,
       converged: evalConverged,
       totalToolCalls: researchTotalToolCalls,

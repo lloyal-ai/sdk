@@ -432,6 +432,19 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const agents: Agent[] = [];
     const agentById = new Map<number, Agent>();
 
+    // Pending spawns — populated by PoolContext.spawn, drained by the tick
+    // loop's SPAWN phase. Queuing here lets multiple orchestrator-issued
+    // spawns batch into ONE store.prefill call (continuous tree batching),
+    // and guarantees that all native store operations are issued from the
+    // tick loop's single fiber — never concurrently with other store work.
+    interface PendingSpawn {
+      agent: Agent;
+      suffixTokens: number[];
+      formattedPrompt: string;
+      task: AgentTaskSpec;
+    }
+    const pendingSpawns: PendingSpawn[] = [];
+
     // Pool-level branch cleanup — ensures orphan-branch cleanup even when
     // spawns are lazy and the orchestrator's spawn scope exits early.
     yield* ensure(() => {
@@ -479,6 +492,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           parent,
         };
 
+        // Synchronous setup — fork, tokenize suffix, pressure check.
+        // No native store call yet; that's the tick loop's SPAWN phase's job.
         const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx);
 
         const pressure = new ContextPressure(ctx, pressureOpts);
@@ -492,40 +507,30 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           throw new Error(`useAgentPool: cannot fit agent suffix (${suffixTokens.length} tokens) under current pressure`);
         }
 
-        yield* call(() => store.prefill([[agent.branch, suffixTokens]]));
-
-        tw.write({
-          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-          type: 'branch:create', branchHandle: agent.id, parentHandle: agent.parentId,
-          position: 0, role: 'agentFork',
-        });
-        tw.write({
-          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-          type: 'prompt:format', promptText: formattedPrompt,
-          taskContent: task.content, tokenCount: suffixTokens.length,
-          messages: JSON.stringify([
-            { role: 'system', content: task.systemPrompt },
-            { role: 'user', content: task.content },
-          ]),
-          tools: task.tools, role: 'agentSuffix',
-        });
-
-        applyLazyGrammar(agent);
+        // Enqueue for SPAWN phase. The tick loop will batch this with any
+        // other pending spawns into ONE store.prefill, transition to active,
+        // write trace events, and emit agent:spawn. Return the agent
+        // immediately — waitFor() is keyed off a transition, not a status
+        // snapshot, so the pre-activation 'idle' status doesn't race with
+        // the real terminal-idle signal.
+        pendingSpawns.push({ agent, suffixTokens, formattedPrompt, task });
         agents.push(agent);
         agentById.set(agent.id, agent);
-
-        agent.transition('active');
-        yield* poolChannel.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId });
 
         return agent;
       },
 
       *waitFor(agent) {
-        const done = (s: import('./Agent').AgentStatus) => s === 'idle' || s === 'disposed';
+        // Agent completion = terminal 'idle' OR 'disposed'. Pre-activation
+        // 'idle' (the constructor default) would be a false positive, so we
+        // wait for a TRANSITION signal rather than checking status.snapshot.
+        // The SPAWN phase transitions 'idle' → 'active' when it activates the
+        // agent; subsequent transitions lead to a terminal 'idle' or 'disposed'.
         const stream = yield* each(agent.statusSignal);
-        if (done(agent.status)) return agent;
+        // Only short-circuit for already-disposed — no further signal is coming.
+        if (agent.status === 'disposed') return agent;
         for (const s of stream) {
-          if (done(s)) return agent;
+          if (s === 'idle' || s === 'disposed') return agent;
           yield* each.next();
         }
         return agent;
@@ -750,12 +755,50 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // ── Four-phase tick loop ─────────────────────────────────
     let recoveryAttempted = false;
     for (;;) {
-      // Idle until orchestrator spawns an agent (or completes with none).
-      if (agents.length === 0) {
+      // Idle until orchestrator enqueues a spawn (or completes with none).
+      if (agents.length === 0 && pendingSpawns.length === 0) {
         if (orchestratorDone) break;
         yield* sleep(1);
         continue;
       }
+
+      // -- Phase 0: SPAWN -- drain pending spawns and batch-prefill suffixes in ONE native call.
+      // All store-level native calls in this pool are issued from this fiber (the tick loop),
+      // never from the orchestrator's fiber. This preserves the continuous-tree-batching
+      // invariant: every phase packs all ready work into a single store.commit/prefill.
+      if (pendingSpawns.length > 0) {
+        const drained = pendingSpawns.splice(0, pendingSpawns.length);
+        const prefillPairs: [Branch, number[]][] = drained.map(
+          s => [s.agent.branch, s.suffixTokens],
+        );
+        yield* call(() => store.prefill(prefillPairs));
+
+        for (const s of drained) {
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'branch:create', branchHandle: s.agent.id, parentHandle: s.agent.parentId,
+            position: 0, role: 'agentFork',
+          });
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'prompt:format', promptText: s.formattedPrompt,
+            taskContent: s.task.content, tokenCount: s.suffixTokens.length,
+            messages: JSON.stringify([
+              { role: 'system', content: s.task.systemPrompt },
+              { role: 'user', content: s.task.content },
+            ]),
+            tools: s.task.tools, role: 'agentSuffix',
+          });
+          applyLazyGrammar(s.agent);
+          // transition fires agent.statusSignal — ctx.spawn's subscriber is waiting on this.
+          s.agent.transition('active');
+          yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId });
+        }
+      }
+
+      // If all we had was pending spawns, and none of them activated (shouldn't happen
+      // normally — SPAWN always transitions to active), nothing to produce. Loop back.
+      if (agents.length === 0) continue;
 
       // -- Phase 1: PRODUCE -- sample from active agents, collect tool calls
       policy.resetTick?.();
@@ -774,15 +817,19 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
         const policyExit = policy.shouldExit?.(a, pressure);
         if (policyExit ?? pressure.critical) {
-          a.transition('idle');
           const exitReason = pressure.critical ? 'pressure_critical' as const
             : policyExit ? 'policy_exit' as const
             : 'pressure_critical' as const;
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: exitReason });
           yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
-          // Trailing stop: extract findings inline, free KV for remaining agents
+          // Run recovery BEFORE transitioning to idle — otherwise the statusSignal
+          // fires 'idle' mid-recovery, PoolContext.waitFor returns early, the
+          // orchestrator resumes and starts spawning/prefilling the next task
+          // while this agent is still being decoded by recoverInline. Concurrent
+          // native calls on the same llama_context → SEGV.
           yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel);
+          a.transition('idle');
           continue;
         }
 
@@ -861,11 +908,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       if (deferred.length > 0 && !agents.some(a => a.status === 'active')) {
         const victim = agents.find(a => a.status === 'awaiting_tool' && !a.branch.disposed);
         if (victim) {
-          victim.transition('idle');
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: victim.id, reason: 'pressure_settle_reject' });
           yield* poolChannel.send({ type: 'agent:done', agentId: victim.id });
+          // Recover BEFORE transitioning — same reason as the PRODUCE drop path:
+          // the statusSignal must only fire 'idle' after the victim's branch is
+          // no longer being decoded, so PoolContext.waitFor in the orchestrator
+          // doesn't race ahead and cause concurrent native-layer calls.
           yield* recoverInline(victim, policy, ctx, store, tw, poolScope.traceId, poolChannel);
+          victim.transition('idle');
         }
       }
 

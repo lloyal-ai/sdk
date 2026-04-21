@@ -5,6 +5,7 @@ import {
   Trace,
   CallingAgent,
   agentPool,
+  parallel,
   traceScope,
 } from '@lloyal-labs/lloyal-agents';
 import type {
@@ -29,8 +30,9 @@ export interface DelegateToolOpts {
   argsSchema?: JsonSchema;
   /** Extract task strings from parsed tool arguments. */
   extractTasks?: (args: Record<string, unknown>) => string[];
-  /** Pool options propagated to the inner agentPool call. */
-  poolOpts: CreateAgentPoolOpts;
+  /** Pool options propagated to the inner agentPool call. Orchestrator is set
+   *  by DelegateTool (one agent per extracted task, parallel). */
+  poolOpts: Omit<CreateAgentPoolOpts, 'orchestrate'>;
   /** Factory for per-invocation policy. Called fresh each time the tool fires so time budgets start from delegation, not from pool setup. */
   createPolicy?: () => AgentPolicy;
 }
@@ -64,7 +66,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
   readonly description: string;
   readonly parameters: JsonSchema;
 
-  private _poolOpts: CreateAgentPoolOpts;
+  private _poolOpts: Omit<CreateAgentPoolOpts, 'orchestrate'>;
   private _extractTasks: (args: Record<string, unknown>) => string[];
   private _createPolicy?: () => AgentPolicy;
 
@@ -196,7 +198,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
     const pool = yield* agentPool({
       ...opts,
       ...(this._createPolicy ? { policy: this._createPolicy() } : {}),
-      tasks: tasks.map(t => ({ systemPrompt: opts.systemPrompt, content: t })),
+      orchestrate: parallel(tasks.map(t => ({ systemPrompt: opts.systemPrompt, content: t }))),
       parent: context?.branch,
       pruneOnReport: opts.pruneOnReport ?? true,
       scorer: context?.scorer,

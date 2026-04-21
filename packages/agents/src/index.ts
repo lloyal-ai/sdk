@@ -23,6 +23,10 @@ export { traceScope } from './trace-scope';
 export { composePrompt, renderPrompt, renderTemplate } from './prompt';
 export type { PromptState, PromptSection, PromptStep } from './prompt';
 export { reduce } from './combinators';
+export { parallel, chain, fanout, dag } from './orchestrators';
+export type { SpawnSpec, ChainStep, DAGNode, Orchestrator, PoolContext } from './orchestrators';
+export { extractRootCheckpoint, extractSpineCheckpoint, reconstructBranch } from './replay';
+export type { BranchCheckpoint } from './replay';
 
 export type { Toolkit } from './toolkit';
 export type { TraceWriter } from './trace-writer';

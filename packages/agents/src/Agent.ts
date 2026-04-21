@@ -1,5 +1,6 @@
 import type { Branch, SessionContext, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import type { GrammarTrigger } from '@lloyal-labs/sdk';
+import { createSignal, type Signal } from 'effection';
 import type { TraceToken } from './types';
 
 // ── Status ──────────────────────────────────────────────────
@@ -109,6 +110,8 @@ export class Agent {
   // ── Mutable state ───────────────────────────────────────
 
   private _status: AgentStatus = 'idle';
+  private _statusSignal: Signal<AgentStatus, void> = createSignal<AgentStatus, void>();
+  private _startedAt: number | null = null;
   private _rawOutput = '';
   private _tokenCount = 0;
   private _toolCallCount = 0;
@@ -148,6 +151,13 @@ export class Agent {
   get status(): AgentStatus { return this._status; }
 
   /**
+   * Signal that fires on every status transition. Used by `PoolContext.waitFor`
+   * to suspend until the agent reaches a terminal status. Multi-subscriber —
+   * every active listener receives every transition.
+   */
+  get statusSignal(): Signal<AgentStatus, void> { return this._statusSignal; }
+
+  /**
    * Transition to a new status. Enforces valid transitions:
    * - idle → active (first produce)
    * - active → awaiting_tool (tool call parsed)
@@ -155,6 +165,8 @@ export class Agent {
    * - awaiting_tool → active (tool result settled)
    * - awaiting_tool → idle (settle reject + kill)
    * - idle → disposed (branch pruned)
+   *
+   * Emits the new status via `statusSignal` for orchestrator-side observers.
    */
   transition(to: AgentStatus): void {
     const from = this._status;
@@ -166,7 +178,18 @@ export class Agent {
       throw new Error(`Invalid agent status transition: ${from} → ${to}`);
     }
     this._status = to;
+    if (to === 'active' && this._startedAt === null) {
+      this._startedAt = performance.now();
+    }
+    this._statusSignal.send(to);
   }
+
+  /**
+   * Wall-clock timestamp (performance.now) when the agent first became active.
+   * Null until the first idle→active transition. Used by policies to measure
+   * per-agent elapsed time independent of when the enclosing pool was created.
+   */
+  get startedAt(): number | null { return this._startedAt; }
 
   // ── Token accounting ────────────────────────────────────
 
@@ -332,5 +355,6 @@ export class Agent {
   /** Mark agent as disposed — called by pool when branch is pruned */
   dispose(): void {
     this._status = 'disposed';
+    this._statusSignal.send('disposed');
   }
 }

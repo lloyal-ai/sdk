@@ -1,10 +1,10 @@
-import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each} from 'effection';
+import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each, sleep } from 'effection';
 import type { Operation, Subscription } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
 import { Ctx, Store, Trace, TraceParent, CallingAgent } from './context';
-import { buildToolResultDelta } from '@lloyal-labs/sdk';
+import { buildToolResultDelta, buildTurnDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
 import type { TraceWriter } from './trace-writer';
 import type { AgentPolicy, IdleReason } from './AgentPolicy';
@@ -307,7 +307,6 @@ function* setupAgent(
     throw new Error('Model does not support tool calling. Please use a model with native tool support (e.g. Qwen3, Llama 3.x, Mistral).');
   }
   const branch = parent.forkSync();
-  yield* ensure(() => { if (!branch.disposed) branch.pruneSync(); });
   const sep = ctx.getTurnSeparator();
   const suffixTokens = [...sep, ...ctx.tokenizeSync(fmt.prompt, false)];
   if (task.seed != null) branch.reseedSampler(task.seed);
@@ -399,7 +398,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
     });
     const tw = yield* Trace.expect();
-    const { tasks, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false } = opts;
+    const { root, orchestrate, systemPrompt: poolSystemPrompt, toolsJson, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false } = opts;
 
     // Tool index map for trace — position in toolkit array
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
@@ -408,7 +407,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const poolT0 = performance.now();
     let poolParentTraceId: number | null = null;
     try { const p = yield* TraceParent.get(); if (p != null) poolParentTraceId = p; } catch { /* top level */ }
-    const poolScope = traceScope(tw, poolParentTraceId, 'pool', { agentCount: tasks.length, maxTurns, terminalTool });
+    const poolScope = traceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalTool });
 
     // Whether the pool's tool registry contains tools besides the terminal tool.
     // When false, agents are allowed to call the terminal tool as their first
@@ -426,70 +425,22 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       ?? { softLimit: ContextPressure.DEFAULT_SOFT_LIMIT, hardLimit: ContextPressure.DEFAULT_HARD_LIMIT };
     const policyConfig: PolicyConfig = { maxTurns, terminalTool, hasNonTerminalTools };
 
-    // ── Setup: fork branches, collect suffix tokens ──────────
-    // setupAgent is now a generator — each branch registers its own ensure()
-    // for cleanup. No manual try/finally needed here.
+    // ── Orchestrator-driven setup ────────────────────────────
+    // Agents are spawned lazily via `ctx.spawn` from the orchestrator.
+    // The tick loop iterates over whatever agents are currently active.
+    // decode_each batches across all active agents regardless of spawn order.
     const agents: Agent[] = [];
-    const prefillSetup: [Branch, number[]][] = [];
+    const agentById = new Map<number, Agent>();
 
-    for (const task of tasks) {
-      const parent = task.parent;
-      if (!parent) throw new Error('useAgentPool: each task must have a parent branch');
-
-      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx);
-      agents.push(agent);
-      prefillSetup.push([agent.branch, suffixTokens]);
-      tw.write({
-        traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-        type: 'branch:create', branchHandle: agent.id, parentHandle: agent.parentId,
-        position: 0, role: 'agentFork',
-      });
-      tw.write({
-        traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-        type: 'prompt:format', promptText: formattedPrompt,
-        taskContent: task.content,
-        tokenCount: suffixTokens.length,
-        messages: JSON.stringify([
-          { role: 'system', content: task.systemPrompt },
-          { role: 'user', content: task.content },
-        ]),
-        tools: task.tools, role: 'agentSuffix',
-      });
-    }
-
-    // Batch prefill all agent suffixes — pressure-gated.
-    // Each suffix is the full formatted chat (system prompt + tools JSON +
-    // user message + generation prompt), tokenized via formatChatSync().
-    // Suffix cost is model-dependent: ~250-400 tokens per agent depending
-    // on chat template verbosity and tool schema size.
-    const initPressure = new ContextPressure(ctx, pressureOpts);
-    const totalSuffix = prefillSetup.reduce((s, [, t]) => s + t.length, 0);
-    if (!initPressure.canFit(totalSuffix)) {
-      // Not enough room — drop agents from the end until it fits
-      while (prefillSetup.length > 0) {
-        const needed = prefillSetup.reduce((s, [, t]) => s + t.length, 0);
-        if (initPressure.canFit(needed)) break;
-        prefillSetup.pop();
-        const dropped = agents.pop()!;
-        dropped.dispose();
-        tw.write({
-          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-          type: 'pool:agentDrop', agentId: dropped.id, reason: 'pressure_init',
-        });
+    // Pool-level branch cleanup — ensures orphan-branch cleanup even when
+    // spawns are lazy and the orchestrator's spawn scope exits early.
+    yield* ensure(() => {
+      for (const a of agents) {
+        if (!a.branch.disposed) a.branch.pruneSync();
       }
-    }
-    if (prefillSetup.length > 0) {
-      yield* call(() => store.prefill(prefillSetup));
-    }
-
-    tw.write({
-      traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-      type: 'pool:open', agentCount: agents.length,
-      taskSuffixTokens: prefillSetup.map(([, t]) => t.length),
-      pressure: { remaining: initPressure.remaining, softLimit: initPressure.softLimit, headroom: initPressure.headroom },
     });
 
-    // ── Lazy grammar setup ───────────────────────────────────
+    // Lazy grammar setup — applied inside ctx.spawn after prefill completes.
     const applyLazyGrammar = (a: Agent): void => {
       if (a.fmt.grammar && a.fmt.grammarLazy && a.fmt.grammarTriggers.length > 0) {
         const triggers = a.fmt.grammarTriggers.map(t => {
@@ -504,12 +455,119 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         a.branch.setGrammarLazy(a.fmt.grammar, triggers);
       }
     };
-    for (const a of agents) applyLazyGrammar(a);
 
-    const agentById = new Map(agents.map(a => [a.id, a]));
+    tw.write({
+      traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+      type: 'pool:open', agentCount: 0, taskSuffixTokens: [],
+      pressure: (() => {
+        const p = new ContextPressure(ctx, pressureOpts);
+        return { remaining: p.remaining, softLimit: p.softLimit, headroom: p.headroom };
+      })(),
+    });
 
-    // Subscribe BEFORE spawning tick loop — no events missed
+    // ── PoolContext — orchestrator's API surface ─────────────
+    const poolContext: import('./orchestrators').PoolContext = {
+      root,
+
+      *spawn(spec) {
+        const parent = spec.parent ?? root;
+        const task: AgentTaskSpec = {
+          systemPrompt: spec.systemPrompt ?? poolSystemPrompt,
+          content: spec.content,
+          tools: toolsJson,
+          seed: spec.seed,
+          parent,
+        };
+
+        const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx);
+
+        const pressure = new ContextPressure(ctx, pressureOpts);
+        if (!pressure.canFit(suffixTokens.length)) {
+          agent.branch.pruneSync();
+          agent.dispose();
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'pool:agentDrop', agentId: agent.id, reason: 'pressure_init',
+          });
+          throw new Error(`useAgentPool: cannot fit agent suffix (${suffixTokens.length} tokens) under current pressure`);
+        }
+
+        yield* call(() => store.prefill([[agent.branch, suffixTokens]]));
+
+        tw.write({
+          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'branch:create', branchHandle: agent.id, parentHandle: agent.parentId,
+          position: 0, role: 'agentFork',
+        });
+        tw.write({
+          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'prompt:format', promptText: formattedPrompt,
+          taskContent: task.content, tokenCount: suffixTokens.length,
+          messages: JSON.stringify([
+            { role: 'system', content: task.systemPrompt },
+            { role: 'user', content: task.content },
+          ]),
+          tools: task.tools, role: 'agentSuffix',
+        });
+
+        applyLazyGrammar(agent);
+        agents.push(agent);
+        agentById.set(agent.id, agent);
+
+        agent.transition('active');
+        yield* poolChannel.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId });
+
+        return agent;
+      },
+
+      *waitFor(agent) {
+        const done = (s: import('./Agent').AgentStatus) => s === 'idle' || s === 'disposed';
+        const stream = yield* each(agent.statusSignal);
+        if (done(agent.status)) return agent;
+        for (const s of stream) {
+          if (done(s)) return agent;
+          yield* each.next();
+        }
+        return agent;
+      },
+
+      *extendRoot(userContent, assistantContent) {
+        if (!assistantContent) return 0;
+        const turnTokens = buildTurnDelta(ctx, userContent, assistantContent);
+        yield* call(() => store.prefill([[root, turnTokens]]));
+        tw.write({
+          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'spine:extend',
+          userContent,
+          assistantContent,
+          deltaTokens: turnTokens.length,
+          positionAfter: root.position,
+        });
+        return turnTokens.length;
+      },
+
+      canFit(estimatedSuffixTokens) {
+        return new ContextPressure(ctx, pressureOpts).canFit(estimatedSuffixTokens);
+      },
+    };
+
+    // Subscribe BEFORE spawning orchestrator or tick loop — no events missed
     const subscription = yield* poolChannel;
+
+    // Orchestrator runs concurrently with tick loop under the pool scope.
+    // Sets orchestratorDone when complete; tick loop terminates on
+    // (orchestratorDone && all agents idle/disposed).
+    let orchestratorDone = false;
+    let orchestratorError: unknown = null;
+    yield* spawn(function*() {
+      try {
+        yield* orchestrate(poolContext);
+      } catch (e) {
+        orchestratorError = e;
+      } finally {
+        orchestratorDone = true;
+      }
+    });
 
     // Spawn tick loop — runs concurrently with Subscription consumption.
     // scoped() creates an error boundary: if llama_decode fails (KV exhaustion),
@@ -520,12 +578,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const counters = { warmPrefillCalls: 0, warmPrefillBranches: 0 };
 
       try {
-
-    // Emit spawn events and activate agents
-    for (const a of agents) {
-      a.transition('active');
-      yield* poolChannel.send({ type: 'agent:spawn', agentId: a.id, parentAgentId: a.parentId });
-    }
 
     // ── Phase operations (close over pool scope) ────────────
 
@@ -698,6 +750,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // ── Four-phase tick loop ─────────────────────────────────
     let recoveryAttempted = false;
     for (;;) {
+      // Idle until orchestrator spawns an agent (or completes with none).
+      if (agents.length === 0) {
+        if (orchestratorDone) break;
+        yield* sleep(1);
+        continue;
+      }
+
       // -- Phase 1: PRODUCE -- sample from active agents, collect tool calls
       policy.resetTick?.();
       const pressure = new ContextPressure(ctx, pressureOpts);
@@ -817,7 +876,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       pendingSettled = [...deferred, ...dispatched];
 
       // -- Termination + recovery
-      if (agents.every(a => a.status === 'idle' || a.status === 'disposed')) {
+      // Wait for the orchestrator to finish before closing — it may spawn more agents.
+      const allIdle = agents.every(a => a.status === 'idle' || a.status === 'disposed');
+      if (allIdle && orchestratorDone) {
         if (!recoveryAttempted) {
           recoveryAttempted = true;
           // Recover any idle agents that weren't handled by inline recovery
@@ -828,7 +889,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             }
           }
         }
+        if (orchestratorError) throw orchestratorError;
         break;
+      }
+      if (allIdle && !orchestratorDone) {
+        // All current agents done but orchestrator may spawn more.
+        yield* sleep(1);
       }
     }
 

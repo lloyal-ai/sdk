@@ -7,6 +7,7 @@ import { Ctx, Events, Trace } from './context';
 import { useAgentPool } from './agent-pool';
 import { createToolkit } from './toolkit';
 import { traceScope } from './trace-scope';
+import { parallel } from './orchestrators';
 import type { Tool } from './Tool';
 import type { AgentPolicy } from './AgentPolicy';
 import type { JsonSchema, SamplingParams, AgentEvent } from './types';
@@ -111,15 +112,13 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       root.setGrammar(grammar);
     }
 
-    // Delegate to useAgentPool N=1
+    // Delegate to useAgentPool N=1 via a trivial parallel orchestrator
     const hasTools = !!(opts.tools?.length);
     const sub = yield* useAgentPool({
-      tasks: [{
-        systemPrompt: opts.systemPrompt,
-        content: opts.task,
-        tools: hasTools ? toolkit.toolsJson : undefined,
-        parent: root,
-      }],
+      root,
+      orchestrate: parallel([{ content: opts.task, systemPrompt: opts.systemPrompt }]),
+      systemPrompt: opts.systemPrompt,
+      toolsJson: hasTools ? toolkit.toolsJson : '',
       tools: toolkit.toolMap,
       terminalTool: opts.terminalTool,
       maxTurns: opts.maxTurns,

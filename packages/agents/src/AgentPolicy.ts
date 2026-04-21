@@ -286,7 +286,19 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._startTime = performance.now();
   }
 
-  private _elapsed(): number { return performance.now() - this._startTime; }
+  /**
+   * Elapsed wall time for *this agent* (since its first idle→active transition),
+   * falling back to the policy's own construction time when the agent hasn't
+   * started yet (defensive — shouldn't normally happen).
+   *
+   * Per-agent timing means orchestrators that spawn agents sequentially (e.g.
+   * `chain`) get the correct "how long has this task been running?" semantics
+   * without the time budget leaking across iterations.
+   */
+  private _elapsed(agent?: Agent): number {
+    const started = agent?.startedAt ?? this._startTime;
+    return performance.now() - started;
+  }
 
   /** KV pressure thresholds for ContextPressure construction.
    *  Pool reads this once at setup. */
@@ -344,7 +356,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
 
   private _isUnderPressure(agent: Agent, pressure: ContextPressure, config: PolicyConfig): boolean {
     const timeSoft = this._budget?.time?.softLimit;
-    const timeNudge = timeSoft != null && this._elapsed() >= timeSoft;
+    const timeNudge = timeSoft != null && this._elapsed(agent) >= timeSoft;
     return agent.turns >= config.maxTurns || pressure.headroom < 0 || timeNudge;
   }
 
@@ -357,7 +369,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     agent: Agent, tc: ParsedToolCall, pressure: ContextPressure, config: PolicyConfig,
   ): ProduceAction {
     const timeSoft = this._budget?.time?.softLimit;
-    const timeNudge = timeSoft != null && this._elapsed() >= timeSoft;
+    const timeNudge = timeSoft != null && this._elapsed(agent) >= timeSoft;
 
     if (config.terminalTool && agent.toolCallCount > 0 && !pressure.critical) {
       if (!this._nudgedThisTick) {
@@ -411,7 +423,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
 
     if (!pressure.critical) {
       const timeHard = this._budget?.time?.hardLimit;
-      if (timeHard != null && this._elapsed() >= timeHard) return true;
+      if (timeHard != null && this._elapsed(agent) >= timeHard) return true;
       return false;
     }
     if (this._killedThisTick) return false;
@@ -419,7 +431,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     return true;
   }
 
-  shouldExplore(_agent: Agent, pressure: ContextPressure): boolean {
+  shouldExplore(agent: Agent, pressure: ContextPressure): boolean {
     if (this._forceExploit) return false;
     const contextOk =
       pressure.percentAvailable / 100 > this._exploreContext;
@@ -427,7 +439,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     const timeOk =
       timeSoftLimit == null
         ? true
-        : this._elapsed() / timeSoftLimit < this._exploreTime;
+        : this._elapsed(agent) / timeSoftLimit < this._exploreTime;
     return contextOk && timeOk;
   }
 

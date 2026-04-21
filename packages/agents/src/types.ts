@@ -1,3 +1,4 @@
+import type { Operation } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from './AgentPolicy';
@@ -210,8 +211,21 @@ export interface PressureThresholds {
  * @category Agents
  */
 export interface AgentPoolOptions {
-  /** Agent task specifications — one per concurrent agent */
-  tasks: AgentTaskSpec[];
+  /**
+   * Shared root branch. Orchestrator-spawned agents fork from this by default.
+   * Produced by {@link withSharedRoot} in the {@link agentPool} wrapper.
+   */
+  root: Branch;
+  /**
+   * Orchestrator callback — declares the execution pattern (parallel, chain,
+   * fanout, dag, or a custom shape). Drives task spawning, waiting, and
+   * spine extension through the provided {@link PoolContext}.
+   */
+  orchestrate: (ctx: import('./orchestrators').PoolContext) => Operation<void>;
+  /** Pool-level system prompt — default for tasks that don't override. */
+  systemPrompt: string;
+  /** JSON-serialized tool schemas for chat formatting. Derived from tool map. */
+  toolsJson: string;
   /**
    * Tool registry mapping tool names to {@link Tool} instances.
    *

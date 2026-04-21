@@ -1,22 +1,20 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { call } from "effection";
 import type { Operation } from "effection";
-import type { Branch, Session, SessionContext } from "@lloyal-labs/sdk";
+import type { Session } from "@lloyal-labs/sdk";
 import {
   Ctx,
   Events,
-  Store,
   agent,
   agentPool,
-  reduce,
+  chain,
+  parallel,
   renderTemplate,
   withSharedRoot,
   DefaultAgentPolicy,
   createToolkit,
 } from "@lloyal-labs/lloyal-agents";
-import type { Source, AgentEvent, EntailmentScorer, Tool } from "@lloyal-labs/lloyal-agents";
-import type { BranchStore } from "@lloyal-labs/sdk";
+import type { Source, AgentEvent } from "@lloyal-labs/lloyal-agents";
 import type { StepEvent, OpTiming } from "./tui";
 import { reportTool, PlanTool, taskToContent } from "@lloyal-labs/rig";
 import type {
@@ -128,103 +126,6 @@ function route(plan: PlanResult, query: string, maxTurns: number): Route {
   return { type: "research", tasks, maxTurns };
 }
 
-/**
- * Serialize a user+assistant turn as a KV token delta and prefill it into the
- * query root branch. Extends the spine in-place so subsequent forks attend over
- * the new turn via shared KV — no re-encoding per agent.
- */
-function* extendSpine(
-  ctx: SessionContext,
-  store: BranchStore,
-  queryRoot: Branch,
-  userContent: string,
-  assistantContent: string,
-): Operation<number> {
-  const messages = [
-    { role: "user", content: userContent },
-    { role: "assistant", content: assistantContent },
-  ];
-  const sep = ctx.getTurnSeparator();
-  const { prompt } = ctx.formatChatSync(JSON.stringify(messages), {});
-  const turnTokens = [...sep, ...ctx.tokenizeSync(prompt, false)];
-  yield* call(() => store.prefill([[queryRoot, turnTokens]]));
-  return turnTokens.length;
-}
-
-// ── Research task runner ────────────────────────────────────────
-
-interface RunTaskArgs {
-  task: ResearchTask;
-  taskIndex: number;
-  taskCount: number;
-  queryRoot: Branch;
-  primarySource: Source<SourceContext, Chunk>;
-  primaryScorer: EntailmentScorer;
-  allDataTools: Tool[];
-  workerToolCtx: { name: string; description: string }[];
-  baseWorkerPrompt: string;
-  maxTurns: number;
-  trace: boolean;
-  ctx: SessionContext;
-  store: BranchStore;
-  send: (ev: StepEvent) => Operation<void>;
-}
-
-/**
- * Run a single research task: spawn a pool for the task, collect its findings,
- * and extend the queryRoot KV with a synthetic user+assistant turn so the next
- * task inherits the prior findings via shared attention.
- */
-function* runResearchTask(args: RunTaskArgs): Operation<{ totalTokens: number; totalToolCalls: number }> {
-  const { task, taskIndex, taskCount, queryRoot, primarySource, primaryScorer,
-    allDataTools, workerToolCtx, baseWorkerPrompt, maxTurns, trace, ctx, store, send } = args;
-
-  yield* send({ type: "spine:task", taskIndex, taskCount, description: task.description });
-  yield* send({ type: "spine:source", taskIndex, source: primarySource.name });
-
-  const taskWorkerPrompt = renderWorkerPrompt(primarySource, {
-    tools: workerToolCtx,
-    maxTurns,
-    agentCount: 1,
-    siblingTasks: [],
-    date: today(),
-    taskIndex,
-  });
-
-  const pool = yield* agentPool({
-    tasks: [{ content: taskToContent(task), systemPrompt: taskWorkerPrompt }],
-    tools: [...allDataTools, reportTool],
-    systemPrompt: baseWorkerPrompt,
-    parent: queryRoot,
-    terminalTool: "report",
-    maxTurns,
-    pruneOnReport: true,
-    policy: createResearchPolicy(),
-    trace,
-    scorer: primaryScorer,
-  });
-
-  const taskFindings = pool.agents.map((a) => a.result).filter(Boolean).join("\n\n");
-
-  let spineDeltaTokens = 0;
-  if (taskFindings) {
-    spineDeltaTokens = yield* extendSpine(
-      ctx, store, queryRoot,
-      `Research task: ${task.description}`,
-      taskFindings,
-    );
-  }
-
-  yield* send({
-    type: "spine:task:done",
-    taskIndex,
-    stageFindings: spineDeltaTokens,
-    accumulated: queryRoot.position,
-  });
-
-  return { totalTokens: pool.totalTokens, totalToolCalls: pool.totalToolCalls };
-}
-
 // ── Entry point ─────────────────────────────────────────────────
 
 export function* handleQuery(
@@ -271,8 +172,6 @@ export function* handleQuery(
 
   for (const source of sources) yield* source.bind({ reranker });
   const scorers = new Map(sources.map((s) => [s, s.createScorer(query)]));
-  const ctx: SessionContext = yield* Ctx.expect();
-  const store = yield* Store.expect();
 
   const allDataTools = sources.flatMap((s) => s.tools);
   const queryToolkit = createToolkit([...allDataTools, reportTool]);
@@ -298,32 +197,47 @@ export function* handleQuery(
         parent: session.trunk ?? undefined,
       },
       function* (queryRoot) {
-        // ── Sequential task spine ─────────────────────────
-        const stats = yield* reduce(
-          r.tasks,
-          { totalTokens: 0, totalToolCalls: 0 },
-          function* (acc, task, i) {
-            const result = yield* runResearchTask({
-              task, taskIndex: i, taskCount: r.tasks.length,
-              queryRoot, primarySource, primaryScorer,
-              allDataTools, workerToolCtx, baseWorkerPrompt,
-              maxTurns: r.maxTurns, trace: opts.trace,
-              ctx, store, send,
-            });
-            return {
-              totalTokens: acc.totalTokens + result.totalTokens,
-              totalToolCalls: acc.totalToolCalls + result.totalToolCalls,
-            };
-          },
-        );
+        // ── Research: chain-shaped spine across all tasks ─────
+        const research = yield* agentPool({
+          tools: [...allDataTools, reportTool],
+          systemPrompt: baseWorkerPrompt,
+          parent: queryRoot,
+          terminalTool: "report",
+          maxTurns: r.maxTurns,
+          pruneOnReport: true,
+          policy: createResearchPolicy(),
+          trace: opts.trace,
+          scorer: primaryScorer,
+          orchestrate: chain(r.tasks, (task, i) => ({
+            task: {
+              content: taskToContent(task),
+              systemPrompt: renderWorkerPrompt(primarySource, {
+                tools: workerToolCtx,
+                maxTurns: r.maxTurns,
+                agentCount: 1,
+                siblingTasks: [],
+                date: currentDate,
+                taskIndex: i,
+              }),
+            },
+            userContent: `Research task: ${task.description}`,
+            beforeSpawn: function* () {
+              yield* send({ type: "spine:task", taskIndex: i, taskCount: r.tasks.length, description: task.description });
+              yield* send({ type: "spine:source", taskIndex: i, source: primarySource.name });
+            },
+            afterExtend: function* (delta, position) {
+              yield* send({ type: "spine:task:done", taskIndex: i, stageFindings: delta, accumulated: position });
+            },
+          })),
+        });
 
-        // ── Synthesis ─────────────────────────────────────
+        // ── Synthesis: single agent over the fully-extended spine ───
         yield* send({ type: "synthesize:start" });
         const synthT = startTimer();
-
         const synthCtx = { query };
+
         const synth = yield* agentPool({
-          tasks: [{ content: renderTemplate(SYNTHESIZE.user, synthCtx) }],
+          orchestrate: parallel([{ content: renderTemplate(SYNTHESIZE.user, synthCtx) }]),
           tools: [reportTool],
           systemPrompt: renderTemplate(SYNTHESIZE.system, synthCtx),
           parent: queryRoot,
@@ -334,13 +248,12 @@ export function* handleQuery(
 
         synthTimeMs = synthT();
         const synthAnswer = synth.agents[0]?.result || "";
-
         yield* send({ type: "synthesize:done", pool: synth, timeMs: synthTimeMs });
 
         return {
           answer: synthAnswer,
-          totalTokens: stats.totalTokens,
-          totalToolCalls: stats.totalToolCalls,
+          totalTokens: research.totalTokens,
+          totalToolCalls: research.totalToolCalls,
           synthTokens: synth.totalTokens,
         };
       },
@@ -363,7 +276,7 @@ export function* handleQuery(
   });
 
   const verifyPool = yield* agentPool({
-    tasks: Array.from({ length: opts.verifyCount }, (_, i) => ({ content: verifyContent, seed: 2000 + i })),
+    orchestrate: parallel(Array.from({ length: opts.verifyCount }, (_, i) => ({ content: verifyContent, seed: 2000 + i }))),
     systemPrompt: VERIFY.system,
   });
   const verifyOutputs = verifyPool.agents.map((a) => a.agent.rawOutput);

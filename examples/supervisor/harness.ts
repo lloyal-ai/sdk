@@ -5,7 +5,7 @@ import type { Operation, Channel } from 'effection';
 import { Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  Ctx, agent, agentPool, DefaultAgentPolicy,
+  Ctx, agent, agentPool, parallel, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type { Tool, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
@@ -97,10 +97,10 @@ function* dispatch(
   const t = performance.now();
 
   const pool = yield* agentPool({
-    tasks: routes.map((route, i) => ({
+    orchestrate: parallel(routes.map((route, i) => ({
       content: `${SPECIALISTS[route]}\n\nQuestion: ${query}`,
       seed: Date.now() + i,
-    })),
+    }))),
     tools: [...opts.tools, reportTool],
     systemPrompt: SPECIALIST.system,
     terminalTool: 'report',

@@ -14,10 +14,11 @@ import type { Operation, Channel } from 'effection';
 import { MockSessionContext, createMockSdk } from '../../sdk/test/MockSessionContext';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../src/agent-pool';
+import { parallel } from '../src/orchestrators';
 import { Ctx, Store, Events, Trace } from '../src/context';
 import { Tool } from '../src/Tool';
 import type { AgentPolicy } from '../src/AgentPolicy';
-import type { AgentPoolResult, AgentEvent, ToolContext, AgentTaskSpec } from '../src/types';
+import type { AgentPoolResult, AgentEvent, ToolContext } from '../src/types';
 import type { Agent } from '../src/Agent';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 import { MockTool } from './helpers/mock-tool';
@@ -101,19 +102,20 @@ async function runPool(opts: {
     yield* Trace.set(traceWriter);
 
     const taskCount = opts.taskCount ?? 1;
-    const tasks: AgentTaskSpec[] = Array.from({ length: taskCount }, (_, i) => ({
-      systemPrompt: 'You are an agent.',
+    const toolsJson = opts.tools && opts.tools.size > 0
+      ? JSON.stringify([...opts.tools.values()].map(t => t.schema))
+      : '';
+    const taskSpecs = Array.from({ length: taskCount }, (_, i) => ({
       content: `Task ${i}`,
-      tools: opts.tools && opts.tools.size > 0
-        ? JSON.stringify([...opts.tools.values()].map(t => t.schema))
-        : '',
-      parent: root,
       seed: i,
     }));
 
     return yield* scoped(function* () {
       const sub = yield* useAgentPool({
-        tasks,
+        root,
+        orchestrate: parallel(taskSpecs),
+        systemPrompt: 'You are an agent.',
+        toolsJson,
         tools: opts.tools ?? new Map(),
         policy: opts.policy,
         maxTurns: opts.maxTurns ?? 100,
@@ -1008,7 +1010,10 @@ describe('tool probe lifecycle hook', () => {
 
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
-          tasks: [{ systemPrompt: 'Agent', content: 'Task', tools: JSON.stringify([probeTool.schema]), parent: root, seed: 0 }],
+          root,
+          orchestrate: parallel([{ content: 'Task', seed: 0 }]),
+          systemPrompt: 'Agent',
+          toolsJson: JSON.stringify([probeTool.schema]),
           tools: toolMap,
           policy: toolCallPolicy(),
           maxTurns: 100,
@@ -1073,7 +1078,10 @@ describe('tool probe lifecycle hook', () => {
 
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
-          tasks: [{ systemPrompt: 'Agent', content: 'Task', tools: JSON.stringify([noProbeTool.schema]), parent: root, seed: 0 }],
+          root,
+          orchestrate: parallel([{ content: 'Task', seed: 0 }]),
+          systemPrompt: 'Agent',
+          toolsJson: JSON.stringify([noProbeTool.schema]),
           tools: toolMap,
           policy: toolCallPolicy(),
           maxTurns: 100,
@@ -1241,10 +1249,13 @@ describe('tool probe lifecycle hook', () => {
 
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
-          tasks: [
-            { systemPrompt: 'Agent 0', content: 'Task 0', tools: JSON.stringify([tool.schema]), parent: root, seed: 0 },
-            { systemPrompt: 'Agent 1', content: 'Task 1', tools: JSON.stringify([tool.schema]), parent: root, seed: 1 },
-          ],
+          root,
+          orchestrate: parallel([
+            { content: 'Task 0', seed: 0 },
+            { content: 'Task 1', seed: 1 },
+          ]),
+          systemPrompt: 'Agent',
+          toolsJson: JSON.stringify([tool.schema]),
           tools: toolMap,
           policy: (() => {
             return stubPolicy({

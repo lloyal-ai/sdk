@@ -5,20 +5,14 @@ import { Tool } from './Tool';
 import type { AgentPoolResult } from './types';
 import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
+import type { Orchestrator } from './orchestrators';
 import { Events } from './context';
 import { createToolkit } from './toolkit';
 import { withSharedRoot } from './shared-root';
 import { useAgentPool } from './agent-pool';
 
-/** Task input for agentPool */
-export interface PoolTaskSpec {
-  /** User message content — the agent's specific sub-question or task */
-  content: string;
-  /** Per-task system prompt. Falls back to pool-level systemPrompt when absent. */
-  systemPrompt?: string;
-  /** PRNG seed for sampler diversity */
-  seed?: number;
-}
+/** Task input for orchestrator factories (re-exported from orchestrators). */
+export type { SpawnSpec as PoolTaskSpec } from './orchestrators';
 
 // ── CreateAgentPool opts ────────────────────────────────────
 
@@ -28,8 +22,12 @@ export interface PoolTaskSpec {
  * @category Agents
  */
 export interface CreateAgentPoolOpts {
-  /** Agent task specifications — one per concurrent agent. systemPrompt applied from pool opts. */
-  tasks: PoolTaskSpec[];
+  /**
+   * Orchestrator callback — declares the execution pattern (parallel, chain,
+   * fanout, dag, or a custom inline generator). Drives task spawning,
+   * waiting, and spine extension through {@link PoolContext}.
+   */
+  orchestrate: Orchestrator;
   /** Data access tools (array, createToolkit called internally). Optional — pool degenerates cleanly without tools. */
   tools?: Tool[];
   /** System prompt for all agents. */
@@ -96,14 +94,19 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
   return yield* withSharedRoot(
     { systemPrompt: opts.systemPrompt, tools: toolkit.toolsJson, parent: warmParent },
     function* (root) {
+      // On warm path, use the caller-provided parent AS the logical spine so
+      // `ctx.extendRoot` mutations persist across the pool's lifetime and are
+      // visible to sibling pools that fork from the same parent. The inner
+      // `root` produced by withSharedRoot is just a separator-prefilled fork
+      // of parent — its extensions would be discarded at pool close, breaking
+      // the multi-task spine pattern (research → synth over shared queryRoot).
+      // On cold path (no parent), the inner root IS the spine.
+      const spineRoot = warmParent ?? root;
       const sub = yield* useAgentPool({
-        tasks: opts.tasks.map((t) => ({
-          systemPrompt: t.systemPrompt ?? opts.systemPrompt,
-          content: t.content,
-          tools: toolkit.toolsJson,
-          parent: root,
-          seed: t.seed,
-        })),
+        root: spineRoot,
+        orchestrate: opts.orchestrate,
+        systemPrompt: opts.systemPrompt,
+        toolsJson: toolkit.toolsJson,
         tools: toolkit.toolMap,
         terminalTool: opts.terminalTool,
         pruneOnReport: opts.pruneOnReport,

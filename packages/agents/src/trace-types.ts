@@ -137,6 +137,18 @@ export type TraceEvent =
       parsedToolCalls: Array<{ name: string; arguments: string }>;
     }
 
+  // ── Spine extension ──────────────────────────
+  // Emitted by PoolContext.extendRoot whenever an orchestrator prefills
+  // a user/assistant turn into the pool's root. Carries enough to replay
+  // the extension without cross-referencing other events.
+  | TraceEventBase & {
+      type: 'spine:extend';
+      userContent: string;
+      assistantContent: string;
+      deltaTokens: number;
+      positionAfter: number;
+    }
+
   // ── Tool events ─────────────────────────────
   | TraceEventBase & {
       type: 'tool:dispatch';

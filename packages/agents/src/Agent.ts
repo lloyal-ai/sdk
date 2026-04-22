@@ -46,6 +46,15 @@ export interface FormatConfig {
   grammar: string;
   grammarLazy: boolean;
   grammarTriggers: GrammarTrigger[];
+  /**
+   * Whether the template's generation prompt includes `<think>\n` prefill.
+   * Must match the value used in every subsequent delta builder call
+   * (tool_result, nudge, etc.) for this agent — otherwise the parser's
+   * `generation_prompt` diverges from actual KV state and reasoning
+   * content leaks into visible content.
+   * Captured once at agent setup from the pool's `enableThinking` option.
+   */
+  enableThinking: boolean;
 }
 
 // ── Tool history ────────────────────────────────────────────

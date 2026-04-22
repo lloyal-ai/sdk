@@ -2,6 +2,25 @@ import type { Agent, ToolHistoryEntry } from './Agent';
 import { ContextPressure } from './agent-pool';
 import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import type { PressureThresholds } from './types';
+import { renderTemplate } from './prompt';
+
+// Recovery-phase KV accounting constants. These size the hardLimit reserve
+// allocation for recoverInline: the prefill cost of the recovery prompt +
+// room for llama.cpp's batch workspace. Used to compute the budget
+// communicated to the model in its recovery prompt.
+const RECOVERY_PREFILL_OVERHEAD = 150;
+const BATCH_BUFFER = 512;
+
+/**
+ * Convert a token budget to a conservative word count for the model-facing
+ * prompt. Tokens are tokenizer-specific; words are universal and better
+ * reflected in training data. Applies a 0.7 words/token ratio (vs the
+ * typical ~0.75) to under-advertise the budget, rounds down to the nearest
+ * 10, and floors at 10 so the model always has a non-zero target.
+ */
+function tokenBudgetAsWords(budgetTokens: number): number {
+  return Math.max(10, Math.floor(budgetTokens * 0.7 / 10) * 10);
+}
 
 // ── Declarative tool guards ─────────────────────────────
 
@@ -60,6 +79,7 @@ export type IdleReason =
   | 'pressure_critical'
   | 'pressure_softcut'
   | 'pressure_settle_reject'
+  | 'settle_stall_break'
   | 'max_turns'
   | 'free_text_stop'
   | 'tool_error';
@@ -120,12 +140,20 @@ export interface AgentPolicy {
   ): ProduceAction;
 
   /**
-   * SETTLE phase: tool result won't fit in KV — what should happen?
+   * SETTLE stall-break: consulted when deferred tool results have no
+   * active siblings to free KV — the last-resort moment where a policy
+   * decides whether to nudge the agent (replacing the oversized result
+   * with a compact error payload) or drop it and let recovery extract.
    *
-   * @deprecated SETTLE no longer kills agents. Oversized tool results are
-   * deferred until headroom recovers via the trailing stop in PRODUCE.
-   * This method is retained for backward compatibility with custom policies
-   * but is no longer called by the pool.
+   * In normal operation, SETTLE defers oversized items across ticks.
+   * Siblings completing (parallel) or the spine growing (chain) restores
+   * headroom on subsequent ticks — this hook fires only when all agents
+   * are `awaiting_tool`/idle and deferral can't resolve on its own.
+   *
+   * Return `{type: 'nudge'}` to replace the oversized item with a compact
+   * error payload (carries the budget in its message). Return
+   * `{type: 'idle', reason: 'pressure_settle_reject'}` to drop the agent.
+   * If the hook is absent, the pool falls back to `settle_stall_break`.
    */
   onSettleReject(
     agent: Agent,
@@ -185,7 +213,7 @@ export interface AgentPolicy {
    *
    * Optional — defaults to skip when absent.
    */
-  onRecovery?(agent: Agent): RecoveryAction;
+  onRecovery?(agent: Agent, pressure: ContextPressure): RecoveryAction;
 }
 
 /**
@@ -320,9 +348,17 @@ export class DefaultAgentPolicy implements AgentPolicy {
     const tc = parsed.toolCalls[0];
     if (!tc) return this._handleNoToolCall(agent, parsed);
     if (this._isTerminalTool(tc, config)) return this._handleTerminalTool(tc, agent, config, pressure);
-    if (this._isOverBudget(agent, tc, pressure, config)) return this._handleOverBudget(agent, tc, pressure, config);
+    // Guards before budget: when an agent is over budget AND emitting
+    // a tool call the guards already want to reject (duplicate query,
+    // duplicate fetch, delegation-before-research), the guard's specific
+    // message is more actionable than a generic "report now within N
+    // words" turn-limit nudge. Previously, `_isOverBudget` preempted the
+    // guard — stuck agents (same query repeated past maxTurns) saw only
+    // turn-limit nudges instead of the dedup message that named the
+    // actual problem (see trace-1776819196054 agent 65539).
     const guardRejection = this._checkGuards(tc, agent);
     if (guardRejection) return guardRejection;
+    if (this._isOverBudget(agent, tc, pressure, config)) return this._handleOverBudget(agent, tc, pressure, config);
     // Normal tool call
     return { type: 'tool_call', tc };
   }
@@ -374,11 +410,17 @@ export class DefaultAgentPolicy implements AgentPolicy {
     if (config.terminalTool && agent.toolCallCount > 0 && !pressure.critical) {
       if (!this._nudgedThisTick) {
         this._nudgedThisTick = true;
+        // Budget the model can emit before `pressure.critical` kills it.
+        // Overshoot → kill → recoverInline extracts from the hardLimit reserve.
+        // Expressed in words (not tokens) because tokenizers vary across
+        // models but words are universal. Under-advertised + rounded down
+        // so the model has slack on the ceiling.
+        const words = tokenBudgetAsWords(pressure.remaining - pressure.hardLimit);
         const msg = timeNudge
-          ? 'Time limit reached — report your findings now.'
+          ? `Time limit reached — report your findings now within ${words} words.`
           : agent.turns >= config.maxTurns
-            ? 'Turn limit reached — report your findings now.'
-            : 'KV memory pressure — report your findings now.';
+            ? `Turn limit reached — report your findings now within ${words} words.`
+            : `KV memory pressure — report your findings now within ${words} words.`;
         return { type: 'nudge', message: msg };
       }
       return { type: 'tool_call', tc };
@@ -401,12 +443,13 @@ export class DefaultAgentPolicy implements AgentPolicy {
   onSettleReject(
     agent: Agent,
     _resultTokens: number,
-    _pressure: ContextPressure,
+    pressure: ContextPressure,
     config: PolicyConfig,
   ): SettleAction {
     // Nudge if possible — stateless, no escalation tracking
     if (config.terminalTool && agent.toolCallCount > 0) {
-      return { type: 'nudge', message: 'Tool result too large for remaining KV. Report your findings now.' };
+      const words = tokenBudgetAsWords(pressure.remaining - pressure.hardLimit);
+      return { type: 'nudge', message: `Tool result too large for remaining KV. Report your findings now within ${words} words.` };
     }
     // No terminal tool: kill
     return { type: 'idle', reason: 'pressure_settle_reject' as IdleReason };
@@ -419,7 +462,11 @@ export class DefaultAgentPolicy implements AgentPolicy {
   setExploitMode(force: boolean): void { this._forceExploit = force; }
 
   shouldExit(agent: Agent, pressure: ContextPressure): boolean {
-    if (this._terminalTool && agent.currentTool === this._terminalTool) return false;
+    // Terminal-tool protection applies in the graceful zone only — once
+    // `pressure.critical` fires, the agent must yield so the pool can
+    // kill+recover before native OOM. Holding this protection through
+    // critical territory was the DOJ runaway cause (trace-1776782401659).
+    if (this._terminalTool && agent.currentTool === this._terminalTool && !pressure.critical) return false;
 
     if (!pressure.critical) {
       const timeHard = this._budget?.time?.hardLimit;
@@ -457,13 +504,27 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._nudgedThisTick = false;
   }
 
-  onRecovery(agent: Agent): RecoveryAction {
+  onRecovery(agent: Agent, pressure: ContextPressure): RecoveryAction {
     if (!this._recovery) return { type: 'skip' };
     const minTokens = this._recovery.minTokens ?? 100;
     const minToolCalls = this._recovery.minToolCalls ?? 2;
     if (agent.tokenCount < minTokens || agent.toolCallCount < minToolCalls) {
       return { type: 'skip' };
     }
-    return { type: 'extract', prompt: this._recovery.prompt };
+    // Budget recovery's generation can consume: hardLimit reserve minus the
+    // prefill overhead and llama.cpp's batch workspace. Expressed as words
+    // (not tokens) and under-advertised so the model has slack — tokenizers
+    // vary across models but words are universal. Rendered into the prompt
+    // as `it.budget` so authors can reference it via `<%= it.budget %>`.
+    const budgetTokens = Math.max(50, pressure.remaining - RECOVERY_PREFILL_OVERHEAD - BATCH_BUFFER);
+    const budget = tokenBudgetAsWords(budgetTokens);
+    const tctx = { budget };
+    return {
+      type: 'extract',
+      prompt: {
+        system: renderTemplate(this._recovery.prompt.system, tctx),
+        user: renderTemplate(this._recovery.prompt.user, tctx),
+      },
+    };
   }
 }

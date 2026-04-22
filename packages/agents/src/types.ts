@@ -198,9 +198,11 @@ export interface PressureThresholds {
   softLimit?: number;
   /**
    * Crash-prevention floor (tokens). When remaining drops below this,
-   * agents are killed immediately before `produceSync()`. Prevents
-   * `llama_decode` "no memory slot for batch" failures.
-   * Default: 128
+   * `pressure.critical` is true and agents are killed before the next
+   * decode. Must be >= the context's `nBatch` — otherwise native decode
+   * can't allocate the next batch when the kill fires, and recovery's
+   * prefill will OOM. The pool validates this at startup.
+   * Default: 512 (matches llama.cpp's default `n_batch`).
    */
   hardLimit?: number;
 }
@@ -260,6 +262,20 @@ export interface AgentPoolOptions {
    *  time limits, explore/exploit threshold, and tool guards via
    *  {@link DefaultAgentPolicyOpts}. @default DefaultAgentPolicy with default opts */
   policy?: AgentPolicy;
+  /**
+   * Whether the chat template delimits `<think>` blocks for this pool's
+   * agents. Captured once at pool creation, stored on each agent's
+   * `fmt.enableThinking`, and threaded through every `buildToolResultDelta`
+   * call so the parser's `generation_prompt` stays consistent with the
+   * actual KV state. Setting `true` gives the template's generation prompt
+   * the `<think>\n` prefix that thinking-capable models (Qwen3 family)
+   * expect — thoughts are correctly delimited and `parseChatOutput`
+   * extracts them into `reasoning_content`. Setting `false` omits think
+   * tokens; if the model emits them anyway (as Qwen3.5 does) they leak
+   * into visible content.
+   * @default false
+   */
+  enableThinking?: boolean;
   /** Entailment scorer for semantic coherence across recursive depths.
    *  Passed to every tool via {@link ToolContext.scorer}. */
   scorer?: EntailmentScorer;

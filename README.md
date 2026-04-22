@@ -186,16 +186,6 @@ npx tsx examples/reflection/main.ts \
   --query "Explain the key findings"
 ```
 
-## Supervisor
-
-[`examples/supervisor`](examples/supervisor) — Classify, Route to specialist agents, Execute in parallel, Synthesize. Demonstrates grammar-constrained routing via `generate()`, dynamic agent count from classifier output, heterogeneous `useAgentPool` tasks, and warm trunk synthesis for multi-turn follow-ups.
-
-```bash
-npx tsx examples/supervisor/main.ts \
-  --corpus /path/to/docs \
-  --query "Compare the two approaches described in the document"
-```
-
 All examples run in-process, on local weights, fully offline.
 
 ## Shared-root parallelism

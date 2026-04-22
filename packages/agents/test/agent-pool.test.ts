@@ -610,13 +610,13 @@ describe('pressure thresholds propagation', () => {
   it('6a: custom thresholds → agent survives when default would kill', async () => {
     const { result, trace } = await runPool({
       nCtx: 16384,
-      cellsUsed: 15800, // remaining=584, custom softLimit=512 → headroom=72
+      cellsUsed: 15700, // remaining=684, custom softLimit=256 → headroom=428
       forkTokenQueues: [[1, 2, STOP]],
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
         onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
-        pressureThresholds: { softLimit: 512, hardLimit: 64 },
+        pressureThresholds: { softLimit: 256, hardLimit: 512 },
       }),
     });
 
@@ -775,7 +775,7 @@ describe('multi-agent interactions', () => {
     let killCount = 0;
     const { trace } = await runPool({
       nCtx: 16384,
-      cellsUsed: 16300,  // remaining=84, critical (< hardLimit 128)
+      cellsUsed: 15900,  // remaining=484, critical (< hardLimit 512)
       forkTokenQueues: [[1, 1, STOP], [1, 1, STOP]],
       taskCount: 2,
       parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
@@ -788,7 +788,7 @@ describe('multi-agent interactions', () => {
         },
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
         onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
-        pressureThresholds: { softLimit: 64, hardLimit: 128 },
+        pressureThresholds: { softLimit: 64, hardLimit: 512 },
       }),
     });
 
@@ -885,7 +885,7 @@ describe('recovery edge cases', () => {
           // Very long prompt that won't fit in remaining KV
           prompt: { system: 'X'.repeat(5000), user: 'Y'.repeat(5000) },
         }),
-        pressureThresholds: { softLimit: 128, hardLimit: 64 },
+        pressureThresholds: { softLimit: 128, hardLimit: 512 },
       }),
     });
 

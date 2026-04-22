@@ -84,8 +84,20 @@ interface SettledTool {
 export class ContextPressure {
   /** Default softLimit: 1024 tokens reserved for downstream work */
   static readonly DEFAULT_SOFT_LIMIT = 1024;
-  /** Default hardLimit: 128 tokens crash-prevention floor */
-  static readonly DEFAULT_HARD_LIMIT = 128;
+  /**
+   * Default hardLimit: 512 tokens — matches llama.cpp's default `n_batch`.
+   * The pool validates at startup that `hardLimit >= nBatch`; the default
+   * is sized to satisfy the invariant for the default llama.cpp context.
+   * Recovery fits within the `hardLimit` reserve.
+   */
+  static readonly DEFAULT_HARD_LIMIT = 512;
+  /**
+   * Assumed `nBatch` when the native binding doesn't expose it.
+   * Pool startup validates `pressureThresholds.hardLimit >= this`.
+   * TODO: once `SessionContext.nBatch` is exposed (lloyal.node
+   * follow-up), read from ctx.nBatch instead.
+   */
+  static readonly ASSUMED_N_BATCH = 512;
 
   /** Total KV cache capacity (max positions). 0 when no context limit. */
   readonly nCtx: number;
@@ -154,8 +166,11 @@ function* recoverInline(
   tw: TraceWriter,
   parentTraceId: number,
   events: EventSender,
+  pressureOpts: PressureThresholds,
 ): Operation<boolean> {
-  const recovery = policy.onRecovery?.(agent);
+  // Fresh snapshot — the policy uses this to compute the recovery budget
+  // (reflected in the rendered prompt via `<%= it.budget %>`).
+  const recovery = policy.onRecovery?.(agent, new ContextPressure(ctx, pressureOpts));
   if (!recovery || recovery.type === 'skip') {
     if (!agent.branch.disposed) agent.branch.pruneSync();
     return false;
@@ -184,8 +199,13 @@ function* recoverInline(
   );
 
   // Recovery runs in its own scope — if prefill or decode fails
-  // (KV exhaustion), the scope tears down cleanly.
+  // (KV exhaustion), the scope tears down cleanly. Diagnostic trace
+  // events (pool:recoveryProduce + recoveryReport/recoveryFailed) make
+  // silent recovery failures observable in traces.
   let reported = false;
+  let output = '';
+  let producedTokens = 0;
+  let failureReason: string | null = null;
   try {
     yield* scoped(function*() {
       yield* call(() => store.prefill([[agent.branch, tokens]]));
@@ -198,26 +218,52 @@ function* recoverInline(
       });
 
       // Single-agent produce/commit loop
-      let output = '';
-      let tokenCount = 0;
       for (;;) {
         const { token, text, isStop } = agent.branch.produceSync();
         if (isStop) break;
         output += text;
-        tokenCount++;
+        producedTokens++;
         yield* call(() => store.commit([[agent.branch, token]]));
-        yield* events.send({ type: 'agent:produce', agentId: agent.id, text, tokenCount });
+        yield* events.send({ type: 'agent:produce', agentId: agent.id, text, tokenCount: producedTokens });
       }
 
+      tw.write({
+        traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+        type: 'pool:recoveryProduce', agentId: agent.id,
+        tokenCount: producedTokens, outputLength: output.length,
+      });
+
       // Parse + report
-      const parsed = JSON.parse(output) as { result: string };
-      if (parsed?.result) {
-        agent.reportResult(parsed.result, 'scratchpad');
-        yield* events.send({ type: 'agent:report', agentId: agent.id, result: agent.result! });
-        reported = true;
+      try {
+        const parsed = JSON.parse(output) as { result: string };
+        if (parsed?.result) {
+          agent.reportResult(parsed.result, 'scratchpad');
+          yield* events.send({ type: 'agent:report', agentId: agent.id, result: agent.result! });
+          reported = true;
+          tw.write({
+            traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+            type: 'pool:recoveryReport', agentId: agent.id,
+            resultLength: parsed.result.length,
+          });
+        } else {
+          failureReason = 'no_result_field';
+        }
+      } catch (e) {
+        failureReason = `parse_error: ${(e as Error).message ?? 'unknown'}`;
       }
     });
-  } catch { /* prefill overflow, decode failure, or malformed JSON — non-fatal */ }
+  } catch (e) {
+    failureReason = `scope_error: ${(e as Error).message ?? 'unknown'}`;
+  }
+
+  if (!reported) {
+    tw.write({
+      traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+      type: 'pool:recoveryFailed', agentId: agent.id,
+      reason: failureReason ?? 'unknown',
+      outputExcerpt: output.slice(0, 200),
+    });
+  }
 
   // Always prune after scope exits (success or failure)
   if (!agent.branch.disposed) agent.branch.pruneSync();
@@ -264,7 +310,7 @@ function* handleNudge(
   const nudgeResult = { error: message };
   a.incrementTurns();
   a.transition('awaiting_tool');
-  const prefillTokens = buildToolResultDelta(ctx, JSON.stringify(nudgeResult), callId);
+  const prefillTokens = buildToolResultDelta(ctx, JSON.stringify(nudgeResult), callId, { enableThinking: a.fmt.enableThinking });
   const probe = tools?.get(tc?.name || '')?.probe(nudgeResult) ?? undefined;
   a.resetTurn();
   return { agentId: a.id, prefillTokens, toolName: tc?.name || '', callId, args: tc?.arguments || '', probe };
@@ -294,12 +340,13 @@ function* setupAgent(
   parent: Branch,
   task: AgentTaskSpec,
   ctx: SessionContext,
+  enableThinking: boolean,
 ): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
   const messages = [
     { role: 'system', content: task.systemPrompt },
     { role: 'user', content: task.content },
   ];
-  const fmtOpts: Record<string, unknown> = { enableThinking: false };
+  const fmtOpts: Record<string, unknown> = { enableThinking };
   if (task.tools) fmtOpts.tools = task.tools;
   const fmt = ctx.formatChatSync(JSON.stringify(messages), fmtOpts);
   if (task.tools && (fmt.format === CHAT_FORMAT_CONTENT_ONLY || fmt.format === CHAT_FORMAT_GENERIC)) {
@@ -329,6 +376,7 @@ function* setupAgent(
       grammar: fmt.grammar,
       grammarLazy: fmt.grammarLazy,
       grammarTriggers: fmt.grammarTriggers,
+      enableThinking,
     },
   });
 
@@ -398,7 +446,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
     });
     const tw = yield* Trace.expect();
-    const { root, orchestrate, systemPrompt: poolSystemPrompt, toolsJson, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false } = opts;
+    const { root, orchestrate, systemPrompt: poolSystemPrompt, toolsJson, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false, enableThinking = false } = opts;
 
     // Tool index map for trace — position in toolkit array
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
@@ -423,6 +471,24 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const policy = opts.policy ?? new DefaultAgentPolicy();
     const pressureOpts: PressureThresholds = policy.pressureThresholds
       ?? { softLimit: ContextPressure.DEFAULT_SOFT_LIMIT, hardLimit: ContextPressure.DEFAULT_HARD_LIMIT };
+
+    // Invariant: hardLimit must be at least the native batch size (nBatch).
+    // When `pressure.critical` fires and the kill path runs recovery, the
+    // reserve cells (hardLimit count) must accommodate `recoverInline`'s
+    // next batch allocation — otherwise native decode will OOM with
+    // "failed to find a memory slot for batch of size N".
+    // Until `SessionContext.nBatch` is exposed natively, we validate against
+    // `ContextPressure.ASSUMED_N_BATCH` (512, matches llama.cpp default).
+    const nBatch = ContextPressure.ASSUMED_N_BATCH;
+    const hardLimitVal = pressureOpts.hardLimit ?? ContextPressure.DEFAULT_HARD_LIMIT;
+    if (hardLimitVal < nBatch) {
+      throw new Error(
+        `useAgentPool: Invariant Violation — hardLimit (${hardLimitVal}) must be >= nBatch (${nBatch}). ` +
+        `Recovery reserves hardLimit cells for its own decode; if smaller than nBatch, the next batch ` +
+        `allocation will OOM. Increase policy.budget.context.hardLimit to at least ${nBatch}.`
+      );
+    }
+
     const policyConfig: PolicyConfig = { maxTurns, terminalTool, hasNonTerminalTools };
 
     // ── Orchestrator-driven setup ────────────────────────────
@@ -494,7 +560,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
         // Synchronous setup — fork, tokenize suffix, pressure check.
         // No native store call yet; that's the tick loop's SPAWN phase's job.
-        const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx);
+        const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking);
 
         const pressure = new ContextPressure(ctx, pressureOpts);
         if (!pressure.canFit(suffixTokens.length)) {
@@ -598,6 +664,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
       const prefillPairs: [Branch, number[]][] = [];
       const settledAgents: Agent[] = [];
+      const itemProbes = new Map<number, string | undefined>();
       const deferred: SettledTool[] = [];
 
       for (const item of items) {
@@ -605,8 +672,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         if (!a || a.status === 'idle') continue;
 
         if (item.prefillTokens.length > headroom) {
+          // Defer — siblings may finish and free KV, letting this result
+          // settle next tick (staggered-exit for parallel orchestration).
+          // Policy is consulted at stall-break time, not here: invoking
+          // it eagerly would break "wait for a sibling to report and
+          // free cells" by nudging/dropping on first over-headroom.
           if (trace) {
-            try { process.stderr.write(`[SETTLE] DEFER ${item.toolName}:${item.prefillTokens.length} > headroom=${headroom}\n`); } catch {}
+            try { process.stderr.write(`[SETTLE] DEFER ${item.toolName}:${item.prefillTokens.length}>headroom=${headroom}\n`); } catch {}
           }
           deferred.push(item);
           continue;
@@ -614,6 +686,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
         prefillPairs.push([a.branch, item.prefillTokens]);
         settledAgents.push(a);
+        if (item.probe) itemProbes.set(a.id, item.probe);
         headroom -= item.prefillTokens.length;
         const postSettle = new ContextPressure(ctx, pressureOpts);
         a.recordToolResult({
@@ -636,10 +709,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         counters.warmPrefillCalls++;
         counters.warmPrefillBranches += prefillPairs.length;
 
-        // Probe prefill from DISPATCH
+        // Probe prefill from DISPATCH or nudge-replacement.
         const probePairs: [Branch, number[]][] = [];
         for (const a of settledAgents) {
-          const probe = items.find(s => s.agentId === a.id)?.probe;
+          const probe = itemProbes.get(a.id);
           if (probe) {
             const probeTokens = ctx.tokenizeSync(probe, false);
             probePairs.push([a.branch, probeTokens]);
@@ -729,7 +802,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const resultStr = JSON.stringify(result);
           yield* poolChannel.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr, contextAvailablePercent });
 
-          const prefillTokens = buildToolResultDelta(ctx, resultStr, callId);
+          const prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
           const probe = tool?.probe(result) ?? undefined;
           results.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe });
 
@@ -828,7 +901,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // orchestrator resumes and starts spawning/prefilling the next task
           // while this agent is still being decoded by recoverInline. Concurrent
           // native calls on the same llama_context → SEGV.
-          yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel);
+          yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts);
           a.transition('idle');
           continue;
         }
@@ -901,23 +974,71 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       const toSettle = [...pendingSettled, ...nudges];
       const deferred = toSettle.length > 0 ? yield* settle(toSettle) : [];
 
-      // Stall-breaker: if items are deferred and no active agents remain,
-      // sacrifice an awaiting_tool agent to free KV. Without this, agents
-      // with oversized results stay awaiting_tool indefinitely — PRODUCE
-      // skips them, headroom never recovers, the pool loops forever.
+      // Stall-breaker: `deferred` has items but no active siblings can free
+      // KV. Consult policy per deferred item — the policy is the "last
+      // resort" decision point (staggered-exit for parallel orchestration
+      // still works because defer-on-oversize above lets items wait while
+      // siblings are active; only when ALL siblings are awaiting_tool or
+      // idle do we reach here). Distinct drop reasons:
+      //   - `pressure_settle_reject` — policy said idle, or nudge but the
+      //     nudge payload itself doesn't fit (policy suggestion infeasible).
+      //   - `settle_stall_break` — policy hook absent (legacy fallback).
       if (deferred.length > 0 && !agents.some(a => a.status === 'active')) {
-        const victim = agents.find(a => a.status === 'awaiting_tool' && !a.branch.disposed);
-        if (victim) {
-          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-            type: 'pool:agentDrop', agentId: victim.id, reason: 'pressure_settle_reject' });
-          yield* poolChannel.send({ type: 'agent:done', agentId: victim.id });
-          // Recover BEFORE transitioning — same reason as the PRODUCE drop path:
-          // the statusSignal must only fire 'idle' after the victim's branch is
-          // no longer being decoded, so PoolContext.waitFor in the orchestrator
-          // doesn't race ahead and cause concurrent native-layer calls.
-          yield* recoverInline(victim, policy, ctx, store, tw, poolScope.traceId, poolChannel);
-          victim.transition('idle');
+        const stallPressure = new ContextPressure(ctx, pressureOpts);
+        let stallHeadroom = stallPressure.headroom;
+        const resolved: SettledTool[] = [];
+
+        for (const item of deferred) {
+          const a = agentById.get(item.agentId);
+          if (!a || a.status !== 'awaiting_tool' || a.branch.disposed) continue;
+
+          const action = policy.onSettleReject?.(a, item.prefillTokens.length, stallPressure, policyConfig);
+
+          if (action?.type === 'nudge') {
+            // Record the policy's decision regardless of whether the
+            // nudge itself fits — the event captures "policy consulted,
+            // returned nudge" which is separate from "nudge was actionable".
+            tw.write({
+              traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+              type: 'pool:agentNudge', agentId: a.id, reason: 'settle_reject', message: action.message,
+            });
+            const nudgeResult = { error: action.message };
+            const nudgeTokens = buildToolResultDelta(ctx, JSON.stringify(nudgeResult), item.callId, { enableThinking: a.fmt.enableThinking });
+            if (nudgeTokens.length <= stallHeadroom) {
+              const probe = tools.get(item.toolName)?.probe(nudgeResult) ?? undefined;
+              a.incrementTurns();
+              resolved.push({
+                agentId: a.id,
+                prefillTokens: nudgeTokens,
+                toolName: item.toolName,
+                callId: item.callId,
+                args: item.args,
+                probe,
+              });
+              stallHeadroom -= nudgeTokens.length;
+              continue;
+            }
+            // Nudge doesn't fit — policy's suggestion is infeasible, fall through to drop.
+          }
+
+          // Drop. Reason: policy-said-idle OR nudge-didn't-fit →
+          // `pressure_settle_reject` (policy path). Policy hook absent →
+          // `settle_stall_break` (legacy fallback).
+          const reason: 'pressure_settle_reject' | 'settle_stall_break' =
+            action ? 'pressure_settle_reject' : 'settle_stall_break';
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'pool:agentDrop', agentId: a.id, reason,
+          });
+          yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
+          // Recover BEFORE transition — single-fiber store discipline.
+          yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts);
+          a.transition('idle');
         }
+
+        // Replace deferred with the surviving (nudged) items for next tick.
+        deferred.length = 0;
+        deferred.push(...resolved);
       }
 
       // -- Phase 4: DISPATCH
@@ -936,7 +1057,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // (e.g., killed by max_turns, time budget, or free_text_stop)
           for (const a of agents) {
             if (a.status === 'idle' && !a.result && !a.branch.disposed) {
-              yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel);
+              yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts);
             }
           }
         }

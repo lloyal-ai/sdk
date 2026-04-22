@@ -115,16 +115,41 @@ export type TraceEvent =
         | 'pressure_critical'
         | 'pressure_softcut'
         | 'pressure_settle_reject'
+        | 'settle_stall_break'
         | 'time_exceeded'
         | 'policy_exit'
         | 'maxTurns'
+        | 'tool_error'
         | 'stop_token';
     }
   | TraceEventBase & {
       type: 'pool:agentNudge';
       agentId: number;
-      reason: 'pressure_softcut' | 'pressure_settle_reject' | 'time_nudge' | 'nudge';
+      reason: 'pressure_softcut' | 'pressure_settle_reject' | 'settle_reject' | 'time_nudge' | 'nudge';
       message?: string;
+    }
+
+  // ── Recovery diagnostics ────────────────────
+  // Emitted by recoverInline so silent failures become visible in the
+  // trace. A recovery prefill is always followed by exactly one of:
+  // `pool:recoveryReport` (parsed findings captured) or
+  // `pool:recoveryFailed` (produce completed but output unparseable).
+  | TraceEventBase & {
+      type: 'pool:recoveryProduce';
+      agentId: number;
+      tokenCount: number;
+      outputLength: number;
+    }
+  | TraceEventBase & {
+      type: 'pool:recoveryReport';
+      agentId: number;
+      resultLength: number;
+    }
+  | TraceEventBase & {
+      type: 'pool:recoveryFailed';
+      agentId: number;
+      reason: string;
+      outputExcerpt: string;
     }
 
   // ── Agent per-turn output ────────────────────

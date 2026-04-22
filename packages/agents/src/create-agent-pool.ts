@@ -59,6 +59,12 @@ export interface CreateAgentPoolOpts {
   echoThreshold?: number;
   /** Check ancestor tasks for echo. @default false */
   checkAncestorEcho?: boolean;
+  /**
+   * Whether the chat template delimits `<think>` blocks for this pool's agents.
+   * See {@link AgentPoolOptions.enableThinking}.
+   * @default false
+   */
+  enableThinking?: boolean;
 }
 
 // ── agentPool ───────────────────────────────────────────────
@@ -114,6 +120,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         trace: opts.trace,
         policy: opts.policy,
         scorer: opts.scorer,
+        enableThinking: opts.enableThinking,
       });
 
       // Drain Subscription inside body — before withSharedRoot's finally fires

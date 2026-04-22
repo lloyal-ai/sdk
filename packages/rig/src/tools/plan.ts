@@ -22,13 +22,14 @@ export interface PlanToolOpts {
 /**
  * A structured research task produced by the planner.
  *
+ * Intent is a plan-level decision (see {@link PlanIntent}), not a per-task
+ * attribute — a task is always a research assignment when emitted.
+ *
  * @category Rig
  */
 export interface ResearchTask {
   /** What to find out — a specific, actionable research assignment. */
   description: string;
-  /** Whether the task is answerable via research or needs user clarification. */
-  intent: 'research' | 'clarify';
 }
 
 /**
@@ -41,17 +42,18 @@ export function taskToContent(task: ResearchTask): string {
 }
 
 /**
- * A single sub-question produced by the planner with intent classification.
+ * Plan-level disposition for the user's query.
  *
- * @deprecated Use {@link ResearchTask} instead.
+ * - **clarify** — query is genuinely ambiguous; planner emits `clarifyQuestions`,
+ *   harness returns to REPL for user input.
+ * - **passthrough** — query is a follow-up answerable from session.trunk's prior
+ *   Q&A turns; harness skips research pipeline, streams answer from trunk, commits turn.
+ * - **research** — query needs full decomposition; planner emits `tasks`, harness
+ *   runs the chain → synth → verify pipeline.
+ *
  * @category Rig
  */
-export interface PlanQuestion {
-  /** The sub-question text. */
-  text: string;
-  /** Whether the question can be answered via research or needs user clarification. */
-  intent: 'research' | 'clarify';
-}
+export type PlanIntent = 'clarify' | 'passthrough' | 'research';
 
 /**
  * Output returned by {@link PlanTool} execution.
@@ -59,10 +61,12 @@ export interface PlanQuestion {
  * @category Rig
  */
 export interface PlanResult {
-  /** Structured research tasks with optional entry points. */
+  /** Plan-level disposition: how should the harness route this query? */
+  intent: PlanIntent;
+  /** Research tasks (non-empty when intent === 'research'; empty otherwise). */
   tasks: ResearchTask[];
-  /** @deprecated Use tasks. Adapter — maps tasks to the old PlanQuestion shape. */
-  questions: PlanQuestion[];
+  /** Clarification questions for the user (non-empty when intent === 'clarify'; empty otherwise). */
+  clarifyQuestions: string[];
   /** Number of tokens generated during planning. */
   tokenCount: number;
   /** Wall-clock time for the planning pass in milliseconds. */
@@ -70,18 +74,19 @@ export interface PlanResult {
 }
 
 /**
- * Grammar-constrained query decomposition and intent classification.
+ * Grammar-constrained query planner.
  *
- * Analyzes a research query and produces an array of {@link ResearchTask}
- * tasks, each classified as `"research"` (answerable via search)
- * or `"clarify"` (needs user input). Uses a JSON grammar to guarantee
- * structured output.
+ * Analyzes the user's query (with prior conversation in KV via warm session fork)
+ * and produces a {@link PlanResult} that commits to one disposition: clarify /
+ * passthrough / research. Uses a JSON grammar to guarantee structured output;
+ * the planner must choose one of the three intents and populate the matching
+ * fields (tasks for research, clarifyQuestions for clarify, neither for passthrough).
  *
  * @category Rig
  */
 export class PlanTool extends Tool<{ query: string; context?: string }> {
   readonly name = 'plan';
-  readonly description = 'Analyze a research query. Return research tasks classified as "research" (answerable via web search) or "clarify" (needs user input). Return empty array if the query is focused enough to research directly.';
+  readonly description = 'Analyze a user query and decide how to handle it: ask for clarification, pass through for direct answer from conversation history, or decompose into research tasks.';
   readonly parameters: JsonSchema = {
     type: 'object',
     properties: {
@@ -110,20 +115,24 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     const schema: JsonSchema = {
       type: 'object',
       properties: {
+        intent: { type: 'string', enum: ['clarify', 'passthrough', 'research'] },
         tasks: {
           type: 'array',
           items: {
             type: 'object',
             properties: {
               description: { type: 'string' },
-              intent: { type: 'string', enum: ['research', 'clarify'] },
             },
-            required: ['description', 'intent'],
+            required: ['description'],
           },
           maxItems: this._maxQuestions,
         },
+        clarifyQuestions: {
+          type: 'array',
+          items: { type: 'string' },
+        },
       },
-      required: ['tasks'],
+      required: ['intent'],
     };
 
     const userContent = renderTemplate(this._prompt.user, {
@@ -144,23 +153,36 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     const tokenCount = planAgent.tokenCount;
 
     try {
-      const parsed = JSON.parse(planAgent.rawOutput);
-      const raw = (parsed.tasks || []) as {
-        description?: string;
+      const parsed = JSON.parse(planAgent.rawOutput) as {
         intent?: string;
-      }[];
-      const tasks: ResearchTask[] = raw
+        tasks?: { description?: string }[];
+        clarifyQuestions?: string[];
+      };
+
+      const intent: PlanIntent =
+        parsed.intent === 'clarify' || parsed.intent === 'passthrough' || parsed.intent === 'research'
+          ? parsed.intent
+          : 'research';
+
+      const tasks: ResearchTask[] = (parsed.tasks ?? [])
         .slice(0, this._maxQuestions)
-        .filter(t => typeof t.description === 'string' && (t.intent === 'research' || t.intent === 'clarify'))
-        .map(t => ({
-          description: t.description!,
-          intent: t.intent as 'research' | 'clarify',
-        }));
-      // Adapter: populate deprecated questions from tasks
-      const questions: PlanQuestion[] = tasks.map(t => ({ text: t.description, intent: t.intent }));
-      return { tasks, questions, tokenCount, timeMs } satisfies PlanResult;
+        .filter(t => typeof t.description === 'string')
+        .map(t => ({ description: t.description! }));
+
+      const clarifyQuestions = (parsed.clarifyQuestions ?? []).filter(q => typeof q === 'string');
+
+      return { intent, tasks, clarifyQuestions, tokenCount, timeMs } satisfies PlanResult;
     } catch {
-      return { tasks: [], questions: [], tokenCount, timeMs } satisfies PlanResult;
+      // Grammar should prevent this; fall through to passthrough on malformed output
+      // so the harness routes to a direct trunk-stream answer rather than running a
+      // research pipeline with no real plan.
+      return {
+        intent: 'passthrough',
+        tasks: [],
+        clarifyQuestions: [],
+        tokenCount,
+        timeMs,
+      } satisfies PlanResult;
     }
   }
 }

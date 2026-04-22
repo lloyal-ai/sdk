@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { call } from "effection";
 import type { Operation } from "effection";
-import type { Session } from "@lloyal-labs/sdk";
+import type { Session, SessionContext } from "@lloyal-labs/sdk";
+import { buildTurnDelta } from "@lloyal-labs/sdk";
 import {
   Ctx,
   Events,
@@ -19,6 +21,7 @@ import type { StepEvent, OpTiming } from "./tui";
 import { reportTool, PlanTool, taskToContent } from "@lloyal-labs/rig";
 import type {
   PlanResult,
+  PlanIntent,
   ResearchTask,
   Reranker,
   Chunk,
@@ -39,7 +42,10 @@ function loadPrompt(name: string): { system: string; user: string } {
 
 /** Load a raw Eta template string for runtime rendering. */
 function loadTemplate(name: string): string {
-  return fs.readFileSync(path.resolve(__dirname, `prompts/${name}.eta`), "utf8");
+  return fs.readFileSync(
+    path.resolve(__dirname, `prompts/${name}.eta`),
+    "utf8",
+  );
 }
 
 const PLAN = loadPrompt("plan");
@@ -58,7 +64,7 @@ function createResearchPolicy(): DefaultAgentPolicy {
       time: { softLimit: 120_000, hardLimit: 180_000 },
     },
     recovery: { prompt: RECOVERY },
-    terminalTool: 'report',
+    terminalTool: "report",
   });
 }
 
@@ -77,6 +83,7 @@ export interface HarnessOpts {
 
 type Route =
   | { type: "clarify"; questions: string[] }
+  | { type: "passthrough" }
   | { type: "research"; tasks: ResearchTask[]; maxTurns: number };
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -95,7 +102,10 @@ function renderWorkerPrompt(
   ctx: WorkerPromptCtx,
 ): string {
   if (source.promptData) {
-    return renderTemplate(CORPUS_WORKER_TEMPLATE, { ...source.promptData(), ...ctx });
+    return renderTemplate(CORPUS_WORKER_TEMPLATE, {
+      ...source.promptData(),
+      ...ctx,
+    });
   }
   if (source.name === "web") {
     return renderTemplate(WEB_WORKER_TEMPLATE, ctx);
@@ -114,16 +124,59 @@ function startTimer(): () => number {
   return () => performance.now() - start;
 }
 
-function route(plan: PlanResult, query: string, maxTurns: number): Route {
-  const research = plan.tasks.filter((t) => t.intent === "research");
-  const clarify = plan.tasks.filter((t) => t.intent === "clarify");
-  if (research.length === 0 && clarify.length > 0) {
-    return { type: "clarify", questions: clarify.map((t) => t.description) };
+/** Pure dispatch over plan.intent. Tasks and clarifyQuestions are already scoped correctly by the planner's grammar. */
+function route(plan: PlanResult, maxTurns: number): Route {
+  switch (plan.intent) {
+    case "clarify":
+      return { type: "clarify", questions: plan.clarifyQuestions };
+    case "passthrough":
+      return { type: "passthrough" };
+    case "research":
+      return { type: "research", tasks: plan.tasks, maxTurns };
   }
-  const tasks = research.length > 0
-    ? research
-    : [{ description: query, intent: "research" as const }];
-  return { type: "research", tasks, maxTurns };
+}
+
+/**
+ * Passthrough handler — stream a direct answer from session.trunk after
+ * appending the user's query as a fresh user turn. No research pool runs;
+ * the answer comes from the prior Q&A already in trunk's KV via commitTurn.
+ *
+ * The trunk's KV already contains the prior conversation (system prompt,
+ * tool schemas, earlier user+assistant pairs). We append the new user turn,
+ * then iterate produceSync+commit until stop. Finally session.commitTurn
+ * persists the full query+answer pair for the next follow-up.
+ */
+function* runPassthrough(
+  query: string,
+  session: Session,
+): Operation<{ answer: string; tokenCount: number; timeMs: number }> {
+  const trunk = session.trunk;
+  if (!trunk) {
+    throw new Error(
+      "runPassthrough: session has no trunk — passthrough requires a warm session",
+    );
+  }
+
+  const ctx: SessionContext = yield* Ctx.expect();
+  const sep = ctx.getTurnSeparator();
+  const { prompt } = ctx.formatChatSync(
+    JSON.stringify([{ role: "user", content: query }]),
+    { addGenerationPrompt: true, enableThinking: false },
+  );
+  const userTurnTokens = [...sep, ...ctx.tokenizeSync(prompt, false)];
+  yield* call(() => trunk.prefill(userTurnTokens));
+
+  const t = performance.now();
+  let tokenCount = 0;
+  const pieces: string[] = [];
+  for (;;) {
+    const { token, text, isStop } = trunk.produceSync();
+    if (isStop) break;
+    yield* call(() => trunk.commit(token));
+    tokenCount++;
+    pieces.push(text);
+  }
+  return { answer: pieces.join(""), tokenCount, timeMs: performance.now() - t };
 }
 
 // ── Entry point ─────────────────────────────────────────────────
@@ -149,22 +202,66 @@ export function* handleQuery(
   const planContext = context
     ? `Today's date: ${currentDate}\n\n${context}`
     : `Today's date: ${currentDate}`;
-  const plan = (yield* planTool.execute({ query, context: planContext })) as PlanResult;
-  const r = route(plan, query, opts.maxTurns);
-
-  const intent: "clarify" | "passthrough" | "decompose" =
-    r.type === "clarify" ? "clarify"
-    : plan.tasks.length === 0 ? "passthrough"
-    : "decompose";
+  const plan = (yield* planTool.execute({
+    query,
+    context: planContext,
+  })) as PlanResult;
+  const r = route(plan, opts.maxTurns);
 
   yield* send({
-    type: "plan", intent,
-    questions: plan.questions,
+    type: "plan",
+    intent: plan.intent,
+    tasks: plan.tasks,
+    clarifyQuestions: plan.clarifyQuestions,
     tokenCount: plan.tokenCount,
     timeMs: plan.timeMs,
   });
 
   if (r.type === "clarify") return { type: "clarify", questions: r.questions };
+
+  if (r.type === "passthrough") {
+    const pt = yield* runPassthrough(query, session);
+    yield* send({ type: "answer", text: pt.answer });
+
+    const ctx: SessionContext = yield* Ctx.expect();
+    const p = ctx._storeKvPressure();
+    const ctxTotal = p.nCtx || 1;
+    yield* send({
+      type: "stats",
+      timings: [
+        {
+          label: "Plan",
+          tokens: plan.tokenCount,
+          detail: plan.intent,
+          timeMs: plan.timeMs,
+        },
+        {
+          label: "Passthrough",
+          tokens: pt.tokenCount,
+          detail: "trunk stream",
+          timeMs: pt.timeMs,
+        },
+      ],
+      ctxPct: Math.round((100 * p.cellsUsed) / ctxTotal),
+      ctxPos: p.cellsUsed,
+      ctxTotal,
+    });
+    yield* send({
+      type: "complete",
+      data: {
+        intent: plan.intent,
+        planTokens: plan.tokenCount,
+        passthroughTokens: pt.tokenCount,
+        wallTimeMs: Math.round(wallTimer()),
+        planMs: Math.round(plan.timeMs),
+        passthroughMs: Math.round(pt.timeMs),
+      },
+    });
+    // NOTE: we do NOT call session.commitTurn here. The trunk already contains
+    // the streamed user+assistant pair (prefilled user turn + committed assistant
+    // tokens from produceSync+commit). Calling commitTurn would double-append.
+    return { type: "done" };
+  }
 
   // ── Research with KV-spine chaining ───────────────────────
   yield* send({ type: "research:start", agentCount: r.tasks.length });
@@ -177,7 +274,10 @@ export function* handleQuery(
   const queryToolkit = createToolkit([...allDataTools, reportTool]);
   const primarySource = sources[0];
   const primaryScorer = scorers.get(primarySource)!;
-  const workerToolCtx = [...allDataTools, reportTool].map((t) => ({ name: t.name, description: t.description }));
+  const workerToolCtx = [...allDataTools, reportTool].map((t) => ({
+    name: t.name,
+    description: t.description,
+  }));
 
   const baseWorkerPrompt = renderWorkerPrompt(primarySource, {
     tools: workerToolCtx,
@@ -189,75 +289,105 @@ export function* handleQuery(
 
   let synthTimeMs = 0;
 
-  const { answer, totalTokens: researchTotalTokens, totalToolCalls: researchTotalToolCalls, synthTokens: synthTotalTokens } =
-    yield* withSharedRoot<{ answer: string; totalTokens: number; totalToolCalls: number; synthTokens: number }>(
-      {
+  const {
+    answer,
+    totalTokens: researchTotalTokens,
+    totalToolCalls: researchTotalToolCalls,
+    synthTokens: synthTotalTokens,
+  } = yield* withSharedRoot<{
+    answer: string;
+    totalTokens: number;
+    totalToolCalls: number;
+    synthTokens: number;
+  }>(
+    {
+      systemPrompt: baseWorkerPrompt,
+      tools: queryToolkit.toolsJson,
+      parent: session.trunk ?? undefined,
+    },
+    function* (queryRoot) {
+      // ── Research: chain-shaped spine across all tasks ─────
+      const research = yield* agentPool({
+        tools: [...allDataTools, reportTool],
         systemPrompt: baseWorkerPrompt,
-        tools: queryToolkit.toolsJson,
-        parent: session.trunk ?? undefined,
-      },
-      function* (queryRoot) {
-        // ── Research: chain-shaped spine across all tasks ─────
-        const research = yield* agentPool({
-          tools: [...allDataTools, reportTool],
-          systemPrompt: baseWorkerPrompt,
-          parent: queryRoot,
-          terminalTool: "report",
-          maxTurns: r.maxTurns,
-          pruneOnReport: true,
-          policy: createResearchPolicy(),
-          trace: opts.trace,
-          scorer: primaryScorer,
-          orchestrate: chain(r.tasks, (task, i) => ({
-            task: {
-              content: taskToContent(task),
-              systemPrompt: renderWorkerPrompt(primarySource, {
-                tools: workerToolCtx,
-                maxTurns: r.maxTurns,
-                agentCount: 1,
-                siblingTasks: [],
-                date: currentDate,
-                taskIndex: i,
-              }),
-            },
-            userContent: `Research task: ${task.description}`,
-            beforeSpawn: function* () {
-              yield* send({ type: "spine:task", taskIndex: i, taskCount: r.tasks.length, description: task.description });
-              yield* send({ type: "spine:source", taskIndex: i, source: primarySource.name });
-            },
-            afterExtend: function* (delta, position) {
-              yield* send({ type: "spine:task:done", taskIndex: i, stageFindings: delta, accumulated: position });
-            },
-          })),
-        });
+        parent: queryRoot,
+        terminalTool: "report",
+        maxTurns: r.maxTurns,
+        pruneOnReport: true,
+        policy: createResearchPolicy(),
+        trace: opts.trace,
+        scorer: primaryScorer,
+        enableThinking: true,
+        orchestrate: chain(r.tasks, (task, i) => ({
+          task: {
+            content: taskToContent(task),
+            systemPrompt: renderWorkerPrompt(primarySource, {
+              tools: workerToolCtx,
+              maxTurns: r.maxTurns,
+              agentCount: 1,
+              siblingTasks: [],
+              date: currentDate,
+              taskIndex: i,
+            }),
+          },
+          userContent: `Research task: ${task.description}`,
+          beforeSpawn: function* () {
+            yield* send({
+              type: "spine:task",
+              taskIndex: i,
+              taskCount: r.tasks.length,
+              description: task.description,
+            });
+            yield* send({
+              type: "spine:source",
+              taskIndex: i,
+              source: primarySource.name,
+            });
+          },
+          afterExtend: function* (delta, position) {
+            yield* send({
+              type: "spine:task:done",
+              taskIndex: i,
+              stageFindings: delta,
+              accumulated: position,
+            });
+          },
+        })),
+      });
 
-        // ── Synthesis: single agent over the fully-extended spine ───
-        yield* send({ type: "synthesize:start" });
-        const synthT = startTimer();
-        const synthCtx = { query };
+      // ── Synthesis: single agent over the fully-extended spine ───
+      yield* send({ type: "synthesize:start" });
+      const synthT = startTimer();
+      const synthCtx = { query };
 
-        const synth = yield* agentPool({
-          orchestrate: parallel([{ content: renderTemplate(SYNTHESIZE.user, synthCtx) }]),
-          tools: [reportTool],
-          systemPrompt: renderTemplate(SYNTHESIZE.system, synthCtx),
-          parent: queryRoot,
-          terminalTool: "report",
-          maxTurns: opts.maxTurns,
-          trace: opts.trace,
-        });
+      const synth = yield* agentPool({
+        orchestrate: parallel([
+          { content: renderTemplate(SYNTHESIZE.user, synthCtx) },
+        ]),
+        tools: [reportTool],
+        systemPrompt: renderTemplate(SYNTHESIZE.system, synthCtx),
+        parent: queryRoot,
+        terminalTool: "report",
+        maxTurns: opts.maxTurns,
+        trace: opts.trace,
+      });
 
-        synthTimeMs = synthT();
-        const synthAnswer = synth.agents[0]?.result || "";
-        yield* send({ type: "synthesize:done", pool: synth, timeMs: synthTimeMs });
+      synthTimeMs = synthT();
+      const synthAnswer = synth.agents[0]?.result || "";
+      yield* send({
+        type: "synthesize:done",
+        pool: synth,
+        timeMs: synthTimeMs,
+      });
 
-        return {
-          answer: synthAnswer,
-          totalTokens: research.totalTokens,
-          totalToolCalls: research.totalToolCalls,
-          synthTokens: synth.totalTokens,
-        };
-      },
-    );
+      return {
+        answer: synthAnswer,
+        totalTokens: research.totalTokens,
+        totalToolCalls: research.totalToolCalls,
+        synthTokens: synth.totalTokens,
+      };
+    },
+  );
 
   const researchTimeMs = researchTimer();
   yield* send({
@@ -276,7 +406,12 @@ export function* handleQuery(
   });
 
   const verifyPool = yield* agentPool({
-    orchestrate: parallel(Array.from({ length: opts.verifyCount }, (_, i) => ({ content: verifyContent, seed: 2000 + i }))),
+    orchestrate: parallel(
+      Array.from({ length: opts.verifyCount }, (_, i) => ({
+        content: verifyContent,
+        seed: 2000 + i,
+      })),
+    ),
     systemPrompt: VERIFY.system,
   });
   const verifyOutputs = verifyPool.agents.map((a) => a.agent.rawOutput);
@@ -289,12 +424,20 @@ export function* handleQuery(
   const evalAgent = yield* agent({
     systemPrompt: EVAL.system,
     task: renderTemplate(EVAL.user, { responses: responsesText }),
-    schema: { type: "object", properties: { converged: { type: "boolean" } }, required: ["converged"] },
+    schema: {
+      type: "object",
+      properties: { converged: { type: "boolean" } },
+      required: ["converged"],
+    },
   });
   const evalTimeMs = evalTimer();
 
   let evalConverged: boolean | null = null;
-  try { evalConverged = JSON.parse(evalAgent.rawOutput).converged; } catch { /* malformed */ }
+  try {
+    evalConverged = JSON.parse(evalAgent.rawOutput).converged;
+  } catch {
+    /* malformed */
+  }
 
   yield* send({
     type: "eval:done",
@@ -308,18 +451,40 @@ export function* handleQuery(
   if (answer) yield* call(() => session.commitTurn(query, answer));
 
   // ── Stats ─────────────────────────────────────────────────
-  const p = ctx._storeKvPressure();
+  const statsCtx: SessionContext = yield* Ctx.expect();
+  const p = statsCtx._storeKvPressure();
   const ctxTotal = p.nCtx || 1;
 
   const timings: OpTiming[] = [
-    { label: "Plan",       tokens: plan.tokenCount,     detail: intent,                                 timeMs: plan.timeMs },
-    { label: "Research",   tokens: researchTotalTokens, detail: `${researchTotalToolCalls} tools`,      timeMs: researchTimeMs },
-    { label: "Synthesize", tokens: synthTotalTokens,     detail: "spine fork",                            timeMs: synthTimeMs },
-    { label: "Eval",       tokens: evalAgent.tokenCount, detail: `converged: ${evalConverged ? "yes" : "no"}`, timeMs: evalTimeMs },
+    {
+      label: "Plan",
+      tokens: plan.tokenCount,
+      detail: plan.intent,
+      timeMs: plan.timeMs,
+    },
+    {
+      label: "Research",
+      tokens: researchTotalTokens,
+      detail: `${researchTotalToolCalls} tools`,
+      timeMs: researchTimeMs,
+    },
+    {
+      label: "Synthesize",
+      tokens: synthTotalTokens,
+      detail: "spine fork",
+      timeMs: synthTimeMs,
+    },
+    {
+      label: "Eval",
+      tokens: evalAgent.tokenCount,
+      detail: `converged: ${evalConverged ? "yes" : "no"}`,
+      timeMs: evalTimeMs,
+    },
   ];
 
   yield* send({
-    type: "stats", timings,
+    type: "stats",
+    timings,
     ctxPct: Math.round((100 * p.cellsUsed) / ctxTotal),
     ctxPos: p.cellsUsed,
     ctxTotal,
@@ -328,7 +493,7 @@ export function* handleQuery(
   yield* send({
     type: "complete",
     data: {
-      intent,
+      intent: plan.intent,
       planTokens: plan.tokenCount,
       agentTokens: researchTotalTokens,
       synthTokens: synthTotalTokens,

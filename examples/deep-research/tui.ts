@@ -8,7 +8,7 @@
 import { each } from 'effection';
 import type { Channel, Operation } from 'effection';
 import type { AgentEvent, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
-import type { PlanQuestion } from '@lloyal-labs/rig';
+import type { PlanIntent, ResearchTask } from '@lloyal-labs/rig';
 import type { OpTiming, ViewState, ViewHandler } from '../shared/tui/types';
 import { c, log, emit, statusClear } from '../shared/tui/primitives';
 import { createViewState, agentHandler, label, resetLabels } from '../shared/tui/agent-view';
@@ -24,7 +24,7 @@ export type { OpTiming } from '../shared/tui/types';
 
 export type StepEvent =
   | { type: 'query'; query: string; warm: boolean }
-  | { type: 'plan'; intent: 'decompose' | 'passthrough' | 'clarify' | 'mixed'; questions: PlanQuestion[]; tokenCount: number; timeMs: number }
+  | { type: 'plan'; intent: PlanIntent; tasks: ResearchTask[]; clarifyQuestions: string[]; tokenCount: number; timeMs: number }
   | { type: 'research:start'; agentCount: number }
   | { type: 'research:done'; totalTokens: number; totalToolCalls: number; timeMs: number }
   | { type: 'spine:task'; taskIndex: number; taskCount: number; description: string }
@@ -64,16 +64,14 @@ function queryHandler(state: ViewState, opts: ViewOpts): ViewHandler {
 function planHandler(): ViewHandler {
   return (ev) => {
     if (ev.type !== 'plan') return;
-    emit('plan', { intent: ev.intent, questions: ev.questions, planTokens: ev.tokenCount });
+    emit('plan', { intent: ev.intent, tasks: ev.tasks, clarifyQuestions: ev.clarifyQuestions, planTokens: ev.tokenCount });
     log(section('Plan') + ' ' + detail(`${ev.intent} · ${ev.tokenCount} tok · ${ms(ev.timeMs)}`));
-    let ri = 0;
-    for (const q of ev.questions) {
-      if (q.intent === 'clarify') {
-        log(`    ${detail('?')} ${q.text}`);
-      } else {
-        log(`    ${detail(`${++ri}.`)} ${q.text}`);
-      }
+    if (ev.intent === 'clarify') {
+      for (const q of ev.clarifyQuestions) log(`    ${detail('?')} ${q}`);
+    } else if (ev.intent === 'research') {
+      ev.tasks.forEach((t, i) => log(`    ${detail(`${i + 1}.`)} ${t.description}`));
     }
+    // passthrough: no sub-items to log
   };
 }
 

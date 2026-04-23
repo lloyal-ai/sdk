@@ -9,7 +9,7 @@
 
 import { each } from 'effection';
 import type { Channel, Operation } from 'effection';
-import type { AgentEvent, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
+import type { AgentEvent } from '@lloyal-labs/lloyal-agents';
 import type { OpTiming, ViewState, ViewHandler } from '../shared/tui/types';
 import {
   c, log, statusClear,
@@ -26,7 +26,7 @@ export type { OpTiming } from '../shared/tui/types';
 export type StepEvent =
   | { type: 'query'; query: string }
   | { type: 'research:start' }
-  | { type: 'research:done'; pool: AgentPoolResult; timeMs: number }
+  | { type: 'research:done'; agentId: number; ppl: number; tokenCount: number; toolCallCount: number; timeMs: number }
   | { type: 'draft:start' }
   | { type: 'draft:text'; text: string }
   | { type: 'draft:done'; tokenCount: number; timeMs: number }
@@ -60,12 +60,9 @@ function researchHandler(state: ViewState): ViewHandler {
       }
       case 'research:done': {
         statusClear();
-        const a = ev.pool.agents[0];
-        if (a) {
-          const pplStr = Number.isFinite(a.ppl) ? ` \u00b7 ppl ${a.ppl.toFixed(2)}` : '';
-          log(`    ${c.dim}\u2514${c.reset} ${c.yellow}${label(state, a.agentId)}${c.reset} ${c.green}done${c.reset} ${c.dim}${a.tokenCount} tok \u00b7 ${a.toolCallCount} tools${pplStr}${c.reset}`);
-        }
-        log(`    ${c.dim}${ev.pool.totalTokens} tok \u00b7 ${ev.pool.totalToolCalls} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+        const pplStr = Number.isFinite(ev.ppl) ? ` \u00b7 ppl ${ev.ppl.toFixed(2)}` : '';
+        log(`    ${c.dim}\u2514${c.reset} ${c.yellow}${label(state, ev.agentId)}${c.reset} ${c.green}done${c.reset} ${c.dim}${ev.tokenCount} tok \u00b7 ${ev.toolCallCount} tools${pplStr}${c.reset}`);
+        log(`    ${c.dim}${ev.tokenCount} tok \u00b7 ${ev.toolCallCount} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
         break;
       }
     }

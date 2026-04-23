@@ -25,7 +25,7 @@ export type { OpTiming } from '../shared/tui/types';
 export type StepEvent =
   | { type: 'query'; query: string }
   | { type: 'research:start' }
-  | { type: 'research:done'; pool: AgentPoolResult; timeMs: number }
+  | { type: 'research:done'; agentId: number; ppl: number; tokenCount: number; toolCallCount: number; timeMs: number }
   | { type: 'answer'; text: string; tokenCount: number; toolCalls: number; timeMs: number; ctxPct: number; ctxPos: number; ctxTotal: number };
 
 export type WorkflowEvent = AgentEvent | StepEvent;
@@ -51,12 +51,9 @@ function researchHandler(state: ViewState): ViewHandler {
       }
       case 'research:done': {
         statusClear();
-        const a = ev.pool.agents[0];
-        if (a) {
-          const pplStr = Number.isFinite(a.ppl) ? ` \u00b7 ppl ${a.ppl.toFixed(2)}` : '';
-          log(`    ${c.dim}\u2514${c.reset} ${c.yellow}${label(state, a.agentId)}${c.reset} ${c.green}done${c.reset} ${c.dim}${a.tokenCount} tok \u00b7 ${a.toolCallCount} tools${pplStr}${c.reset}`);
-        }
-        log(`    ${c.dim}${ev.pool.totalTokens} tok \u00b7 ${ev.pool.totalToolCalls} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
+        const pplStr = Number.isFinite(ev.ppl) ? ` \u00b7 ppl ${ev.ppl.toFixed(2)}` : '';
+        log(`    ${c.dim}\u2514${c.reset} ${c.yellow}${label(state, ev.agentId)}${c.reset} ${c.green}done${c.reset} ${c.dim}${ev.tokenCount} tok \u00b7 ${ev.toolCallCount} tools${pplStr}${c.reset}`);
+        log(`    ${c.dim}${ev.tokenCount} tok \u00b7 ${ev.toolCallCount} tools \u00b7 ${(ev.timeMs / 1000).toFixed(1)}s${c.reset}`);
         break;
       }
     }

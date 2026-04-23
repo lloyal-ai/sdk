@@ -9,12 +9,12 @@ import {
   Events,
   agent,
   agentPool,
+  useAgent,
   chain,
   parallel,
   renderTemplate,
   withSharedRoot,
   DefaultAgentPolicy,
-  createToolkit,
 } from "@lloyal-labs/lloyal-agents";
 import type { Source, AgentEvent } from "@lloyal-labs/lloyal-agents";
 import type { StepEvent, OpTiming } from "./tui";
@@ -48,12 +48,14 @@ function loadTemplate(name: string): string {
   );
 }
 
-const PLAN = loadPrompt("plan");
+const PLAN_DEEP = loadPrompt("plan");
+const PLAN_FLAT = loadPrompt("plan-flat");
 const FALLBACK = loadPrompt("fallback");
 const VERIFY = loadPrompt("verify");
 const EVAL = loadPrompt("eval");
 const RECOVERY = loadPrompt("recovery");
-const SYNTHESIZE = loadPrompt("synthesize");
+const SYNTHESIZE_DEEP = loadPrompt("synthesize");
+const SYNTHESIZE_FLAT = loadPrompt("synthesize-flat");
 const CORPUS_WORKER_TEMPLATE = loadTemplate("corpus-worker");
 const WEB_WORKER_TEMPLATE = loadTemplate("web-worker");
 
@@ -79,6 +81,7 @@ export interface HarnessOpts {
   maxTurns: number;
   trace: boolean;
   findingsMaxChars?: number;
+  reasoningMode: "flat" | "deep";
 }
 
 type Route =
@@ -198,7 +201,8 @@ export function* handleQuery(
   const currentDate = today();
 
   // ── Plan ──────────────────────────────────────────────────
-  const planTool = new PlanTool({ prompt: PLAN, session, maxQuestions: 10 });
+  const planPrompt = opts.reasoningMode === "flat" ? PLAN_FLAT : PLAN_DEEP;
+  const planTool = new PlanTool({ prompt: planPrompt, session, maxQuestions: 10 });
   const planContext = context
     ? `Today's date: ${currentDate}\n\n${context}`
     : `Today's date: ${currentDate}`;
@@ -264,14 +268,17 @@ export function* handleQuery(
   }
 
   // ── Research with KV-spine chaining ───────────────────────
-  yield* send({ type: "research:start", agentCount: r.tasks.length });
+  yield* send({
+    type: "research:start",
+    agentCount: r.tasks.length,
+    mode: opts.reasoningMode,
+  });
   const researchTimer = startTimer();
 
   for (const source of sources) yield* source.bind({ reranker });
   const scorers = new Map(sources.map((s) => [s, s.createScorer(query)]));
 
   const allDataTools = sources.flatMap((s) => s.tools);
-  const queryToolkit = createToolkit([...allDataTools, reportTool]);
   const primarySource = sources[0];
   const primaryScorer = scorers.get(primarySource)!;
   const workerToolCtx = [...allDataTools, reportTool].map((t) => ({
@@ -279,15 +286,8 @@ export function* handleQuery(
     description: t.description,
   }));
 
-  const baseWorkerPrompt = renderWorkerPrompt(primarySource, {
-    tools: workerToolCtx,
-    maxTurns: r.maxTurns,
-    agentCount: 1,
-    siblingTasks: [],
-    date: currentDate,
-  });
-
   let synthTimeMs = 0;
+  let researchTimeMs = 0;
 
   const {
     answer,
@@ -300,16 +300,17 @@ export function* handleQuery(
     totalToolCalls: number;
     synthTokens: number;
   }>(
-    {
-      systemPrompt: baseWorkerPrompt,
-      tools: queryToolkit.toolsJson,
-      parent: session.trunk ?? undefined,
-    },
+    { parent: session.trunk ?? undefined },
     function* (queryRoot) {
-      // ── Research: chain-shaped spine across all tasks ─────
+      // Emit fanout:tasks once upfront for flat mode so the TUI frames the
+      // section with the task list before agents start streaming.
+      if (opts.reasoningMode === "flat") {
+        yield* send({ type: "fanout:tasks", tasks: r.tasks });
+      }
+
+      // ── Research: chain (deep) or parallel-with-extend (flat) ─────
       const research = yield* agentPool({
         tools: [...allDataTools, reportTool],
-        systemPrompt: baseWorkerPrompt,
         parent: queryRoot,
         terminalTool: "report",
         maxTurns: r.maxTurns,
@@ -318,54 +319,109 @@ export function* handleQuery(
         trace: opts.trace,
         scorer: primaryScorer,
         enableThinking: true,
-        orchestrate: chain(r.tasks, (task, i) => ({
-          task: {
-            content: taskToContent(task),
-            systemPrompt: renderWorkerPrompt(primarySource, {
-              tools: workerToolCtx,
-              maxTurns: r.maxTurns,
-              agentCount: 1,
-              siblingTasks: [],
-              date: currentDate,
-              taskIndex: i,
-            }),
-          },
-          userContent: `Research task: ${task.description}`,
-          beforeSpawn: function* () {
-            yield* send({
-              type: "spine:task",
-              taskIndex: i,
-              taskCount: r.tasks.length,
-              description: task.description,
-            });
-            yield* send({
-              type: "spine:source",
-              taskIndex: i,
-              source: primarySource.name,
-            });
-          },
-          afterExtend: function* (delta, position) {
-            yield* send({
-              type: "spine:task:done",
-              taskIndex: i,
-              stageFindings: delta,
-              accumulated: position,
-            });
-          },
-        })),
+        orchestrate: opts.reasoningMode === "flat"
+          // Flat: pure parallel — agents run concurrently and independently.
+          // No spine extension (findings reach synth via prompt injection,
+          // not KV attention). `taskIndex: 0` keeps web-worker.eta's
+          // BUILD_ON_PRIOR block off (no priors in parallel); `siblingTasks`
+          // + `agentCount > 1` activates sibling awareness so each agent
+          // stays in its lane.
+          ? parallel(r.tasks.map((task, i) => ({
+              content: taskToContent(task),
+              systemPrompt: renderWorkerPrompt(primarySource, {
+                tools: workerToolCtx,
+                maxTurns: r.maxTurns,
+                agentCount: r.tasks.length,
+                siblingTasks: r.tasks.filter((_, j) => j !== i).map(t => t.description),
+                date: currentDate,
+                taskIndex: 0,
+              }),
+              seed: 1000 + i,
+            })))
+          // Deep: chain-shaped spine that extends between each task.
+          : chain(r.tasks, (task, i) => ({
+              task: {
+                content: taskToContent(task),
+                systemPrompt: renderWorkerPrompt(primarySource, {
+                  tools: workerToolCtx,
+                  maxTurns: r.maxTurns,
+                  agentCount: 1,
+                  siblingTasks: [],
+                  date: currentDate,
+                  taskIndex: i,
+                }),
+              },
+              userContent: `Research task: ${task.description}`,
+              beforeSpawn: function* () {
+                yield* send({
+                  type: "spine:task",
+                  taskIndex: i,
+                  taskCount: r.tasks.length,
+                  description: task.description,
+                });
+                yield* send({
+                  type: "spine:source",
+                  taskIndex: i,
+                  source: primarySource.name,
+                });
+              },
+              afterExtend: function* (delta, position) {
+                yield* send({
+                  type: "spine:task:done",
+                  taskIndex: i,
+                  stageFindings: delta,
+                  accumulated: position,
+                });
+              },
+            })),
       });
 
-      // ── Synthesis: single agent over the fully-extended spine ───
+      // Emit research:done HERE — before synth starts — so the flat-mode
+      // panel's finalize happens while the cursor is still directly below
+      // the panel. If we emit it outside the withSharedRoot body (after
+      // synth has streamed 100+ lines), panel.finish's cursor-up lands
+      // mid-synth and overwrites a chunk of the synthesis output.
+      researchTimeMs = researchTimer();
+      yield* send({
+        type: "research:done",
+        totalTokens: research.totalTokens,
+        totalToolCalls: research.totalToolCalls,
+        timeMs: researchTimeMs,
+      });
+
+      // ── Synthesis ────────────────────────────────────────────
+      // Deep: synth forks from queryRoot where chain's extendRoot has
+      // accumulated findings as conversation turns. SYNTHESIZE_DEEP reads
+      // them from prior turns via KV attention.
+      //
+      // Flat: no spine extension happened (parallel agents are independent);
+      // findings are concatenated into a single text block and injected
+      // into SYNTHESIZE_FLAT's user prompt. Synth still forks from queryRoot
+      // (which carries only session context, if any), but its task prompt
+      // carries the fan-in directly.
       yield* send({ type: "synthesize:start" });
       const synthT = startTimer();
-      const synthCtx = { query };
 
-      const synth = yield* agentPool({
-        orchestrate: parallel([
-          { content: renderTemplate(SYNTHESIZE.user, synthCtx) },
-        ]),
+      const synthPrompt = opts.reasoningMode === "flat" ? SYNTHESIZE_FLAT : SYNTHESIZE_DEEP;
+      const findings = opts.reasoningMode === "flat"
+        ? research.agents
+            .map((a, i) => {
+              const desc = r.tasks[i]?.description ?? `task ${i + 1}`;
+              const body = a.result?.trim() || "(no findings)";
+              return `### Agent ${i + 1}: ${desc}\n\n${body}`;
+            })
+            .join("\n\n")
+        : undefined;
+      const synthCtx = {
+        query,
+        findings,
+        agentCount: r.tasks.length,
+      };
+
+      const synth = yield* useAgent({
+        systemPrompt: renderTemplate(synthPrompt.system, synthCtx),
+        task: renderTemplate(synthPrompt.user, synthCtx),
         tools: [reportTool],
-        systemPrompt: renderTemplate(SYNTHESIZE.system, synthCtx),
         parent: queryRoot,
         terminalTool: "report",
         maxTurns: opts.maxTurns,
@@ -373,10 +429,16 @@ export function* handleQuery(
       });
 
       synthTimeMs = synthT();
-      const synthAnswer = synth.agents[0]?.result || "";
+      const synthAnswer = synth.result || "";
       yield* send({
         type: "synthesize:done",
-        pool: synth,
+        agentId: synth.id,
+        // Defensive: recovery (end-of-pool scratchpad extraction for
+        // free-text-stop agents) prunes the branch at agent-pool.ts:269.
+        // Matches the pattern in AgentPoolResult construction.
+        ppl: synth.branch.disposed ? 0 : synth.branch.perplexity,
+        tokenCount: synth.tokenCount,
+        toolCallCount: synth.toolCallCount,
         timeMs: synthTimeMs,
       });
 
@@ -384,18 +446,13 @@ export function* handleQuery(
         answer: synthAnswer,
         totalTokens: research.totalTokens,
         totalToolCalls: research.totalToolCalls,
-        synthTokens: synth.totalTokens,
+        synthTokens: synth.tokenCount,
       };
     },
   );
 
-  const researchTimeMs = researchTimer();
-  yield* send({
-    type: "research:done",
-    totalTokens: researchTotalTokens,
-    totalToolCalls: researchTotalToolCalls,
-    timeMs: researchTimeMs,
-  });
+  // research:done already fired inside the withSharedRoot body (before synth)
+  // so the flat-mode panel's finalize landed at the right cursor position.
   yield* send({ type: "answer", text: answer });
 
   // ── Verify + Eval ─────────────────────────────────────────
@@ -405,15 +462,18 @@ export function* handleQuery(
     query,
   });
 
+  const verifyTimer = startTimer();
+  yield* send({ type: "verify:start", count: opts.verifyCount, mode: opts.reasoningMode });
   const verifyPool = yield* agentPool({
     orchestrate: parallel(
       Array.from({ length: opts.verifyCount }, (_, i) => ({
         content: verifyContent,
+        systemPrompt: VERIFY.system,
         seed: 2000 + i,
       })),
     ),
-    systemPrompt: VERIFY.system,
   });
+  yield* send({ type: "verify:done", count: opts.verifyCount, timeMs: verifyTimer() });
   const verifyOutputs = verifyPool.agents.map((a) => a.agent.rawOutput);
 
   const responsesText = verifyOutputs

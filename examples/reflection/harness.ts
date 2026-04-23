@@ -5,9 +5,9 @@ import type { Operation, Channel } from 'effection';
 import { Branch, Session, buildUserDelta } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  Ctx, agentPool, parallel, diverge, DefaultAgentPolicy,
+  Ctx, useAgent, diverge, DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
-import type { Tool, AgentPoolResult, DivergeResult } from '@lloyal-labs/lloyal-agents';
+import type { Tool, Agent, DivergeResult } from '@lloyal-labs/lloyal-agents';
 import type { WorkflowEvent } from './tui';
 import { reportTool } from '@lloyal-labs/rig';
 
@@ -39,14 +39,14 @@ export interface HarnessOpts {
 function* research(
   query: string,
   opts: HarnessOpts,
-): Operation<{ findings: string; pool: AgentPoolResult; timeMs: number }> {
+): Operation<{ findings: string; agent: Agent; timeMs: number }> {
   yield* opts.events.send({ type: 'research:start' });
   const t = performance.now();
 
-  const pool = yield* agentPool({
-    orchestrate: parallel([{ content: query }]),
-    tools: [...opts.tools, reportTool],
+  const agent = yield* useAgent({
     systemPrompt: RESEARCH.system,
+    task: query,
+    tools: [...opts.tools, reportTool],
     terminalTool: 'report',
     maxTurns: opts.maxTurns,
     trace: opts.trace,
@@ -54,9 +54,16 @@ function* research(
   });
 
   const timeMs = performance.now() - t;
-  const findings = pool.agents[0]?.result ?? '(no findings)';
-  yield* opts.events.send({ type: 'research:done', pool, timeMs });
-  return { findings, pool, timeMs };
+  const findings = agent.result ?? '(no findings)';
+  yield* opts.events.send({
+    type: 'research:done',
+    agentId: agent.id,
+    ppl: agent.branch.perplexity,
+    tokenCount: agent.tokenCount,
+    toolCallCount: agent.toolCallCount,
+    timeMs,
+  });
+  return { findings, agent, timeMs };
 }
 
 // ── Phase 2: Draft ───────────────────────────────────────────────
@@ -183,7 +190,7 @@ export function* handleQuery(query: string, opts: HarnessOpts): Operation<void> 
   yield* opts.events.send({
     type: 'stats',
     timings: [
-      { label: 'Research', tokens: r.pool.totalTokens, detail: `${r.pool.totalToolCalls} tools`, timeMs: r.timeMs },
+      { label: 'Research', tokens: r.agent.tokenCount, detail: `${r.agent.toolCallCount} tools`, timeMs: r.timeMs },
       { label: 'Draft', tokens: d.tokenCount, detail: '', timeMs: d.timeMs },
       { label: 'Critique', tokens: cr.tokenCount, detail: `${opts.critiqueAttempts} attempts`, timeMs: cr.timeMs },
       { label: 'Revise', tokens: v.tokenCount, detail: '', timeMs: v.timeMs },

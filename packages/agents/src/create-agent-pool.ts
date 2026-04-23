@@ -30,8 +30,6 @@ export interface CreateAgentPoolOpts {
   orchestrate: Orchestrator;
   /** Data access tools (array, createToolkit called internally). Optional — pool degenerates cleanly without tools. */
   tools?: Tool[];
-  /** System prompt for all agents. */
-  systemPrompt: string;
   /** Terminal tool name — tool must be in the tools array. Pool intercepts and extracts result. */
   terminalTool?: string;
   /** Max tool-use turns per agent before hard cut. @default 100 */
@@ -81,8 +79,7 @@ export interface CreateAgentPoolOpts {
  * ```typescript
  * const pool = yield* agentPool({
  *   tools: [delegateTool, ...source.tools, reportTool],
- *   systemPrompt: RESEARCH_PROMPT,
- *   tasks: questions.map(q => ({ content: q })),
+ *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: RESEARCH_PROMPT }))),
  *   terminalTool: 'report',
  * });
  * ```
@@ -98,7 +95,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
   const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
 
   return yield* withSharedRoot(
-    { systemPrompt: opts.systemPrompt, tools: toolkit.toolsJson, parent: warmParent },
+    { parent: warmParent },
     function* (root) {
       // On warm path, use the caller-provided parent AS the logical spine so
       // `ctx.extendRoot` mutations persist across the pool's lifetime and are
@@ -111,7 +108,6 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
       const sub = yield* useAgentPool({
         root: spineRoot,
         orchestrate: opts.orchestrate,
-        systemPrompt: opts.systemPrompt,
         toolsJson: toolkit.toolsJson,
         tools: toolkit.toolMap,
         terminalTool: opts.terminalTool,

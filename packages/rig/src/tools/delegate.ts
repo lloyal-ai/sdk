@@ -33,6 +33,8 @@ export interface DelegateToolOpts {
   /** Pool options propagated to the inner agentPool call. Orchestrator is set
    *  by DelegateTool (one agent per extracted task, parallel). */
   poolOpts: Omit<CreateAgentPoolOpts, 'orchestrate'>;
+  /** System prompt applied to each delegated sub-agent. */
+  systemPrompt: string;
   /** Factory for per-invocation policy. Called fresh each time the tool fires so time budgets start from delegation, not from pool setup. */
   createPolicy?: () => AgentPolicy;
 }
@@ -67,6 +69,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
   readonly parameters: JsonSchema;
 
   private _poolOpts: Omit<CreateAgentPoolOpts, 'orchestrate'>;
+  private _systemPrompt: string;
   private _extractTasks: (args: Record<string, unknown>) => string[];
   private _createPolicy?: () => AgentPolicy;
 
@@ -77,6 +80,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
     this.parameters = opts.argsSchema ?? DEFAULT_ARGS_SCHEMA;
     this._extractTasks = opts.extractTasks ?? ((args: Record<string, unknown>) => args.tasks as string[]);
     this._poolOpts = opts.poolOpts;
+    this._systemPrompt = opts.systemPrompt;
     this._createPolicy = opts.createPolicy;
   }
 
@@ -198,7 +202,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
     const pool = yield* agentPool({
       ...opts,
       ...(this._createPolicy ? { policy: this._createPolicy() } : {}),
-      orchestrate: parallel(tasks.map(t => ({ systemPrompt: opts.systemPrompt, content: t }))),
+      orchestrate: parallel(tasks.map(t => ({ systemPrompt: this._systemPrompt, content: t }))),
       parent: context?.branch,
       pruneOnReport: opts.pruneOnReport ?? true,
       scorer: context?.scorer,

@@ -41,16 +41,24 @@ const DEFAULT_RERANKER = path.resolve(
 const { values: flags, positionals } = parseArgs({
   args: process.argv.slice(2),
   options: {
-    query:            { type: "string" },
-    reranker:         { type: "string" },
-    corpus:           { type: "string" },
+    query:             { type: "string" },
+    reranker:          { type: "string" },
+    corpus:            { type: "string" },
     "findings-budget": { type: "string" },
-    jsonl:            { type: "boolean", default: false },
-    verbose:          { type: "boolean", default: false },
-    trace:            { type: "boolean", default: false },
+    "reasoning-mode":  { type: "string", default: "deep" },
+    jsonl:             { type: "boolean", default: false },
+    verbose:           { type: "boolean", default: false },
+    trace:             { type: "boolean", default: false },
   },
   allowPositionals: true,
 });
+
+const reasoningModeRaw = flags["reasoning-mode"];
+if (reasoningModeRaw !== "flat" && reasoningModeRaw !== "deep") {
+  process.stderr.write(`Invalid --reasoning-mode: ${reasoningModeRaw}. Expected "flat" or "deep".\n`);
+  process.exit(1);
+}
+const reasoningMode: "flat" | "deep" = reasoningModeRaw;
 
 const modelPath = positionals[0] || DEFAULT_MODEL;
 const rerankModelPath = flags.reranker || DEFAULT_RERANKER;
@@ -169,6 +177,7 @@ main(function* () {
     maxTurns: MAX_TOOL_TURNS,
     trace,
     findingsMaxChars,
+    reasoningMode,
   };
 
   // ── Initial query — clarify falls through to passthrough in non-interactive mode

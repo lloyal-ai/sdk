@@ -7,13 +7,14 @@
 
 import { each } from 'effection';
 import type { Channel, Operation } from 'effection';
-import type { AgentEvent, AgentPoolResult } from '@lloyal-labs/lloyal-agents';
+import type { AgentEvent } from '@lloyal-labs/lloyal-agents';
 import type { PlanIntent, ResearchTask } from '@lloyal-labs/rig';
 import type { OpTiming, ViewState, ViewHandler } from '../shared/tui/types';
-import { c, log, emit, statusClear } from '../shared/tui/primitives';
+import { c, log, emit, status, statusClear } from '../shared/tui/primitives';
 import { createViewState, agentHandler, label, resetLabels } from '../shared/tui/agent-view';
 import { statsHandler, completeHandler } from '../shared/tui/stats-view';
 import { createGaugeState, gaugeHandler } from '../shared/tui/gauge';
+import { createAgentPanel } from '../shared/tui/agent-panel';
 import { tree, section } from '../shared/tui/tree';
 
 // Re-export shared primitives for main.ts
@@ -25,13 +26,16 @@ export type { OpTiming } from '../shared/tui/types';
 export type StepEvent =
   | { type: 'query'; query: string; warm: boolean }
   | { type: 'plan'; intent: PlanIntent; tasks: ResearchTask[]; clarifyQuestions: string[]; tokenCount: number; timeMs: number }
-  | { type: 'research:start'; agentCount: number }
+  | { type: 'research:start'; agentCount: number; mode: 'flat' | 'deep' }
   | { type: 'research:done'; totalTokens: number; totalToolCalls: number; timeMs: number }
+  | { type: 'fanout:tasks'; tasks: ResearchTask[] }
   | { type: 'spine:task'; taskIndex: number; taskCount: number; description: string }
   | { type: 'spine:source'; taskIndex: number; source: string }
   | { type: 'spine:task:done'; taskIndex: number; stageFindings: number; accumulated: number }
   | { type: 'synthesize:start' }
-  | { type: 'synthesize:done'; pool: AgentPoolResult; timeMs: number }
+  | { type: 'synthesize:done'; agentId: number; ppl: number; tokenCount: number; toolCallCount: number; timeMs: number }
+  | { type: 'verify:start'; count: number; mode: 'flat' | 'deep' }
+  | { type: 'verify:done'; count: number; timeMs: number }
   | { type: 'eval:done'; converged: boolean | null; tokenCount: number; sampleCount: number; timeMs: number }
   | { type: 'answer'; text: string }
   | { type: 'stats'; timings: OpTiming[]; kvLine?: string; ctxPct: number; ctxPos: number; ctxTotal: number }
@@ -78,12 +82,46 @@ function planHandler(): ViewHandler {
 function researchSummaryHandler(state: ViewState): ViewHandler {
   return (ev) => {
     if (ev.type === 'research:start') {
-      log(section('Research') + ' ' + detail(`${ev.agentCount} agents`));
+      const shape = ev.mode === 'flat' ? `flat · ${ev.agentCount} parallel` : `${ev.agentCount} agents`;
+      log(section('Research') + ' ' + detail(shape));
       resetLabels(state);
     } else if (ev.type === 'research:done') {
+      // Close the flat-mode panel if it was open. Chain mode has no panel;
+      // no-op there. Any region still open (agent didn't emit agent:report
+      // — e.g. recovery-skipped / failed) gets a default footer here.
+      // `panel.finish` is idempotent against regions that already froze.
+      if (state.agentPanel) {
+        for (const [agentId, row] of state.agentRow) {
+          const status = state.agentStatus.get(agentId);
+          const tokenCount = status?.tokenCount ?? 0;
+          state.agentPanel.finish(row, `${c.green}done${c.reset} · ${tokenCount} tok`);
+        }
+        state.agentPanel.close();
+        state.agentPanel = null;
+        state.agentRow.clear();
+      }
       statusClear();
       log(`    ${detail(`${ev.totalTokens} tok · ${ev.totalToolCalls} tools · ${ms(ev.timeMs)}`)}`);
     }
+  };
+}
+
+function fanoutHandler(state: ViewState): ViewHandler {
+  return (ev) => {
+    if (ev.type !== 'fanout:tasks') return;
+    // Create the per-task panel. Rows = one per task, each with a scrolling
+    // body showing the last 3 lines of that agent's stream + tool events.
+    // From this point until research:done, all agent:* events route through
+    // the panel — no other log() calls must fire during the section or the
+    // cursor math breaks.
+    resetLabels(state);
+    state.agentPanel = createAgentPanel(
+      ev.tasks.map((t: { description: string }, i: number) => ({
+        title: t.description,
+        label: `A${i}`,
+      })),
+      5,
+    );
   };
 }
 
@@ -123,12 +161,29 @@ function synthesizeHandler(state: ViewState): ViewHandler {
       } else {
         statusClear();
       }
-      ev.pool.agents.forEach((a, i) => {
-        const glyph = i === ev.pool.agents.length - 1 ? tree.leaf : tree.branch;
-        const pplStr = Number.isFinite(a.ppl) ? ` · ppl ${a.ppl.toFixed(2)}` : '';
-        log(`    ${glyph} ${c.yellow}${label(state, a.agentId)}${c.reset} ${c.green}done${c.reset} ${detail(`${a.tokenCount} tok · ${a.toolCallCount} tools${pplStr}`)}`);
-      });
-      log(`    ${detail(`${ev.pool.totalTokens} tok · ${ev.pool.totalToolCalls} tools · ${ms(ev.timeMs)}`)}`);
+      const pplStr = Number.isFinite(ev.ppl) ? ` · ppl ${ev.ppl.toFixed(2)}` : '';
+      log(`    ${tree.leaf} ${c.yellow}${label(state, ev.agentId)}${c.reset} ${c.green}done${c.reset} ${detail(`${ev.tokenCount} tok · ${ev.toolCallCount} tools${pplStr}`)}`);
+      log(`    ${detail(`${ev.tokenCount} tok · ${ev.toolCallCount} tools · ${ms(ev.timeMs)}`)}`);
+    }
+  };
+}
+
+function verifyHandler(state: ViewState): ViewHandler {
+  return (ev) => {
+    if (ev.type === 'verify:start') {
+      // Flat mode only: verify's 3 concurrent agents don't have a panel
+      // yet, so their streamed output would interleave. Mute rendering
+      // and show a static "Verifying..." status line until done. Deep
+      // mode keeps its existing behavior (handled elsewhere or not at all).
+      if (ev.mode !== 'flat') return;
+      log(section('Verify') + ' ' + detail(`${ev.count} samples`));
+      state.verifyMuted = true;
+      status(`    ${c.dim}⠋${c.reset} ${c.dim}Verifying…${c.reset}`);
+    } else if (ev.type === 'verify:done') {
+      if (!state.verifyMuted) return;
+      state.verifyMuted = false;
+      statusClear();
+      log(`    ${detail(`${ev.count} samples · ${ms(ev.timeMs)}`)}`);
     }
   };
 }
@@ -178,7 +233,9 @@ export function createView(opts: ViewOpts) {
     agentHandler(state, gauge),
     researchSummaryHandler(state),
     spineHandler(state),
+    fanoutHandler(state),
     synthesizeHandler(state),
+    verifyHandler(state),
     evalHandler(),
     answerHandler(state),
     statsHandler(),

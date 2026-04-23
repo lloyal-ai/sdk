@@ -224,8 +224,6 @@ export interface AgentPoolOptions {
    * spine extension through the provided {@link PoolContext}.
    */
   orchestrate: (ctx: import('./orchestrators').PoolContext) => Operation<void>;
-  /** Pool-level system prompt — default for tasks that don't override. */
-  systemPrompt: string;
   /** JSON-serialized tool schemas for chat formatting. Derived from tool map. */
   toolsJson: string;
   /**

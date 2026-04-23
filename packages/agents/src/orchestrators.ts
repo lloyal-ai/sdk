@@ -5,15 +5,15 @@ import type { Agent } from './Agent';
 
 /**
  * Spec for spawning a single agent under a {@link PoolContext}.
- * `parent` defaults to `ctx.root`; `systemPrompt` defaults to the pool-level prompt.
+ * `parent` defaults to `ctx.root`.
  *
  * @category Agents
  */
 export interface SpawnSpec {
   /** User message content — the agent's task. */
   content: string;
-  /** Per-agent system prompt. Falls back to the pool-level systemPrompt. */
-  systemPrompt?: string;
+  /** Per-agent system prompt. */
+  systemPrompt: string;
   /** PRNG seed for sampler diversity. */
   seed?: number;
   /** Parent branch to fork from. Falls back to ctx.root. */
@@ -66,9 +66,8 @@ export type Orchestrator = (ctx: PoolContext) => Operation<void>;
  * @example
  * ```ts
  * yield* agentPool({
- *   systemPrompt: RESEARCH_PROMPT,
  *   tools: [...],
- *   orchestrate: parallel(questions.map(q => ({ content: q }))),
+ *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: RESEARCH_PROMPT }))),
  * });
  * ```
  *
@@ -118,7 +117,6 @@ export interface ChainStep {
  * @example
  * ```ts
  * yield* agentPool({
- *   systemPrompt: WORKER,
  *   tools: [...],
  *   parent: queryRoot,
  *   orchestrate: chain(researchTasks, (task, i) => ({
@@ -160,8 +158,8 @@ export const chain = <T>(
  * ```ts
  * yield* agentPool({
  *   orchestrate: fanout(
- *     { task: { content: landscapeQuery }, userContent: 'Landscape survey' },
- *     domainQueries.map(q => ({ content: q })),
+ *     { task: { content: landscapeQuery, systemPrompt: WORKER }, userContent: 'Landscape survey' },
+ *     domainQueries.map(q => ({ content: q, systemPrompt: WORKER })),
  *   ),
  * });
  * ```

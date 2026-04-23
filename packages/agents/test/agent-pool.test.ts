@@ -107,6 +107,7 @@ async function runPool(opts: {
       : '';
     const taskSpecs = Array.from({ length: taskCount }, (_, i) => ({
       content: `Task ${i}`,
+      systemPrompt: 'You are an agent.',
       seed: i,
     }));
 
@@ -114,7 +115,6 @@ async function runPool(opts: {
       const sub = yield* useAgentPool({
         root,
         orchestrate: parallel(taskSpecs),
-        systemPrompt: 'You are an agent.',
         toolsJson,
         tools: opts.tools ?? new Map(),
         policy: opts.policy,
@@ -1011,8 +1011,7 @@ describe('tool probe lifecycle hook', () => {
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
           root,
-          orchestrate: parallel([{ content: 'Task', seed: 0 }]),
-          systemPrompt: 'Agent',
+          orchestrate: parallel([{ content: 'Task', systemPrompt: 'Agent', seed: 0 }]),
           toolsJson: JSON.stringify([probeTool.schema]),
           tools: toolMap,
           policy: toolCallPolicy(),
@@ -1079,8 +1078,7 @@ describe('tool probe lifecycle hook', () => {
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
           root,
-          orchestrate: parallel([{ content: 'Task', seed: 0 }]),
-          systemPrompt: 'Agent',
+          orchestrate: parallel([{ content: 'Task', systemPrompt: 'Agent', seed: 0 }]),
           toolsJson: JSON.stringify([noProbeTool.schema]),
           tools: toolMap,
           policy: toolCallPolicy(),
@@ -1251,10 +1249,9 @@ describe('tool probe lifecycle hook', () => {
         const sub = yield* useAgentPool({
           root,
           orchestrate: parallel([
-            { content: 'Task 0', seed: 0 },
-            { content: 'Task 1', seed: 1 },
+            { content: 'Task 0', systemPrompt: 'Agent', seed: 0 },
+            { content: 'Task 1', systemPrompt: 'Agent', seed: 1 },
           ]),
-          systemPrompt: 'Agent',
           toolsJson: JSON.stringify([tool.schema]),
           tools: toolMap,
           policy: (() => {

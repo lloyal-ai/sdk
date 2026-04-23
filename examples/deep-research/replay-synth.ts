@@ -32,7 +32,7 @@ import { main, call, spawn, each } from "effection";
 import { createContext } from "@lloyal-labs/lloyal.node";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import {
-  initAgents, agentPool, parallel, renderTemplate, JsonlTraceWriter,
+  initAgents, useAgent, renderTemplate, JsonlTraceWriter,
   extractSpineCheckpoint, reconstructBranch,
 } from "@lloyal-labs/lloyal-agents";
 import type { TraceEvent } from "@lloyal-labs/lloyal-agents";
@@ -182,16 +182,16 @@ main(function* () {
   );
 
   const synthCtx = { query };
-  const synth = yield* agentPool({
-    orchestrate: parallel([{ content: renderTemplate(SYNTHESIZE.user, synthCtx) }]),
-    tools: [reportTool],
+  const synth = yield* useAgent({
     systemPrompt: renderTemplate(SYNTHESIZE.system, synthCtx),
+    task: renderTemplate(SYNTHESIZE.user, synthCtx),
+    tools: [reportTool],
     parent: queryRoot,
     terminalTool: "report",
     maxTurns: 20,
   });
 
-  const answer = synth.agents[0]?.result ?? "(no report produced)";
+  const answer = synth.result ?? "(no report produced)";
 
   if (outPath) {
     fs.writeFileSync(outPath, answer);

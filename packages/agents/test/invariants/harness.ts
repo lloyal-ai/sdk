@@ -201,6 +201,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     const taskCount = spec.taskCount ?? spec.scripts.length;
     const taskSpecs = Array.from({ length: taskCount }, (_, i) => ({
       content: `Task ${i}`,
+      systemPrompt: 'You are an agent.',
       seed: i,
     }));
     const orchestrate = spec.orchestrate ?? parallel(taskSpecs);
@@ -209,7 +210,6 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
       const sub = yield* useAgentPool({
         root,
         orchestrate,
-        systemPrompt: 'You are an agent.',
         toolsJson,
         tools: spec.tools ?? new Map(),
         policy: spec.policy,

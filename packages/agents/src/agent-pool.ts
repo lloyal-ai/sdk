@@ -1,4 +1,4 @@
-import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each, sleep } from 'effection';
+import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each, sleep, action } from 'effection';
 import type { Operation, Subscription } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
@@ -446,7 +446,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
     });
     const tw = yield* Trace.expect();
-    const { root, orchestrate, systemPrompt: poolSystemPrompt, toolsJson, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false, enableThinking = false } = opts;
+    const { root, orchestrate, toolsJson, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false, enableThinking = false } = opts;
 
     // Tool index map for trace — position in toolkit array
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
@@ -511,6 +511,24 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     }
     const pendingSpawns: PendingSpawn[] = [];
 
+    // Pending extends — populated by PoolContext.extendRoot, drained in the
+    // same SPAWN phase as pendingSpawns so extend-onto-root and fork-suffix
+    // prefills batch into one native store.prefill call. Cross-fiber
+    // rendezvous uses action(): each extendRoot call suspends on its own
+    // resolve/reject closure, which the drain resolves after prefill lands.
+    // Fixes the pre-fix race where extendRoot called store.prefill directly
+    // from the orchestrator fiber, concurrently with the tick loop's native
+    // work (same class of bug that 50a0baf fixed for spawn).
+    interface PendingExtend {
+      tokens: number[];
+      userContent: string;
+      assistantContent: string;
+      resolve: (deltaTokens: number) => void;
+      reject: (err: Error) => void;
+      discarded: boolean;
+    }
+    const pendingExtends: PendingExtend[] = [];
+
     // Pool-level branch cleanup — ensures orphan-branch cleanup even when
     // spawns are lazy and the orchestrator's spawn scope exits early.
     yield* ensure(() => {
@@ -551,7 +569,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       *spawn(spec) {
         const parent = spec.parent ?? root;
         const task: AgentTaskSpec = {
-          systemPrompt: spec.systemPrompt ?? poolSystemPrompt,
+          systemPrompt: spec.systemPrompt,
           content: spec.content,
           tools: toolsJson,
           seed: spec.seed,
@@ -605,16 +623,24 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       *extendRoot(userContent, assistantContent) {
         if (!assistantContent) return 0;
         const turnTokens = buildTurnDelta(ctx, userContent, assistantContent);
-        yield* call(() => store.prefill([[root, turnTokens]]));
-        tw.write({
-          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-          type: 'spine:extend',
-          userContent,
-          assistantContent,
-          deltaTokens: turnTokens.length,
-          positionAfter: root.position,
+        // Rendezvous with the tick loop's SPAWN phase — see pendingExtends.
+        // action() is the Effection-native one-shot suspend: orchestrator
+        // queues the request, suspends; tick loop drains + resolves; this
+        // operation returns the deltaTokens. The finally returned from the
+        // executor marks the request discarded if this fiber is cancelled
+        // before the drain runs, so the drain doesn't touch a dead action.
+        return yield* action<number>((resolve, reject) => {
+          const req: PendingExtend = {
+            tokens: turnTokens,
+            userContent,
+            assistantContent,
+            resolve,
+            reject,
+            discarded: false,
+          };
+          pendingExtends.push(req);
+          return () => { req.discarded = true; };
         });
-        return turnTokens.length;
       },
 
       canFit(estimatedSuffixTokens) {
@@ -657,11 +683,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       const settlePressure = new ContextPressure(ctx, pressureOpts);
       let headroom = settlePressure.headroom;
 
-      if (trace) {
-        const desc = items.map(s => `${s.toolName}:${s.prefillTokens.length}`).join(', ');
-        try { process.stderr.write(`[SETTLE] remaining=${settlePressure.remaining} headroom=${headroom} cellsUsed=${settlePressure.cellsUsed} nCtx=${settlePressure.nCtx} items=[${desc}]\n`); } catch {}
-      }
-
       const prefillPairs: [Branch, number[]][] = [];
       const settledAgents: Agent[] = [];
       const itemProbes = new Map<number, string | undefined>();
@@ -677,9 +698,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // Policy is consulted at stall-break time, not here: invoking
           // it eagerly would break "wait for a sibling to report and
           // free cells" by nudging/dropping on first over-headroom.
-          if (trace) {
-            try { process.stderr.write(`[SETTLE] DEFER ${item.toolName}:${item.prefillTokens.length}>headroom=${headroom}\n`); } catch {}
-          }
           deferred.push(item);
           continue;
         }
@@ -701,10 +719,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
 
       if (prefillPairs.length > 0) {
-        if (trace) {
-          const total = prefillPairs.reduce((s, [, t]) => s + t.length, 0);
-          try { process.stderr.write(`[SETTLE] PREFILL ${prefillPairs.length} branches, ${total} tokens, headroom_after=${headroom}\n`); } catch {}
-        }
         yield* call(() => store.prefill(prefillPairs));
         counters.warmPrefillCalls++;
         counters.warmPrefillBranches += prefillPairs.length;
@@ -828,25 +842,62 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // ── Four-phase tick loop ─────────────────────────────────
     let recoveryAttempted = false;
     for (;;) {
-      // Idle until orchestrator enqueues a spawn (or completes with none).
-      if (agents.length === 0 && pendingSpawns.length === 0) {
+      // Idle until orchestrator enqueues work (spawn or extend) or completes.
+      // Include pendingExtends: the final extend after the last task in chain
+      // mode must drain before the loop exits, otherwise the orchestrator fiber
+      // is left suspended on a dead action.
+      if (
+        agents.length === 0
+        && pendingSpawns.length === 0
+        && pendingExtends.length === 0
+      ) {
         if (orchestratorDone) break;
         yield* sleep(1);
         continue;
       }
 
-      // -- Phase 0: SPAWN -- drain pending spawns and batch-prefill suffixes in ONE native call.
-      // All store-level native calls in this pool are issued from this fiber (the tick loop),
-      // never from the orchestrator's fiber. This preserves the continuous-tree-batching
-      // invariant: every phase packs all ready work into a single store.commit/prefill.
-      if (pendingSpawns.length > 0) {
-        const drained = pendingSpawns.splice(0, pendingSpawns.length);
-        const prefillPairs: [Branch, number[]][] = drained.map(
-          s => [s.agent.branch, s.suffixTokens],
-        );
-        yield* call(() => store.prefill(prefillPairs));
+      // -- Phase 0: SPAWN+EXTEND -- drain pending spawns AND pending extends,
+      // batching all fork-suffix prefills and extend-onto-root prefills into
+      // ONE native store.prefill call. All store-level native calls in this
+      // pool are issued from this fiber (the tick loop), never concurrently
+      // with the orchestrator's fiber. Piggybacking extend in this phase
+      // preserves the continuous-tree-batching invariant (one GPU round-trip
+      // per tick) and naturally atomic-orders both kinds of work.
+      if (pendingSpawns.length > 0 || pendingExtends.length > 0) {
+        const drainedSpawns = pendingSpawns.splice(0, pendingSpawns.length);
+        const drainedExtends = pendingExtends
+          .splice(0, pendingExtends.length)
+          .filter(e => !e.discarded);
 
-        for (const s of drained) {
+        const prefillPairs: [Branch, number[]][] = [
+          ...drainedSpawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
+          ...drainedExtends.map(e => [root, e.tokens] as [Branch, number[]]),
+        ];
+
+        try {
+          if (prefillPairs.length > 0) {
+            yield* call(() => store.prefill(prefillPairs));
+          }
+        } catch (err) {
+          for (const e of drainedExtends) e.reject(err as Error);
+          throw err;
+        }
+
+        // Resolve extend requests with the delta token count. root.position
+        // has advanced by the sum of extend token counts at this point.
+        for (const e of drainedExtends) {
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'spine:extend',
+            userContent: e.userContent,
+            assistantContent: e.assistantContent,
+            deltaTokens: e.tokens.length,
+            positionAfter: root.position,
+          });
+          e.resolve(e.tokens.length);
+        }
+
+        for (const s of drainedSpawns) {
           tw.write({
             traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'branch:create', branchHandle: s.agent.id, parentHandle: s.agent.parentId,
@@ -876,10 +927,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // -- Phase 1: PRODUCE -- sample from active agents, collect tool calls
       policy.resetTick?.();
       const pressure = new ContextPressure(ctx, pressureOpts);
-
-      if (trace && (pressure.critical || pressure.headroom < 0)) {
-        try { process.stderr.write(`[PRODUCE] ${pressure.critical ? 'CRITICAL' : 'SOFT_LIMIT'} remaining=${pressure.remaining} headroom=${pressure.headroom} cellsUsed=${pressure.cellsUsed} nCtx=${pressure.nCtx}\n`); } catch {}
-      }
 
       const entries: [Branch, number][] = [];
       const toolCalls: { agent: Agent; tc: ParsedToolCall }[] = [];

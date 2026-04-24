@@ -13,11 +13,7 @@ export type {
 } from './state';
 export type { StepEvent, WorkflowEvent } from './events';
 export type { Command } from './commands';
-export {
-  loadConfig,
-  saveConfig,
-  DEFAULT_CONFIG_PATH,
-} from './config';
+export { loadConfig, saveConfig } from './config';
 export type {
   Config,
   ConfigSources,

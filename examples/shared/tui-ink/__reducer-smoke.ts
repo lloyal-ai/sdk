@@ -411,7 +411,7 @@ check('agent:done sets phase=idle (not done) so recovery produces stream', () =>
   assert.equal(a.phase, 'thinking');
 });
 
-check('config:loaded on boot → uiPhase=composer, config set', () => {
+check('config:loaded seeds config without forcing a uiPhase transition', () => {
   const s = drive([
     {
       type: 'config:loaded',
@@ -427,13 +427,70 @@ check('config:loaded on boot → uiPhase=composer, config set', () => {
         reasoningMode: 'file',
         modelPath: 'default',
         reranker: 'default',
+        nCtx: 'default',
       },
       path: '/tmp/harness.json',
     } as WorkflowEvent,
   ]);
-  assert.equal(s.uiPhase, 'composer');
+  assert.equal(s.uiPhase, 'boot');
   assert.equal(s.config?.sources.tavilyKey, 'tvly-x');
   assert.equal(s.configOrigin?.tavilyKey, 'file');
+});
+
+check('download:start → uiPhase=downloading + download entry added', () => {
+  const s = drive([
+    { type: 'download:start', id: 'llm', label: 'LLM', sizeBytes: 1000 } as WorkflowEvent,
+  ]);
+  assert.equal(s.uiPhase, 'downloading');
+  assert.equal(s.downloads.length, 1);
+  assert.equal(s.downloads[0].id, 'llm');
+  assert.equal(s.downloads[0].done, false);
+});
+
+check('download:progress updates got/total for the matching id', () => {
+  const s = drive([
+    { type: 'download:start', id: 'a', label: 'A', sizeBytes: 100 } as WorkflowEvent,
+    { type: 'download:start', id: 'b', label: 'B', sizeBytes: 200 } as WorkflowEvent,
+    { type: 'download:progress', id: 'a', got: 50, total: 100 } as WorkflowEvent,
+  ]);
+  const a = s.downloads.find((d) => d.id === 'a')!;
+  const b = s.downloads.find((d) => d.id === 'b')!;
+  assert.equal(a.got, 50);
+  assert.equal(b.got, 0);
+});
+
+check('download:complete marks entry done', () => {
+  const s = drive([
+    { type: 'download:start', id: 'llm', label: 'LLM', sizeBytes: 100 } as WorkflowEvent,
+    { type: 'download:complete', id: 'llm' } as WorkflowEvent,
+  ]);
+  assert.equal(s.downloads[0].done, true);
+  // uiPhase stays 'downloading' — main.ts explicitly transitions to 'loading'
+  assert.equal(s.uiPhase, 'downloading');
+});
+
+check('weights:start → uiPhase=loading + loadingLabel set', () => {
+  const s = drive([
+    { type: 'weights:start', label: 'Loading Qwen3.5-4B…' } as WorkflowEvent,
+  ]);
+  assert.equal(s.uiPhase, 'loading');
+  assert.equal(s.loadingLabel, 'Loading Qwen3.5-4B…');
+});
+
+check('weights:label updates the label in place', () => {
+  const s = drive([
+    { type: 'weights:start', label: 'a' } as WorkflowEvent,
+    { type: 'weights:label', label: 'b' } as WorkflowEvent,
+  ]);
+  assert.equal(s.loadingLabel, 'b');
+});
+
+check('weights:done clears loadingLabel', () => {
+  const s = drive([
+    { type: 'weights:start', label: 'a' } as WorkflowEvent,
+    { type: 'weights:done' } as WorkflowEvent,
+  ]);
+  assert.equal(s.loadingLabel, null);
 });
 
 check('plan:start → uiPhase=planning', () => {

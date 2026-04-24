@@ -15,7 +15,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
-import { main, ensure, createSignal, spawn, each, call } from "effection";
+import {
+  main,
+  ensure,
+  createSignal,
+  spawn,
+  each,
+  call,
+} from "effection";
+import type { Operation } from "effection";
 import { createContext } from "@lloyal-labs/lloyal.node";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import { initAgents, JsonlTraceWriter } from "@lloyal-labs/lloyal-agents";
@@ -25,7 +33,6 @@ import {
   log,
   setJsonlMode,
   setVerboseMode,
-  fmtSize,
   emit,
   isTTY,
 } from "../shared/tui/primitives";
@@ -34,6 +41,7 @@ import type { WorkflowEvent, Command, Config } from "../shared/tui-ink";
 // Runtime imports ONLY from modules that don't transitively pull Ink (ESM),
 // otherwise the top-level await in yoga-wasm-web breaks the CJS loader.
 import { loadConfig, saveConfig } from "../shared/tui-ink/config";
+import { createBus, type EventBus } from "../shared/tui-ink/event-bus";
 import { TavilyProvider } from "@lloyal-labs/rig";
 import type {
   PlanResult,
@@ -55,17 +63,16 @@ import {
   runPassthroughBranch,
   runResearchBranch,
 } from "./harness";
+import {
+  downloadIfMissing,
+  resolveModelPath,
+  type ModelCatalogEntry,
+} from "./models";
 
 // ── CLI args ─────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = path.resolve(
-  __dirname,
-  "../../models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-);
-const DEFAULT_RERANKER = path.resolve(
-  __dirname,
-  "../../models/qwen3-reranker-0.6b-q4_k_m.gguf",
-);
+// Default config path colocates with the example, not the repo root.
+const DEFAULT_CONFIG_PATH = path.join(__dirname, "harness.json");
 
 const { values: flags, positionals } = parseArgs({
   args: process.argv.slice(2),
@@ -76,6 +83,7 @@ const { values: flags, positionals } = parseArgs({
     config: { type: "string" },
     "findings-budget": { type: "string" },
     "reasoning-mode": { type: "string" },
+    "n-ctx": { type: "string" },
     jsonl: { type: "boolean", default: false },
     verbose: { type: "boolean", default: false },
     trace: { type: "boolean", default: false },
@@ -100,7 +108,16 @@ const jsonlMode = flags.jsonl;
 const verbose = flags.verbose;
 const trace = flags.trace;
 const initialQuery = flags.query;
-const configPath = flags.config;
+const configPath = flags.config ?? DEFAULT_CONFIG_PATH;
+
+const nCtxFlag = flags["n-ctx"];
+if (nCtxFlag !== undefined && !/^\d+$/.test(nCtxFlag)) {
+  process.stderr.write(
+    `Invalid --n-ctx: ${nCtxFlag}. Expected a positive integer.\n`,
+  );
+  process.exit(1);
+}
+const nCtxCli = nCtxFlag !== undefined ? parseInt(nCtxFlag, 10) : undefined;
 
 // Merge: CLI flag > env > harness.json > default.
 const loaded = loadConfig(configPath, {
@@ -108,6 +125,7 @@ const loaded = loadConfig(configPath, {
   reranker: flags.reranker,
   corpusPath: flags.corpus,
   reasoningMode: reasoningModeFlag as "flat" | "deep" | undefined,
+  nCtx: nCtxCli,
 });
 let liveConfig: Config = loaded.config;
 let liveOrigin = loaded.origin;
@@ -115,9 +133,13 @@ const findingsMaxChars = flags["findings-budget"]
   ? parseInt(flags["findings-budget"], 10)
   : undefined;
 
-// Model + reranker must resolve to actual files; fall back to defaults.
-const modelPath = liveConfig.model.path ?? DEFAULT_MODEL;
-const rerankModelPath = liveConfig.model.reranker ?? DEFAULT_RERANKER;
+// Resolve catalog-id / explicit path / catalog-default for each model.
+// Downloads happen later, pre-Ink, via ensureFile.
+const llmResolved = resolveModelPath(liveConfig.model.path, "llm");
+const rerankerResolved = resolveModelPath(liveConfig.model.reranker, "reranker");
+const modelPath = llmResolved.path;
+const rerankModelPath = rerankerResolved.path;
+const nCtx = liveConfig.model.nCtx ?? 32768;
 
 if (jsonlMode) setJsonlMode(true);
 if (verbose) setVerboseMode(true);
@@ -226,45 +248,135 @@ const errorStack = (err: unknown): string =>
 
 main(function* () {
   const modelName = path.basename(modelPath).replace(/-Q\w+\.gguf$/, "");
+  const rerankName = path
+    .basename(rerankModelPath)
+    .replace(/-q\w+\.gguf$/i, "");
 
-  // Pre-boot logs only in non-Ink mode — in Ink mode stdout belongs to Ink.
   const useInk = isTTY && !jsonlMode;
+
+  // Pre-boot logs only in non-Ink mode — Ink mounts ASAP in TTY mode and
+  // handles download/loading UI itself.
   if (!useInk) {
     log();
     log(`${c.bold}  Deep Research${c.reset}`);
     log();
-    log(
-      `  ${c.green}●${c.reset} Loading ${c.bold}${modelName}${c.reset} ${c.dim}(${fmtSize(fs.statSync(modelPath).size)}, KV: Q4_0)${c.reset}`,
-    );
   }
 
-  const nCtx = parseInt(process.env.LLAMA_CTX_SIZE || "16384", 10);
-  const ctx: SessionContext = yield* call(() =>
-    createContext({
-      modelPath,
-      nCtx,
-      nSeqMax: 64,
-      typeK: "q4_0",
-      typeV: "q4_0",
-    }),
-  );
+  // Replay-to-first-subscriber bus. Events sent between render() and Ink's
+  // useEffect attachment get buffered and replayed — no timing assumptions.
+  // `send` is synchronous so callbacks like downloadIfMissing.onProgress
+  // can push directly.
+  const uiChannel: EventBus<WorkflowEvent> = createBus<WorkflowEvent>();
+  const commands = createSignal<Command, void>();
 
-  const rerankName = path
-    .basename(rerankModelPath)
-    .replace(/-q\w+\.gguf$/i, "");
-  if (!useInk) {
-    log(
-      `  ${c.green}●${c.reset} Loading ${c.bold}${rerankName}${c.reset} ${c.dim}(${fmtSize(fs.statSync(rerankModelPath).size)}, reranker)${c.reset}`,
+  let inkInstance: { unmount: () => void } | null = null;
+  if (useInk) {
+    const mod = yield* call(
+      () =>
+        import("../shared/tui-ink/render.js") as Promise<
+          typeof import("../shared/tui-ink/render.js")
+        >,
     );
+    // Seed with config:loaded so uiPhase moves out of 'boot' on first paint.
+    const bootstrap: WorkflowEvent[] = [
+      {
+        type: "config:loaded",
+        config: liveConfig,
+        origin: liveOrigin,
+        path: loaded.path,
+      },
+    ];
+    inkInstance = mod.render(uiChannel, (cmd) => commands.send(cmd), bootstrap);
+    yield* ensure(() => { inkInstance?.unmount(); });
+  } else {
+    // Non-TTY / JSONL: drain the bus to JSONL stdout. Synchronous subscribe
+    // replays any already-buffered events immediately.
+    uiChannel.subscribe((ev) => {
+      emit((ev as { type: string }).type, ev as unknown as Record<string, unknown>);
+    });
   }
 
-  const reranker: Reranker = yield* call(() =>
-    createReranker(rerankModelPath, { nSeqMax: 8, nCtx: 16384 }),
-  );
+  // ── Downloads (if needed) ──────────────────────────────────
+  const needsDownload =
+    (llmResolved.entry !== null && !fs.existsSync(llmResolved.path)) ||
+    (rerankerResolved.entry !== null && !fs.existsSync(rerankerResolved.path));
+
+  function* ensureFile(
+    r: { path: string; entry: ModelCatalogEntry | null },
+  ): Operation<string> {
+    if (fs.existsSync(r.path)) return r.path;
+    if (!r.entry) {
+      throw new Error(
+        `Model not found: ${r.path}\n\n` +
+          `  Pass --model <path> (or --reranker <path>) to use a local file,\n` +
+          `  or leave the value unset to auto-download the default.\n`,
+      );
+    }
+    const entry = r.entry;
+    uiChannel.send({
+      type: "download:start",
+      id: entry.id,
+      label: entry.label,
+      sizeBytes: entry.sizeBytes,
+    });
+    yield* call(() =>
+      downloadIfMissing(entry, {
+        onProgress: (got, total) => {
+          uiChannel.send({
+            type: "download:progress",
+            id: entry.id,
+            got,
+            total,
+          });
+        },
+      }),
+    );
+    uiChannel.send({ type: "download:complete", id: entry.id });
+    return r.path;
+  };
+
+  if (needsDownload) {
+    yield* ensureFile(llmResolved);
+    yield* ensureFile(rerankerResolved);
+  } else {
+    yield* ensureFile(llmResolved);
+    yield* ensureFile(rerankerResolved);
+  }
+
+  // ── Loading weights ───────────────────────────────────────
+  uiChannel.send({ type: "weights:start", label: `Loading ${modelName}…` });
+  let ctx: SessionContext;
+  try {
+    ctx = yield* call(() =>
+      createContext({
+        modelPath,
+        nCtx,
+        nSeqMax: 64,
+        typeK: "q4_0",
+        typeV: "q4_0",
+      }),
+    );
+  } catch (err) {
+    uiChannel.send({ type: "weights:done" });
+    throw err;
+  }
+
+  uiChannel.send({ type: "weights:label", label: `Loading ${rerankName}…` });
+  let reranker: Reranker;
+  try {
+    reranker = yield* call(() =>
+      createReranker(rerankModelPath, { nSeqMax: 8, nCtx: 16384 }),
+    );
+  } catch (err) {
+    uiChannel.send({ type: "weights:done" });
+    throw err;
+  }
   yield* ensure(() => {
     reranker.dispose();
   });
+  uiChannel.send({ type: "weights:done" });
 
+  // ── Session + event forwarding ─────────────────────────────
   const traceWriter = trace
     ? new JsonlTraceWriter(fs.openSync(`trace-${Date.now()}.jsonl`, "w"))
     : undefined;
@@ -273,45 +385,18 @@ main(function* () {
     traceWriter,
   });
 
-  // ── Render decision ────────────────────────────────────────
-  const commands = createSignal<Command, void>();
+  // Forward all runtime events from initAgents into the UI channel so Ink
+  // (or the JSONL drainer) sees the unified stream.
+  yield* spawn(function* () {
+    for (const ev of yield* each(events)) {
+      uiChannel.send(ev);
+      yield* each.next();
+    }
+  });
 
-  if (useInk) {
-    const mod = yield* call(
-      () =>
-        import("../shared/tui-ink/render.js") as Promise<
-          typeof import("../shared/tui-ink/render.js")
-        >,
-    );
-    // Seed the reducer with config:loaded BEFORE the first paint. Effection
-    // channels don't buffer — if we relied on `events.send(config:loaded)`
-    // after mount, the useEffect subscription (which fires in a microtask
-    // AFTER React's first commit) would miss it and uiPhase would stay at
-    // 'boot' with only the footer rendering.
-    const bootstrap: WorkflowEvent[] = [
-      {
-        type: "config:loaded",
-        config: liveConfig,
-        origin: liveOrigin,
-        path: loaded.path,
-      },
-      { type: "ui:composer" },
-    ];
-    const instance = mod.render(events, (cmd) => commands.send(cmd), bootstrap);
-    yield* ensure(() => {
-      instance.unmount();
-    });
-  } else {
-    yield* spawn(function* () {
-      for (const ev of yield* each(events)) {
-        emit(
-          (ev as { type: string }).type,
-          ev as unknown as Record<string, unknown>,
-        );
-        yield* each.next();
-      }
-    });
-  }
+  // Transition reducer out of 'loading' into 'composer'. (config:loaded was
+  // already in the bootstrap; this nudges uiPhase now that boot is complete.)
+  uiChannel.send({ type: "ui:composer" });
 
   const harnessOpts = {
     verifyCount: VERIFY_COUNT,

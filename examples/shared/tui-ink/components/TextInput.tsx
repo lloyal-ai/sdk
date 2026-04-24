@@ -50,15 +50,44 @@ export function TextInput({
         return;
       }
       if (key.leftArrow) {
-        setCursor(Math.max(0, cursorPos - 1));
+        if (key.meta || key.ctrl) {
+          // Opt+← (Mac) / Ctrl+← (Windows) — jump word back.
+          setCursor(prevWordStart(value, cursorPos));
+        } else {
+          setCursor(Math.max(0, cursorPos - 1));
+        }
         return;
       }
       if (key.rightArrow) {
-        setCursor(Math.min(value.length, cursorPos + 1));
+        if (key.meta || key.ctrl) {
+          // Opt+→ (Mac) / Ctrl+→ (Windows) — jump word forward.
+          setCursor(nextWordEnd(value, cursorPos));
+        } else {
+          setCursor(Math.min(value.length, cursorPos + 1));
+        }
+        return;
+      }
+      // Home / End — real keys on Windows, Fn+←/→ on Mac laptops. Ink 4
+      // doesn't expose these in its Key type; we detect the raw escape
+      // sequences that reach the process.
+      if (input === '\x1b[H' || input === '\x1bOH') {
+        setCursor(0);
+        return;
+      }
+      if (input === '\x1b[F' || input === '\x1bOF') {
+        setCursor(value.length);
         return;
       }
       if (key.backspace || key.delete) {
         if (cursorPos === 0) return;
+        if (key.meta || key.ctrl) {
+          // Opt+Backspace (Mac, Meta+Backspace over the wire) and
+          // Ctrl+Backspace (Windows) — delete the whole word to the left.
+          const cutPoint = prevWordStart(value, cursorPos);
+          onChange(value.slice(0, cutPoint) + value.slice(cursorPos));
+          setCursor(cutPoint);
+          return;
+        }
         const next = value.slice(0, cursorPos - 1) + value.slice(cursorPos);
         setCursor(cursorPos - 1);
         onChange(next);
@@ -70,6 +99,28 @@ export function TextInput({
       }
       if (key.ctrl && input === 'e') {
         setCursor(value.length);
+        return;
+      }
+      if (key.ctrl && input === 'u') {
+        // Kill-to-start-of-line (readline). Most terminals map
+        // Cmd+Backspace (macOS) to Ctrl+U — so this is also the "clear
+        // input" shortcut the user likely expects.
+        onChange(value.slice(cursorPos));
+        setCursor(0);
+        return;
+      }
+      if (key.ctrl && input === 'k') {
+        // Kill-to-end-of-line.
+        onChange(value.slice(0, cursorPos));
+        return;
+      }
+      if (key.ctrl && input === 'w') {
+        // Delete word backwards — matches iTerm's Option+Backspace.
+        const before = value.slice(0, cursorPos);
+        const match = /\S+\s*$/.exec(before);
+        const cutPoint = match ? match.index : 0;
+        onChange(value.slice(0, cutPoint) + value.slice(cursorPos));
+        setCursor(cutPoint);
         return;
       }
       if (key.ctrl || key.meta || key.tab || key.upArrow || key.downArrow) {
@@ -111,4 +162,27 @@ export function TextInput({
       {after}
     </Text>
   );
+}
+
+// ── Word-boundary helpers ────────────────────────────────────────
+
+/** Position of the start of the word before `pos`, skipping any trailing
+ *  whitespace. Matches readline's `backward-word` semantics. */
+function prevWordStart(value: string, pos: number): number {
+  if (pos <= 0) return 0;
+  let i = pos;
+  while (i > 0 && /\s/.test(value[i - 1])) i--;
+  while (i > 0 && !/\s/.test(value[i - 1])) i--;
+  return i;
+}
+
+/** Position of the end of the word at or after `pos`, skipping any leading
+ *  whitespace. Matches readline's `forward-word`. */
+function nextWordEnd(value: string, pos: number): number {
+  const len = value.length;
+  if (pos >= len) return len;
+  let i = pos;
+  while (i < len && /\s/.test(value[i])) i++;
+  while (i < len && !/\s/.test(value[i])) i++;
+  return i;
 }

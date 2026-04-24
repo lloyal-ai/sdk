@@ -3,7 +3,7 @@
  * through plan review, research, and back to composer, using synthetic
  * events. Mirrors what main.ts's command loop would emit.
  *
- *   npx tsx examples/shared/tui-ink/__smoke.tsx
+ *   npx tsx examples/shared/tui-ink/__visual-smoke.tsx
  */
 
 import { main, createChannel, createSignal, sleep, spawn, call } from 'effection';

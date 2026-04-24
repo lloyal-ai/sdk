@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
 import type { AppState } from '../state';
+import { SPINNER_FRAMES, SPINNER_TICK_MS } from '../spinner-frames';
 
 export interface VerifyProps {
   state: AppState;
 }
-
-const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const ms = (t: number): string => `${(t / 1000).toFixed(1)}s`;
 
 export function Verify({ state }: VerifyProps): React.ReactElement | null {
@@ -15,7 +14,10 @@ export function Verify({ state }: VerifyProps): React.ReactElement | null {
 
   useEffect(() => {
     if (!verify.active) return;
-    const id = setInterval(() => setFrame((f) => (f + 1) % SPINNER.length), 80);
+    const id = setInterval(
+      () => setFrame((f) => (f + 1) % SPINNER_FRAMES.length),
+      SPINNER_TICK_MS,
+    );
     return () => clearInterval(id);
   }, [verify.active]);
 
@@ -24,7 +26,7 @@ export function Verify({ state }: VerifyProps): React.ReactElement | null {
   if (verify.active) {
     return (
       <Box marginBottom={1}>
-        <Text color="cyan">{SPINNER[frame]} </Text>
+        <Text color="cyan">{SPINNER_FRAMES[frame]} </Text>
         <Text dimColor>Verifying </Text>
         <Text>{verify.count} samples…</Text>
       </Box>

@@ -370,12 +370,12 @@ export function reduce(state: AppState, ev: WorkflowEvent): AppState {
     // ── UI + config events ───────────────────────────────────
 
     case 'config:loaded':
-      return {
-        ...state,
-        config: ev.config,
-        configOrigin: ev.origin,
-        uiPhase: state.uiPhase === 'boot' ? 'composer' : state.uiPhase,
-      };
+      // Just seed config — don't transition uiPhase. Boot flow is:
+      //   boot → (download:start? → downloading) → weights:start → loading
+      //   → ui:composer → composer
+      // If we auto-flipped to 'composer' here, the composer would flash
+      // briefly before the first boot-phase event arrived.
+      return { ...state, config: ev.config, configOrigin: ev.origin };
 
     case 'config:updated': {
       const toastId = state.nextToastId + 1;
@@ -461,6 +461,43 @@ export function reduce(state: AppState, ev: WorkflowEvent): AppState {
         nextToastId: toastId,
       };
     }
+
+    // ── Boot phases ────────────────────────────────────────────
+
+    case 'download:start':
+      return {
+        ...state,
+        uiPhase: 'downloading',
+        downloads: [
+          ...state.downloads,
+          { id: ev.id, label: ev.label, got: 0, total: ev.sizeBytes, done: false },
+        ],
+      };
+
+    case 'download:progress':
+      return {
+        ...state,
+        downloads: state.downloads.map((d) =>
+          d.id === ev.id ? { ...d, got: ev.got, total: ev.total } : d,
+        ),
+      };
+
+    case 'download:complete':
+      return {
+        ...state,
+        downloads: state.downloads.map((d) =>
+          d.id === ev.id ? { ...d, got: d.total || d.got, done: true } : d,
+        ),
+      };
+
+    case 'weights:start':
+      return { ...state, uiPhase: 'loading', loadingLabel: ev.label };
+
+    case 'weights:label':
+      return { ...state, loadingLabel: ev.label };
+
+    case 'weights:done':
+      return { ...state, loadingLabel: null };
 
     // ── Agent events ───────────────────────────────────────────
 

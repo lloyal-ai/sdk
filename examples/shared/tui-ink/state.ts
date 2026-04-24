@@ -18,6 +18,8 @@ export type Phase = 'idle' | 'query' | 'plan' | 'research' | 'synth' | 'verify' 
  *  currently interacts with. */
 export type UiPhase =
   | 'boot'           // before config:loaded
+  | 'downloading'    // model cache miss — spinner + per-file progress bars
+  | 'loading'        // createContext / createReranker running; single spinner
   | 'composer'       // query input, source/mode editing
   | 'planning'       // planner running, spinner
   | 'plan_review'    // plan dialog visible, accept/edit/change-mode
@@ -129,6 +131,14 @@ export interface OpTiming {
   timeMs: number;
 }
 
+export interface DownloadStatus {
+  id: string;
+  label: string;
+  got: number;
+  total: number;
+  done: boolean;
+}
+
 export interface Toast {
   message: string;
   tone: 'info' | 'success' | 'warn' | 'error';
@@ -197,6 +207,12 @@ export interface AppState {
     originalQuery: string;
     questions: string[];
   } | null;
+  /** Active downloads (model cache misses). Rendered under BootStatus
+   *  while uiPhase === 'downloading'. Ordered by start time. */
+  downloads: DownloadStatus[];
+  /** Current "Loading weights…" / "Loading reranker…" label while
+   *  uiPhase === 'loading'. Null while the phase is inactive. */
+  loadingLabel: string | null;
   nextToastId: number;
 }
 
@@ -229,5 +245,7 @@ export const initialState: AppState = {
   toast: null,
   composerPrefill: '',
   clarifyContext: null,
+  downloads: [],
+  loadingLabel: null,
   nextToastId: 0,
 };

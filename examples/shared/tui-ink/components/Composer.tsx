@@ -133,17 +133,15 @@ export const Composer = memo(function Composer({ state }: ComposerProps): React.
   };
 
   const commitTavily = (): void => {
-    if (draft.trim()) {
-      dispatch({ type: 'set_tavily_key', key: draft.trim() });
-    }
+    // Empty submission clears the field — saveConfig treats '' as delete.
+    dispatch({ type: 'set_tavily_key', key: draft.trim() });
     setField('query');
     setDraft('');
   };
 
   const commitCorpus = (): void => {
-    if (draft.trim()) {
-      dispatch({ type: 'set_corpus_path', path: draft.trim() });
-    }
+    // Empty submission clears the field.
+    dispatch({ type: 'set_corpus_path', path: draft.trim() });
     setField('query');
     setDraft('');
   };
@@ -311,7 +309,7 @@ const HintRow = memo(function HintRow({
   queryEmpty: boolean;
 }): React.ReactElement {
   if (field === 'tavily' || field === 'corpus') {
-    return <Text dimColor>⏎ save · Esc cancel</Text>;
+    return <Text dimColor>⏎ save (empty to clear) · Ctrl+U clear · Esc cancel</Text>;
   }
   if (field === 'menu') {
     if (envLocked) {

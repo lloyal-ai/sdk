@@ -153,6 +153,78 @@ check('save: second save does not re-append to .gitignore', () => {
   assert.equal(matches.length, 1);
 });
 
+check('nCtx precedence: CLI > env > file > default(undefined)', () => {
+  const dir = scratchDir('nctx');
+  const file = path.join(dir, 'harness.json');
+
+  // No config, no env, no CLI → undefined.
+  let result = loadConfig(file, {}, {});
+  assert.equal(result.config.model.nCtx, undefined);
+  assert.equal(result.origin.nCtx, 'default');
+
+  // File supplies → reads file.
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ version: 1, model: { nCtx: 16384 } }),
+  );
+  result = loadConfig(file, {}, {});
+  assert.equal(result.config.model.nCtx, 16384);
+  assert.equal(result.origin.nCtx, 'file');
+
+  // Env overrides file.
+  result = loadConfig(file, {}, { LLAMA_CTX_SIZE: '24576' });
+  assert.equal(result.config.model.nCtx, 24576);
+  assert.equal(result.origin.nCtx, 'env');
+
+  // CLI overrides env.
+  result = loadConfig(
+    file,
+    { nCtx: 65536 },
+    { LLAMA_CTX_SIZE: '24576' },
+  );
+  assert.equal(result.config.model.nCtx, 65536);
+  assert.equal(result.origin.nCtx, 'cli');
+
+  // Bogus env silently ignored (no parseInt NaN leaking through).
+  result = loadConfig(file, {}, { LLAMA_CTX_SIZE: 'not-a-number' });
+  assert.equal(result.config.model.nCtx, 16384); // fell back to file
+  assert.equal(result.origin.nCtx, 'file');
+});
+
+check('nCtx save round-trip', () => {
+  const dir = scratchDir('nctx-save');
+  const file = path.join(dir, 'harness.json');
+  saveConfig({ model: { nCtx: 65536 } }, file, {});
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(raw.model.nCtx, 65536);
+  const { config } = loadConfig(file, {}, {});
+  assert.equal(config.model.nCtx, 65536);
+});
+
+check('save: empty-string source value deletes the key', () => {
+  const dir = scratchDir('clear');
+  const file = path.join(dir, 'harness.json');
+  saveConfig(
+    { sources: { tavilyKey: 'tvly-a', corpusPath: '/tmp/c' } },
+    file,
+    {},
+  );
+  let raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(raw.sources.tavilyKey, 'tvly-a');
+  assert.equal(raw.sources.corpusPath, '/tmp/c');
+
+  // Clear corpusPath with empty string.
+  saveConfig({ sources: { corpusPath: '' } }, file, {});
+  raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(raw.sources.corpusPath, undefined);
+  assert.equal(raw.sources.tavilyKey, 'tvly-a'); // unrelated key preserved
+
+  // Clear tavilyKey with empty string too.
+  saveConfig({ sources: { tavilyKey: '' } }, file, {});
+  raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(raw.sources.tavilyKey, undefined);
+});
+
 check('save: non-git dir → gitignored=false, no .gitignore written', () => {
   const dir = scratchDir('nogit');
   const file = path.join(dir, 'harness.json');

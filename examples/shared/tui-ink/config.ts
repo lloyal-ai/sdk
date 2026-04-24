@@ -15,8 +15,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-export const DEFAULT_CONFIG_PATH = './harness.json';
-
 export interface ConfigSources {
   tavilyKey?: string;
   corpusPath?: string;
@@ -29,8 +27,12 @@ export interface ConfigDefaults {
 }
 
 export interface ConfigModel {
+  /** Filesystem path OR catalog id (e.g. `qwen3.5-4b-q4`). Resolution is
+   *  the caller's concern — config just stores whatever the user typed. */
   path?: string;
   reranker?: string;
+  /** LLM context window size. Null/undefined falls through to CLI/env/default. */
+  nCtx?: number;
 }
 
 export interface Config {
@@ -48,6 +50,7 @@ export interface ConfigOrigin {
   reasoningMode: 'cli' | 'file' | 'default';
   modelPath: 'cli' | 'file' | 'default';
   reranker: 'cli' | 'file' | 'default';
+  nCtx: 'cli' | 'env' | 'file' | 'default';
 }
 
 export interface LoadedConfig {
@@ -64,6 +67,7 @@ export interface CliOverrides {
   reasoningMode?: 'flat' | 'deep';
   modelPath?: string;
   reranker?: string;
+  nCtx?: number;
 }
 
 export interface SaveResult {
@@ -113,15 +117,19 @@ function readFileIfExists(p: string): Config | null {
 }
 
 export function loadConfig(
-  configPath: string | undefined,
+  configPath: string,
   cli: CliOverrides,
   env: NodeJS.ProcessEnv = process.env,
 ): LoadedConfig {
-  const resolvedPath = path.resolve(configPath ?? DEFAULT_CONFIG_PATH);
+  const resolvedPath = path.resolve(configPath);
   const fromFile = readFileIfExists(resolvedPath);
   const base = fromFile ?? builtinDefaults();
 
   const envTavily = env.TAVILY_API_KEY?.trim() || undefined;
+  const envNCtxStr = env.LLAMA_CTX_SIZE?.trim();
+  const envNCtx = envNCtxStr && /^\d+$/.test(envNCtxStr)
+    ? parseInt(envNCtxStr, 10)
+    : undefined;
 
   // ── Merge with precedence: CLI > env > file > default ──
   const tavilyKey = cli.tavilyKey ?? envTavily ?? base.sources.tavilyKey;
@@ -130,6 +138,7 @@ export function loadConfig(
     cli.reasoningMode ?? base.defaults.reasoningMode ?? 'deep';
   const modelPath = cli.modelPath ?? base.model.path;
   const reranker = cli.reranker ?? base.model.reranker;
+  const nCtx = cli.nCtx ?? envNCtx ?? base.model.nCtx;
 
   const config: Config = {
     version: 1,
@@ -139,7 +148,7 @@ export function loadConfig(
       verifyCount: base.defaults.verifyCount,
       maxTurns: base.defaults.maxTurns,
     },
-    model: { path: modelPath, reranker },
+    model: { path: modelPath, reranker, nCtx },
   };
 
   const origin: ConfigOrigin = {
@@ -162,6 +171,13 @@ export function loadConfig(
         : 'default',
     modelPath: cli.modelPath ? 'cli' : fromFile?.model.path ? 'file' : 'default',
     reranker: cli.reranker ? 'cli' : fromFile?.model.reranker ? 'file' : 'default',
+    nCtx: cli.nCtx !== undefined
+      ? 'cli'
+      : envNCtx !== undefined
+        ? 'env'
+        : fromFile?.model.nCtx !== undefined
+          ? 'file'
+          : 'default',
   };
 
   return { config, origin, path: resolvedPath, loadedFromFile: !!fromFile };
@@ -175,10 +191,10 @@ export function loadConfig(
  *  reported in `skipped`. */
 export function saveConfig(
   patch: Partial<Config>,
-  configPath: string | undefined,
+  configPath: string,
   env: NodeJS.ProcessEnv = process.env,
 ): SaveResult {
-  const resolvedPath = path.resolve(configPath ?? DEFAULT_CONFIG_PATH);
+  const resolvedPath = path.resolve(configPath);
   const current = readFileIfExists(resolvedPath) ?? builtinDefaults();
 
   const skipped: string[] = [];
@@ -186,6 +202,9 @@ export function saveConfig(
     ...current.sources,
     ...(patch.sources ?? {}),
   };
+  // Empty string = explicit clear. Delete the key rather than persisting ''.
+  if (patch.sources?.tavilyKey === '') delete nextSources.tavilyKey;
+  if (patch.sources?.corpusPath === '') delete nextSources.corpusPath;
   if (env.TAVILY_API_KEY && patch.sources && 'tavilyKey' in patch.sources) {
     // Env wins — drop any attempted write of the secret.
     delete nextSources.tavilyKey;

@@ -69,6 +69,13 @@ export type StepEvent =
   | { type: 'plan:start'; query: string; mode: 'flat' | 'deep' }
   | { type: 'ui:composer'; prefill?: string }
   | { type: 'ui:plan_review' }
-  | { type: 'ui:error'; message: string };
+  | { type: 'ui:error'; message: string }
+  // ── Boot-phase events: download progress + weight-loading spinner ──
+  | { type: 'download:start'; id: string; label: string; sizeBytes: number }
+  | { type: 'download:progress'; id: string; got: number; total: number }
+  | { type: 'download:complete'; id: string }
+  | { type: 'weights:start'; label: string }
+  | { type: 'weights:label'; label: string }
+  | { type: 'weights:done' };
 
 export type WorkflowEvent = AgentEvent | StepEvent;

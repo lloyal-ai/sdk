@@ -6,7 +6,6 @@ export interface OpTiming {
 }
 
 import type { PageStream } from './page-stream';
-import type { AgentPanel } from './agent-panel';
 
 export interface ViewState {
   agentLabel: Map<number, string>;
@@ -26,21 +25,6 @@ export interface ViewState {
   agentStream: PageStream;
   /** Set once synth finished streaming — answerHandler skips re-render. */
   synthStreamed: boolean;
-  /** Multi-region panel for parallel agent streams (flat-mode research,
-   *  verify, etc.). When set, agentHandler routes agent:* events into the
-   *  panel instead of the shared agentStream / status line path. Cleared
-   *  when the parallel section ends. */
-  agentPanel: AgentPanel | null;
-  /** Maps agentId → panel region index. Populated on agent:spawn while
-   *  agentPanel is active. */
-  agentRow: Map<number, number>;
-  /** Short-term: flat-mode verify pool doesn't have its own panel yet, so
-   *  its 3 concurrent agents would interleave into garbled output. When
-   *  this flag is true (between verify:start and verify:done in flat
-   *  mode), agentHandler skips all rendering; the user sees a single
-   *  "Verifying…" status line instead. Remove when verify wires up its
-   *  own AgentPanel. */
-  verifyMuted: boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

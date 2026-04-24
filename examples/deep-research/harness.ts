@@ -17,7 +17,7 @@ import {
   DefaultAgentPolicy,
 } from "@lloyal-labs/lloyal-agents";
 import type { Source, AgentEvent } from "@lloyal-labs/lloyal-agents";
-import type { StepEvent, OpTiming } from "./tui";
+import type { StepEvent, OpTiming } from "../shared/tui-ink";
 import { reportTool, PlanTool, taskToContent } from "@lloyal-labs/rig";
 import type {
   PlanResult,
@@ -84,11 +84,6 @@ export interface HarnessOpts {
   reasoningMode: "flat" | "deep";
 }
 
-type Route =
-  | { type: "clarify"; questions: string[] }
-  | { type: "passthrough" }
-  | { type: "research"; tasks: ResearchTask[]; maxTurns: number };
-
 // ── Helpers ─────────────────────────────────────────────────────
 
 interface WorkerPromptCtx extends Record<string, unknown> {
@@ -125,18 +120,6 @@ function today(): string {
 function startTimer(): () => number {
   const start = performance.now();
   return () => performance.now() - start;
-}
-
-/** Pure dispatch over plan.intent. Tasks and clarifyQuestions are already scoped correctly by the planner's grammar. */
-function route(plan: PlanResult, maxTurns: number): Route {
-  switch (plan.intent) {
-    case "clarify":
-      return { type: "clarify", questions: plan.clarifyQuestions };
-    case "passthrough":
-      return { type: "passthrough" };
-    case "research":
-      return { type: "research", tasks: plan.tasks, maxTurns };
-  }
 }
 
 /**
@@ -182,35 +165,41 @@ function* runPassthrough(
   return { answer: pieces.join(""), tokenCount, timeMs: performance.now() - t };
 }
 
-// ── Entry point ─────────────────────────────────────────────────
+// ── Entry points ────────────────────────────────────────────────
 
-export function* handleQuery(
+export interface PlannerOpts {
+  reasoningMode: "flat" | "deep";
+  /** Optional extra context (e.g. clarification response) threaded into
+   *  the planner prompt. Appended under "Today's date: …". */
+  context?: string;
+}
+
+/**
+ * Run the planner. Emits a `query` event and a `plan` event. Returns the
+ * raw PlanResult so callers can route based on intent (main.ts drives a
+ * plan-review dialog in TTY mode; handleQuery dispatches automatically).
+ */
+export function* runPlanner(
   query: string,
   session: Session,
-  sources: Source<SourceContext, Chunk>[],
-  reranker: Reranker,
-  opts: HarnessOpts,
-  context?: string,
-): Operation<QueryResult> {
+  opts: PlannerOpts,
+): Operation<PlanResult> {
   const events = yield* Events.expect();
   const send = (ev: StepEvent): Operation<void> =>
     events.send(ev as unknown as AgentEvent);
 
   yield* send({ type: "query", query, warm: !!session.trunk });
-  const wallTimer = startTimer();
-  const currentDate = today();
 
-  // ── Plan ──────────────────────────────────────────────────
+  const currentDate = today();
   const planPrompt = opts.reasoningMode === "flat" ? PLAN_FLAT : PLAN_DEEP;
   const planTool = new PlanTool({ prompt: planPrompt, session, maxQuestions: 10 });
-  const planContext = context
-    ? `Today's date: ${currentDate}\n\n${context}`
+  const planContext = opts.context
+    ? `Today's date: ${currentDate}\n\n${opts.context}`
     : `Today's date: ${currentDate}`;
   const plan = (yield* planTool.execute({
     query,
     context: planContext,
   })) as PlanResult;
-  const r = route(plan, opts.maxTurns);
 
   yield* send({
     type: "plan",
@@ -221,56 +210,85 @@ export function* handleQuery(
     timeMs: plan.timeMs,
   });
 
-  if (r.type === "clarify") return { type: "clarify", questions: r.questions };
+  return plan;
+}
 
-  if (r.type === "passthrough") {
-    const pt = yield* runPassthrough(query, session);
-    yield* send({ type: "answer", text: pt.answer });
+/**
+ * Direct-answer branch (passthrough intent): stream the response from the
+ * warm trunk. Emits `answer`, `stats`, `complete`.
+ */
+export function* runPassthroughBranch(
+  query: string,
+  session: Session,
+  plan: PlanResult,
+  wallStartMs: number,
+): Operation<void> {
+  const events = yield* Events.expect();
+  const send = (ev: StepEvent): Operation<void> =>
+    events.send(ev as unknown as AgentEvent);
 
-    const ctx: SessionContext = yield* Ctx.expect();
-    const p = ctx._storeKvPressure();
-    const ctxTotal = p.nCtx || 1;
-    yield* send({
-      type: "stats",
-      timings: [
-        {
-          label: "Plan",
-          tokens: plan.tokenCount,
-          detail: plan.intent,
-          timeMs: plan.timeMs,
-        },
-        {
-          label: "Passthrough",
-          tokens: pt.tokenCount,
-          detail: "trunk stream",
-          timeMs: pt.timeMs,
-        },
-      ],
-      ctxPct: Math.round((100 * p.cellsUsed) / ctxTotal),
-      ctxPos: p.cellsUsed,
-      ctxTotal,
-    });
-    yield* send({
-      type: "complete",
-      data: {
-        intent: plan.intent,
-        planTokens: plan.tokenCount,
-        passthroughTokens: pt.tokenCount,
-        wallTimeMs: Math.round(wallTimer()),
-        planMs: Math.round(plan.timeMs),
-        passthroughMs: Math.round(pt.timeMs),
-      },
-    });
-    // NOTE: we do NOT call session.commitTurn here. The trunk already contains
-    // the streamed user+assistant pair (prefilled user turn + committed assistant
-    // tokens from produceSync+commit). Calling commitTurn would double-append.
-    return { type: "done" };
+  const pt = yield* runPassthrough(query, session);
+  yield* send({ type: "answer", text: pt.answer });
+
+  const ctx: SessionContext = yield* Ctx.expect();
+  const p = ctx._storeKvPressure();
+  const ctxTotal = p.nCtx || 1;
+  yield* send({
+    type: "stats",
+    timings: [
+      { label: "Plan", tokens: plan.tokenCount, detail: plan.intent, timeMs: plan.timeMs },
+      { label: "Passthrough", tokens: pt.tokenCount, detail: "trunk stream", timeMs: pt.timeMs },
+    ],
+    ctxPct: Math.round((100 * p.cellsUsed) / ctxTotal),
+    ctxPos: p.cellsUsed,
+    ctxTotal,
+  });
+  yield* send({
+    type: "complete",
+    data: {
+      intent: plan.intent,
+      planTokens: plan.tokenCount,
+      passthroughTokens: pt.tokenCount,
+      wallTimeMs: Math.round(performance.now() - wallStartMs),
+      planMs: Math.round(plan.timeMs),
+      passthroughMs: Math.round(pt.timeMs),
+    },
+  });
+  // NOTE: we do NOT call session.commitTurn here. The trunk already contains
+  // the streamed user+assistant pair from produceSync+commit.
+}
+
+/**
+ * Research branch: spawns research agents, runs synth, verify, eval, and
+ * commits the warm spine. Emits the full research→complete event sequence.
+ *
+ * Safe to call directly from main.ts after a plan-review dialog confirms
+ * the plan; handleQuery also composes this for the JSONL path.
+ */
+export function* runResearchBranch(
+  query: string,
+  plan: PlanResult,
+  session: Session,
+  sources: Source<SourceContext, Chunk>[],
+  reranker: Reranker,
+  opts: HarnessOpts,
+  wallStartMs: number,
+): Operation<void> {
+  const events = yield* Events.expect();
+  const send = (ev: StepEvent): Operation<void> =>
+    events.send(ev as unknown as AgentEvent);
+
+  if (plan.intent !== "research") {
+    throw new Error(
+      `runResearchBranch: expected plan.intent=research, got ${plan.intent}`,
+    );
   }
+  const tasks = plan.tasks;
+  const currentDate = today();
 
-  // ── Research with KV-spine chaining ───────────────────────
   yield* send({
     type: "research:start",
-    agentCount: r.tasks.length,
+    agentCount: tasks.length,
     mode: opts.reasoningMode,
   });
   const researchTimer = startTimer();
@@ -305,7 +323,7 @@ export function* handleQuery(
       // Emit fanout:tasks once upfront for flat mode so the TUI frames the
       // section with the task list before agents start streaming.
       if (opts.reasoningMode === "flat") {
-        yield* send({ type: "fanout:tasks", tasks: r.tasks });
+        yield* send({ type: "fanout:tasks", tasks: tasks });
       }
 
       // ── Research: chain (deep) or parallel-with-extend (flat) ─────
@@ -313,7 +331,7 @@ export function* handleQuery(
         tools: [...allDataTools, reportTool],
         parent: queryRoot,
         terminalTool: "report",
-        maxTurns: r.maxTurns,
+        maxTurns: opts.maxTurns,
         pruneOnReport: true,
         policy: createResearchPolicy(),
         trace: opts.trace,
@@ -326,25 +344,25 @@ export function* handleQuery(
           // BUILD_ON_PRIOR block off (no priors in parallel); `siblingTasks`
           // + `agentCount > 1` activates sibling awareness so each agent
           // stays in its lane.
-          ? parallel(r.tasks.map((task, i) => ({
+          ? parallel(tasks.map((task, i) => ({
               content: taskToContent(task),
               systemPrompt: renderWorkerPrompt(primarySource, {
                 tools: workerToolCtx,
-                maxTurns: r.maxTurns,
-                agentCount: r.tasks.length,
-                siblingTasks: r.tasks.filter((_, j) => j !== i).map(t => t.description),
+                maxTurns: opts.maxTurns,
+                agentCount: tasks.length,
+                siblingTasks: tasks.filter((_, j) => j !== i).map(t => t.description),
                 date: currentDate,
                 taskIndex: 0,
               }),
               seed: 1000 + i,
             })))
           // Deep: chain-shaped spine that extends between each task.
-          : chain(r.tasks, (task, i) => ({
+          : chain(tasks, (task, i) => ({
               task: {
                 content: taskToContent(task),
                 systemPrompt: renderWorkerPrompt(primarySource, {
                   tools: workerToolCtx,
-                  maxTurns: r.maxTurns,
+                  maxTurns: opts.maxTurns,
                   agentCount: 1,
                   siblingTasks: [],
                   date: currentDate,
@@ -356,7 +374,7 @@ export function* handleQuery(
                 yield* send({
                   type: "spine:task",
                   taskIndex: i,
-                  taskCount: r.tasks.length,
+                  taskCount: tasks.length,
                   description: task.description,
                 });
                 yield* send({
@@ -406,7 +424,7 @@ export function* handleQuery(
       const findings = opts.reasoningMode === "flat"
         ? research.agents
             .map((a, i) => {
-              const desc = r.tasks[i]?.description ?? `task ${i + 1}`;
+              const desc = tasks[i]?.description ?? `task ${i + 1}`;
               const body = a.result?.trim() || "(no findings)";
               return `### Agent ${i + 1}: ${desc}\n\n${body}`;
             })
@@ -415,7 +433,7 @@ export function* handleQuery(
       const synthCtx = {
         query,
         findings,
-        agentCount: r.tasks.length,
+        agentCount: tasks.length,
       };
 
       const synth = yield* useAgent({
@@ -560,14 +578,41 @@ export function* handleQuery(
       evalTokens: evalAgent.tokenCount,
       converged: evalConverged,
       totalToolCalls: researchTotalToolCalls,
-      agentCount: r.tasks.length,
-      wallTimeMs: Math.round(wallTimer()),
+      agentCount: tasks.length,
+      wallTimeMs: Math.round(performance.now() - wallStartMs),
       planMs: Math.round(plan.timeMs),
       researchMs: Math.round(researchTimeMs),
       synthMs: Math.round(synthTimeMs),
       evalMs: Math.round(evalTimeMs),
     },
   });
+}
 
+/**
+ * End-to-end composer used by the non-TTY / JSONL path. The TTY path in
+ * main.ts drives runPlanner → plan-review dialog → runResearchBranch
+ * directly so the user can review the plan before committing.
+ */
+export function* handleQuery(
+  query: string,
+  session: Session,
+  sources: Source<SourceContext, Chunk>[],
+  reranker: Reranker,
+  opts: HarnessOpts,
+  context?: string,
+): Operation<QueryResult> {
+  const wallStartMs = performance.now();
+  const plan = yield* runPlanner(query, session, {
+    reasoningMode: opts.reasoningMode,
+    context,
+  });
+  if (plan.intent === "clarify") {
+    return { type: "clarify", questions: plan.clarifyQuestions };
+  }
+  if (plan.intent === "passthrough") {
+    yield* runPassthroughBranch(query, session, plan, wallStartMs);
+    return { type: "done" };
+  }
+  yield* runResearchBranch(query, plan, session, sources, reranker, opts, wallStartMs);
   return { type: "done" };
 }

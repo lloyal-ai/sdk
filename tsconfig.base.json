@@ -10,6 +10,7 @@
     "strict": true,
     "skipLibCheck": true,
     "types": ["node"],
-    "composite": true
+    "composite": true,
+    "jsx": "react-jsx"
   }
 }

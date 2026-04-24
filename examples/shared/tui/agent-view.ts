@@ -16,9 +16,6 @@ export function createViewState(): ViewState {
     synthStream: createPageStream('  '),
     agentStream: createPageStream(`    ${tree.trunk}   `),
     synthStreamed: false,
-    agentPanel: null,
-    agentRow: new Map(),
-    verifyMuted: false,
   };
 }
 
@@ -151,22 +148,6 @@ function formatResultPreview(tool: string, raw: string): string {
 
 export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler {
   return (ev) => {
-    // Short-term: flat-mode verify mutes agent rendering entirely while
-    // the section is active. Prevents the 3 concurrent verify agents from
-    // interleaving into garbled output (they don't have a panel yet).
-    // Remove this guard once verify wires up its own AgentPanel.
-    if (state.verifyMuted && typeof ev.type === 'string' && ev.type.startsWith('agent:')) {
-      return;
-    }
-
-    // Panel mode: agents write into dedicated regions instead of the shared
-    // stream. Takes precedence over default path for every agent:* event.
-    // Synth still owns stdout when its stream is open; panel remains paused
-    // in that case (though lifecycles don't overlap in practice).
-    if (state.agentPanel && !state.synthStream.isOpen) {
-      if (handlePanelEvent(state, ev)) return;
-    }
-
     switch (ev.type) {
       case 'agent:produce': {
         // Synth phase owns stdout directly — skip entirely when synth is streaming
@@ -277,109 +258,5 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
       }
     }
   };
-}
-
-/**
- * Route agent:* events into the active panel. Returns true if the event
- * was consumed by the panel (skip the default switch); false otherwise.
- *
- * Rows are assigned on first sight per agent. parallel(...) spawns agents
- * in task order within a single batched SPAWN phase, so agent:spawn
- * arrival order matches task order.
- */
-function handlePanelEvent(state: ViewState, ev: { type: string; agentId?: number; [k: string]: unknown }): boolean {
-  const panel = state.agentPanel;
-  if (!panel) return false;
-
-  const agentId = ev.agentId;
-  if (agentId == null) return false;
-
-  // Assign / look up region index for this agent.
-  let row = state.agentRow.get(agentId);
-  if (row === undefined) {
-    row = state.agentRow.size;
-    state.agentRow.set(agentId, row);
-    if (!state.agentLabel.has(agentId)) {
-      state.agentLabel.set(agentId, `A${row}`);
-      state.nextLabel = Math.max(state.nextLabel, row + 1);
-    }
-  }
-
-  switch (ev.type) {
-    case 'agent:spawn':
-      return true;
-
-    case 'agent:produce': {
-      // agent:produce.tokenCount is Agent.tokenCount (cumulative lifetime).
-      // Stash so the footer shown at agent:report reflects the true total —
-      // the tool_call path below preserves the value rather than resetting
-      // it so it's monotonic across the agent's life. Recovery also emits
-      // agent:produce events, so this keeps updating through the recovery
-      // stream.
-      const tokenCount = Number(ev.tokenCount ?? 0);
-      state.agentStatus.set(agentId, { state: 'gen', tokenCount, detail: '' });
-      panel.appendTokens(row, String(ev.text ?? ''));
-      return true;
-    }
-
-    case 'agent:tool_call': {
-      const tool = String(ev.tool ?? '');
-      const args = String(ev.args ?? '');
-      const summary = formatArgSummary(tool, args);
-      panel.addLine(row, `${c.cyan}${tool}${c.reset}${summary ? `(${summary})` : ''}`);
-      const prev = state.agentStatus.get(agentId);
-      state.agentStatus.set(agentId, {
-        state: tool,
-        tokenCount: prev?.tokenCount ?? 0,  // monotonic — don't reset
-        detail: '',
-      });
-      return true;
-    }
-
-    case 'agent:tool_result': {
-      const tool = String(ev.tool ?? '');
-      const result = String(ev.result ?? '');
-      const preview = formatResultPreview(tool, result);
-      panel.addLine(row, `${tree.arrow} ${tool} ${result.length}b${preview}`);
-      return true;
-    }
-
-    case 'agent:tool_progress':
-      return true;
-
-    case 'agent:report': {
-      // Result committed (via tool call or scratchpad recovery). This is
-      // the only safe freeze point — agent:done alone isn't terminal
-      // because recovery may still emit agent:produce events after it.
-      const status = state.agentStatus.get(agentId);
-      const tokenCount = status?.tokenCount ?? 0;
-      panel.finish(row, `${c.green}done${c.reset} · ${tokenCount} tok`);
-      state.agentStatus.set(agentId, { state: 'done', tokenCount, detail: '' });
-      return true;
-    }
-
-    case 'agent:done': {
-      // Do NOT freeze the region on agent:done. In the stall-break path,
-      // agent:done fires BEFORE recoverInline starts streaming recovery
-      // tokens via agent:produce. Freezing here would drop those tokens,
-      // making the agent appear stuck while recovery compiles its report.
-      // Fallback freeze happens at panel close if agent:report never fires.
-      const status = state.agentStatus.get(agentId);
-      if (status) {
-        state.agentStatus.set(agentId, {
-          state: 'done',
-          tokenCount: status.tokenCount,
-          detail: '',
-        });
-      }
-      return true;
-    }
-
-    case 'agent:tick':
-      return false;
-
-    default:
-      return false;
-  }
 }
 

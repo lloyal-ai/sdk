@@ -6,3 +6,4 @@ docs/_internal
 tmp/
 docs/
 trace-*.jsonl
+harness.json

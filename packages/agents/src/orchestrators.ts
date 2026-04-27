@@ -1,5 +1,5 @@
-import { all } from 'effection';
-import type { Operation } from 'effection';
+import { all, spawn } from 'effection';
+import type { Operation, Task } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { Agent } from './Agent';
 
@@ -209,24 +209,44 @@ export interface DAGNode {
 export const dag = (nodes: DAGNode[]): Orchestrator => {
   validateDAG(nodes);
   return function* (ctx) {
-    const completed = new Set<string>();
-    const ready = (n: DAGNode) => (n.dependsOn ?? []).every(d => completed.has(d));
+    // Each node runs as a child Task. Dependencies are expressed by
+    // awaiting the dep's Task (`yield* depTask`) — Task<T> extends
+    // Future<T> extends Operation<T>, so this is the canonical Effection
+    // cross-task rendezvous (see frontside.com/effection/api/v4/Task).
+    //
+    // Why this beats the older recursive-spawnNode-with-Sets approach:
+    //   - No mutable bookkeeping. The "node N is done" signal IS the
+    //     Task itself; the runtime tracks lifetimes for free.
+    //   - No race window for double-spawn. Each node spawns exactly
+    //     once, by definition (one entry per `tasks.set`).
+    //   - Failure propagates through the dependency edges automatically:
+    //     if node A throws, every task awaiting A's Task receives the
+    //     same error, and structured concurrency halts the rest.
+    const tasks = new Map<string, Task<void>>();
 
-    function* spawnNode(n: DAGNode): Operation<void> {
+    function* runNode(n: DAGNode): Operation<void> {
+      // Gate: wait for every declared dep's task to complete. The map is
+      // fully populated before any node body runs (spawned tasks don't
+      // execute until the parent yields, and the spawn loop below is
+      // synchronous between iterations).
+      for (const depId of n.dependsOn ?? []) {
+        yield* tasks.get(depId)!;
+      }
       const agent = yield* ctx.waitFor(
         yield* ctx.spawn({ ...n.task, parent: n.task.parent ?? ctx.root }),
       );
       if (agent.result && n.userContent) {
         yield* ctx.extendRoot(n.userContent, agent.result);
       }
-      completed.add(n.id);
-
-      const newlyReady = nodes.filter(m => !completed.has(m.id) && m.id !== n.id && ready(m));
-      yield* all(newlyReady.map(m => spawnNode(m)));
     }
 
-    const roots = nodes.filter(n => ready(n));
-    yield* all(roots.map(n => spawnNode(n)));
+    for (const n of nodes) {
+      tasks.set(n.id, yield* spawn(() => runNode(n)));
+    }
+    // Await every task. Roots run first (no deps to await); descendants
+    // unblock as their deps complete. Any throw inside a node propagates
+    // here and halts the rest via structured concurrency.
+    for (const t of tasks.values()) yield* t;
   };
 };
 

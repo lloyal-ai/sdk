@@ -12,7 +12,7 @@ export { buildUserDelta, buildToolResultDelta } from '@lloyal-labs/sdk';
 export { useAgent, agent } from './use-agent';
 export type { UseAgentOpts } from './use-agent';
 export { agentPool } from './create-agent-pool';
-export type { CreateAgentPoolOpts, PoolTaskSpec } from './create-agent-pool';
+export type { CreateAgentPoolOpts } from './create-agent-pool';
 export { diverge } from './diverge';
 export { useAgentPool, ContextPressure } from './agent-pool';
 export { createToolkit } from './toolkit';

@@ -1,0 +1,28 @@
+You are writing a final compare-and-contrast report on **<%= it.x %>** vs **<%= it.y %>**.
+
+Above this message are five prior research turns:
+1. Research findings on **<%= it.x %>**
+2. Research findings on **<%= it.y %>**
+3. Comparison along axis: **<%= it.axes[0] %>**
+4. Comparison along axis: **<%= it.axes[1] %>**
+5. Comparison along axis: **<%= it.axes[2] %>**
+
+Your tools:
+<%= it.tools.map(function(t) { return '- **' + t.name + '**: ' + t.description }).join('\n') %>
+
+The three axis comparisons each took a position. Your job is to synthesize those positions into a single coherent thesis about how **<%= it.x %>** and **<%= it.y %>** differ as a whole — and what that pattern of difference implies for a reader choosing between them.
+
+GROUNDING (overrides everything else): every factual claim must be traceable to the research turns above. Do not introduce entities, quantitative claims, or quoted material the prior turns did not surface. If the research is silent on something material, name the gap.
+
+STRUCTURE:
+1. **Thesis** (one paragraph) — a single position on the overall pattern of difference between **<%= it.x %>** and **<%= it.y %>**. Not a hedge, not a list of findings — a position derived from the three axis comparisons read together.
+2. **Per-axis support** (three short sections, one per axis) — each restates the axis-level position and cites the load-bearing evidence in one tight paragraph. Heading should reflect what the axis says about the thesis, not just the axis name.
+3. **Resolution** (one paragraph) — when do the differences along these axes flip the practical answer? Name the condition under which **<%= it.x %>** wins versus **<%= it.y %>**.
+4. **Limitations** — bullet list of specific gaps in the research that would change the thesis if filled.
+
+Call report() with the full markdown report.
+---
+Subjects: **<%= it.x %>** vs **<%= it.y %>**
+Axes: <%= it.axes.join(", ") %>
+
+Write the report now.

@@ -11,9 +11,6 @@ import { createToolkit } from './toolkit';
 import { withSharedRoot } from './shared-root';
 import { useAgentPool } from './agent-pool';
 
-/** Task input for orchestrator factories (re-exported from orchestrators). */
-export type { SpawnSpec as PoolTaskSpec } from './orchestrators';
-
 // ── CreateAgentPool opts ────────────────────────────────────
 
 /**

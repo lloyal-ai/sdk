@@ -60,6 +60,25 @@ export interface CreateAgentPoolOpts {
    * @default false
    */
   enableThinking?: boolean;
+  /**
+   * Pool-shared system prompt. When set, the chat-format `[system + tools]`
+   * header is prefilled onto the inner queryRoot once at setup; every agent
+   * forking from queryRoot inherits the role+tools header via fork prefix-
+   * sharing instead of re-emitting them in its own suffix. Use when every
+   * spawn in the pool shares the same role (chain mode, single-role parallel/
+   * fanout pools); leave unset for mixed-role workflows.
+   *
+   * Spawned agents may pass an empty string as their per-spec `systemPrompt`
+   * to fully share the pool's system. A non-empty per-spec systemPrompt
+   * layers as a second system message in the agent's KV (multi-system in
+   * lineage — Qwen3 handles this; recovery has shipped on the same pattern).
+   *
+   * In shared mode, `extendRoot` writes onto the inner queryRoot rather than
+   * the warm parent. Findings are visible to subsequent agents in the pool
+   * and to nested `useAgent` calls within the same `withSharedRoot` scope,
+   * but do NOT persist on the session trunk after the pool closes.
+   */
+  systemPrompt?: string;
 }
 
 // ── agentPool ───────────────────────────────────────────────
@@ -91,17 +110,33 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
   // Warm path priority: explicit parent > session trunk > cold
   const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
 
+  const sharedMode = opts.systemPrompt !== undefined;
+
   return yield* withSharedRoot(
-    { parent: warmParent },
+    {
+      parent: warmParent,
+      systemPrompt: opts.systemPrompt,
+      // Only emit toolsJson into the root header in shared mode; the rest
+      // of the system uses the toolkit toolMap for actual dispatch.
+      toolsJson: sharedMode ? toolkit.toolsJson : undefined,
+    },
     function* (root) {
-      // On warm path, use the caller-provided parent AS the logical spine so
-      // `ctx.extendRoot` mutations persist across the pool's lifetime and are
-      // visible to sibling pools that fork from the same parent. The inner
-      // `root` produced by withSharedRoot is just a separator-prefilled fork
-      // of parent — its extensions would be discarded at pool close, breaking
-      // the multi-task spine pattern (research → synth over shared queryRoot).
-      // On cold path (no parent), the inner root IS the spine.
-      const spineRoot = warmParent ?? root;
+      // SHARED mode (systemPrompt set): the inner `root` carries the
+      // [system + tools] header and IS the spine. extendRoot writes onto
+      // it, agents fork from it, nested useAgent calls fork from it. Inner
+      // root is pruned at withSharedRoot exit; that's fine because pool
+      // findings flow to the session via session.commitTurn (post-pool),
+      // not via root mutation.
+      //
+      // NON-SHARED mode (existing behavior): on warm path, use the caller-
+      // provided parent AS the logical spine so `ctx.extendRoot` mutations
+      // persist across the pool's lifetime and are visible to sibling pools
+      // that fork from the same parent. The inner `root` is just a
+      // separator-prefilled fork of parent — its extensions would be
+      // discarded at pool close, breaking the multi-task spine pattern
+      // (research → synth over shared queryRoot). On cold path, the inner
+      // root IS the spine.
+      const spineRoot = sharedMode ? root : (warmParent ?? root);
       const sub = yield* useAgentPool({
         root: spineRoot,
         orchestrate: opts.orchestrate,

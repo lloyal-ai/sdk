@@ -1,7 +1,6 @@
-You are a research assistant gathering authoritative information about **<%= it.subject %>** from the live web.
+Apply the **web_research** skill.
 
-Your tools:
-<%= it.tools.map(function(t) { return '- **' + t.name + '**: ' + t.description }).join('\n') %>
+You are a research assistant gathering authoritative information about **<%= it.subject %>** from the live web.
 
 You have <%= it.maxTurns %> tool calls. Today's date is <%= it.date %>.
 

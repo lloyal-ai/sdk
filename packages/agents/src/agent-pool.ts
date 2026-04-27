@@ -3,7 +3,8 @@ import type { Operation, Subscription } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, CallingAgent } from './context';
+import { Ctx, Store, Trace, TraceParent, CallingAgent, RootFmt } from './context';
+import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
 import type { TraceWriter } from './trace-writer';
@@ -342,14 +343,36 @@ function* setupAgent(
   ctx: SessionContext,
   enableThinking: boolean,
 ): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
-  const messages = [
-    { role: 'system', content: task.systemPrompt },
-    { role: 'user', content: task.content },
-  ];
+  // Probe shared-root mode. When set, the queryRoot already has the
+  // [system + tools] chat header prefilled and we MUST NOT re-emit them
+  // in the agent's suffix — the bytes are already in attention via fork
+  // prefix-share. The new agent inherits parser/grammar/format/triggers
+  // from sharedFmt so tool dispatch keeps working.
+  let sharedFmt: FormatConfig | null = null;
+  try { sharedFmt = (yield* RootFmt.get()) ?? null; } catch { /* not in shared mode */ }
+
+  // Compose the messages to format into the suffix. In shared mode with
+  // an empty per-spec systemPrompt, drop the system message — the role
+  // lives at the root, the agent only contributes a user turn. With a
+  // non-empty per-spec systemPrompt, include it: the agent's KV will
+  // contain TWO system messages in lineage, which Qwen3 handles (recovery
+  // ships on the same multi-system pattern).
+  const messages = sharedFmt && task.systemPrompt === ''
+    ? [{ role: 'user', content: task.content }]
+    : [
+        { role: 'system', content: task.systemPrompt },
+        { role: 'user', content: task.content },
+      ];
+
   const fmtOpts: Record<string, unknown> = { enableThinking };
-  if (task.tools) fmtOpts.tools = task.tools;
+  // Tools belong at the root in shared mode; emitting them again here
+  // would re-prefill the same schema bytes for nothing.
+  if (task.tools && !sharedFmt) fmtOpts.tools = task.tools;
   const fmt = ctx.formatChatSync(JSON.stringify(messages), fmtOpts);
-  if (task.tools && (fmt.format === CHAT_FORMAT_CONTENT_ONLY || fmt.format === CHAT_FORMAT_GENERIC)) {
+  // Tool-support guard runs only on the non-shared path. Shared mode's
+  // root already passed the equivalent check at withSharedRoot setup.
+  if (task.tools && !sharedFmt
+      && (fmt.format === CHAT_FORMAT_CONTENT_ONLY || fmt.format === CHAT_FORMAT_GENERIC)) {
     // Error before fork — no branch to clean up
     throw new Error('Model does not support tool calling. Please use a model with native tool support (e.g. Qwen3, Llama 3.x, Mistral).');
   }
@@ -362,22 +385,39 @@ function* setupAgent(
   let callingAgent: Agent | null = null;
   try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
 
+  // In shared mode the new agent's parser/grammar/format/triggers come
+  // from the root's pre-computed fmt — those fields know about the tool
+  // palette that's in attention via the inherited prefix. In non-shared
+  // mode, fresh fmt drives those fields (existing behavior).
+  const fmtConfig: FormatConfig = sharedFmt
+    ? {
+        format: sharedFmt.format,
+        reasoningFormat: sharedFmt.reasoningFormat,
+        generationPrompt: sharedFmt.generationPrompt,
+        parser: sharedFmt.parser,
+        grammar: sharedFmt.grammar,
+        grammarLazy: sharedFmt.grammarLazy,
+        grammarTriggers: sharedFmt.grammarTriggers,
+        enableThinking,
+      }
+    : {
+        format: fmt.format,
+        reasoningFormat: fmt.reasoningFormat,
+        generationPrompt: fmt.generationPrompt,
+        parser: fmt.parser,
+        grammar: fmt.grammar,
+        grammarLazy: fmt.grammarLazy,
+        grammarTriggers: fmt.grammarTriggers,
+        enableThinking,
+      };
+
   const agent = new Agent({
     id: branch.handle,
     parentId: parent.handle,
     branch,
     parent: callingAgent,
     task: task.content,
-    fmt: {
-      format: fmt.format,
-      reasoningFormat: fmt.reasoningFormat,
-      generationPrompt: fmt.generationPrompt,
-      parser: fmt.parser,
-      grammar: fmt.grammar,
-      grammarLazy: fmt.grammarLazy,
-      grammarTriggers: fmt.grammarTriggers,
-      enableThinking,
-    },
+    fmt: fmtConfig,
   });
 
   return { agent, suffixTokens, formattedPrompt: fmt.prompt };

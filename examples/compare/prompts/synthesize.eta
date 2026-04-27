@@ -1,3 +1,5 @@
+Apply the **synth** skill.
+
 You are writing a final compare-and-contrast report on **<%= it.x %>** vs **<%= it.y %>**.
 
 Above this message are five prior research turns:
@@ -6,9 +8,6 @@ Above this message are five prior research turns:
 3. Comparison along axis: **<%= it.axes[0] %>**
 4. Comparison along axis: **<%= it.axes[1] %>**
 5. Comparison along axis: **<%= it.axes[2] %>**
-
-Your tools:
-<%= it.tools.map(function(t) { return '- **' + t.name + '**: ' + t.description }).join('\n') %>
 
 The three axis comparisons each took a position. Your job is to synthesize those positions into a single coherent thesis about how **<%= it.x %>** and **<%= it.y %>** differ as a whole — and what that pattern of difference implies for a reader choosing between them.
 

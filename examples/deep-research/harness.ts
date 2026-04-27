@@ -9,6 +9,7 @@ import {
   Events,
   agent,
   agentPool,
+  createToolkit,
   useAgent,
   chain,
   parallel,
@@ -58,6 +59,7 @@ const SYNTHESIZE_DEEP = loadPrompt("synthesize");
 const SYNTHESIZE_FLAT = loadPrompt("synthesize-flat");
 const CORPUS_WORKER_TEMPLATE = loadTemplate("corpus-worker");
 const WEB_WORKER_TEMPLATE = loadTemplate("web-worker");
+const SKILL_CATALOG_TEMPLATE = loadTemplate("skill-catalog");
 
 function createResearchPolicy(): DefaultAgentPolicy {
   return new DefaultAgentPolicy({
@@ -87,7 +89,6 @@ export interface HarnessOpts {
 // ── Helpers ─────────────────────────────────────────────────────
 
 interface WorkerPromptCtx extends Record<string, unknown> {
-  tools: { name: string; description: string }[];
   maxTurns: number;
   agentCount: number;
   siblingTasks: string[];
@@ -299,10 +300,21 @@ export function* runResearchBranch(
   const allDataTools = sources.flatMap((s) => s.tools);
   const primarySource = sources[0];
   const primaryScorer = scorers.get(primarySource)!;
-  const workerToolCtx = [...allDataTools, reportTool].map((t) => ({
-    name: t.name,
-    description: t.description,
-  }));
+
+  // Detect enabled sources for the skill catalog. Web is identified by name;
+  // corpus is identified by the presence of a promptData() method (matches
+  // renderWorkerPrompt's routing).
+  const hasWeb = sources.some((s) => s.name === "web");
+  const hasCorpus = sources.some(
+    (s) =>
+      typeof (s as unknown as { promptData?: () => unknown }).promptData ===
+      "function",
+  );
+  const skillCatalog = renderTemplate(SKILL_CATALOG_TEMPLATE, {
+    hasWeb,
+    hasCorpus,
+  });
+  const researchToolkit = createToolkit([...allDataTools, reportTool]);
 
   let synthTimeMs = 0;
   let researchTimeMs = 0;
@@ -318,7 +330,16 @@ export function* runResearchBranch(
     totalToolCalls: number;
     synthTokens: number;
   }>(
-    { parent: session.trunk ?? undefined },
+    // Skill catalog + tools live on queryRoot (the harness-owned shared
+    // root) so chain extensions (extendRoot) accumulate on the SAME root
+    // synth forks from later. Putting systemPrompt on agentPool would
+    // route the spine onto agentPool's transient nested root, which gets
+    // pruned at pool exit — synth would fork an empty queryRoot.
+    {
+      parent: session.trunk ?? undefined,
+      systemPrompt: skillCatalog,
+      toolsJson: researchToolkit.toolsJson,
+    },
     function* (queryRoot) {
       // Emit fanout:tasks once upfront for flat mode so the TUI frames the
       // section with the task list before agents start streaming.
@@ -347,7 +368,6 @@ export function* runResearchBranch(
           ? parallel(tasks.map((task, i) => ({
               content: taskToContent(task),
               systemPrompt: renderWorkerPrompt(primarySource, {
-                tools: workerToolCtx,
                 maxTurns: opts.maxTurns,
                 agentCount: tasks.length,
                 siblingTasks: tasks.filter((_, j) => j !== i).map(t => t.description),
@@ -361,7 +381,6 @@ export function* runResearchBranch(
               task: {
                 content: taskToContent(task),
                 systemPrompt: renderWorkerPrompt(primarySource, {
-                  tools: workerToolCtx,
                   maxTurns: opts.maxTurns,
                   agentCount: 1,
                   siblingTasks: [],

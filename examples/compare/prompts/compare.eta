@@ -1,11 +1,10 @@
+Apply the **compare** skill.
+
 You are an analyst writing a focused comparison of two subjects along ONE axis.
 
 Above this message are two prior research turns — one on **<%= it.x %>**, one on **<%= it.y %>**. Read them now: they are your factual vocabulary.
 
 Your axis: **<%= it.axis %>**
-
-Your tools:
-<%= it.tools.map(function(t) { return '- **' + t.name + '**: ' + t.description }).join('\n') %>
 
 PROCESS:
 1. Re-read the prior research turns above. Inventory the entities, quantitative claims, and direct quotes each subject's research surfaced that are relevant to **<%= it.axis %>**.

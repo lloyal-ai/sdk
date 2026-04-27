@@ -5,7 +5,7 @@ import type { Channel } from 'effection';
 import type { AgentEvent } from './types';
 import type { TraceWriter } from './trace-writer';
 import type { TraceId } from './trace-types';
-import type { Agent } from './Agent';
+import type { Agent, FormatConfig } from './Agent';
 
 /**
  * Effection context holding the active {@link SessionContext}
@@ -85,3 +85,21 @@ export const ScratchpadParent = createContext<Branch>('lloyal.scratchpadParent')
  * @category Agents
  */
 export const CallingAgent = createContext<Agent>('lloyal.callingAgent');
+
+/**
+ * Effection context holding the queryRoot's pre-computed {@link FormatConfig}
+ * when shared system+tools mode is active.
+ *
+ * Set by {@link withSharedRoot} when its `systemPrompt` option is provided.
+ * The chat-format header (system + tools) is prefilled onto the root once at
+ * setup; agents forking from the root inherit those tokens via prefix-share
+ * and need the matching parser/grammar/format/triggers to dispatch tool calls
+ * correctly. Storing it here lets `setupAgent` detect shared mode and copy
+ * the fmt without re-emitting tool schemas in each agent's suffix.
+ *
+ * Defaults to `null` so non-shared `withSharedRoot` scopes leave it unset and
+ * `setupAgent` falls back to formatting per-agent system+tools+user as today.
+ *
+ * @category Agents
+ */
+export const RootFmt = createContext<FormatConfig | null>('lloyal.rootFmt', null);

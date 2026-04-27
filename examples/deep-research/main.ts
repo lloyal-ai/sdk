@@ -213,11 +213,13 @@ function buildPlannerContext(sources: Source<SourceContext, Chunk>[]): string {
   let hasWeb = false;
   for (const s of sources) {
     // `promptData` isn't declared on Source — it's specific to CorpusSource.
-    // Duck-type check so the planner prompt gets the corpus TOC.
-    const pd = (s as unknown as { promptData?: () => { toc?: string } })
-      .promptData;
-    if (typeof pd === "function") {
-      const data = pd();
+    // Duck-type check so the planner prompt gets the corpus TOC. Call as
+    // `corpus.promptData()` (not via a detached `pd()` reference) so `this`
+    // binds to the source instance — `_buildToc` is a private method on
+    // CorpusSource and needs `this` to read `_chunks`.
+    const corpus = s as unknown as { promptData?: () => { toc?: string } };
+    if (typeof corpus.promptData === "function") {
+      const data = corpus.promptData();
       lines.push("", "## Local corpus");
       lines.push(
         "Files and top-level topics (full-text searchable via grep/read/search tools):",
@@ -637,10 +639,16 @@ main(function* () {
         pendingPlan = null;
         yield* events.send({ type: "ui:composer", prefill: cmd.query });
       }
-      yield* each.next();
     } catch (err) {
       pendingPlan = null;
       yield* events.send({ type: "ui:error", message: errorMessage(err) });
+    } finally {
+      // Always advance — Effection's `each` requires a `next()` per iteration,
+      // including when the body threw. Putting this in `finally` keeps the
+      // command loop alive after a research/plan failure (otherwise the
+      // IterationError tears the whole process down — the user sees the UI
+      // error briefly, then a crash).
+      yield* each.next();
     }
   }
 }).catch((err: unknown) => {

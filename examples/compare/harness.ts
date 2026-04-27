@@ -26,6 +26,7 @@ import type { Operation, Task } from "effection";
 import type { Session } from "@lloyal-labs/sdk";
 import {
   agentPool,
+  createToolkit,
   renderTemplate,
   withSharedRoot,
 } from "@lloyal-labs/lloyal-agents";
@@ -51,6 +52,7 @@ const RESEARCH_WEB = loadTemplate("research-web");
 const RESEARCH_CORPUS = loadTemplate("research-corpus");
 const COMPARE = loadTemplate("compare");
 const SYNTHESIZE = loadTemplate("synthesize");
+const SKILL_CATALOG = loadTemplate("skill-catalog");
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -192,10 +194,6 @@ export function* handleCompare(
   for (const source of sources) yield* source.bind({ reranker });
   const allDataTools = sources.flatMap((s) => s.tools);
   const tools = [...allDataTools, reportTool];
-  const toolCtx = tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-  }));
   const primaryScorer = sources[0].createScorer(`${x} vs ${y}`);
 
   const date = new Date().toISOString().slice(0, 10);
@@ -211,7 +209,6 @@ export function* handleCompare(
           subject: x,
           counterpart: y,
           axes,
-          tools: toolCtx,
           maxTurns,
           date,
         }),
@@ -228,7 +225,6 @@ export function* handleCompare(
           counterpart: x,
           axes,
           toc: corpusToc,
-          tools: toolCtx,
           maxTurns,
         }),
         seed: 1002,
@@ -244,7 +240,6 @@ export function* handleCompare(
           x,
           y,
           axis,
-          tools: toolCtx,
         }),
         seed: 2000 + i,
       },
@@ -259,7 +254,6 @@ export function* handleCompare(
           x,
           y,
           axes,
-          tools: toolCtx,
         }),
         seed: 3000,
       },
@@ -270,8 +264,19 @@ export function* handleCompare(
   // ── Run the pool ──────────────────────────────────────────────
   // One pool, one shared root. The DAG declares the topology; the pool's
   // tick loop batches decode across whatever agents are currently active.
+  //
+  // The skill catalog + tools live on queryRoot (the harness-owned shared
+  // root) — NOT on agentPool's nested withSharedRoot. This keeps the spine
+  // (chain extensions written by extendRoot) on queryRoot too, so any
+  // post-pool useAgent calls forking queryRoot inherit both the catalog
+  // and the spine extensions via prefix-share.
+  const toolkit = createToolkit(tools);
   const pool = yield* withSharedRoot(
-    { parent: session.trunk ?? undefined },
+    {
+      parent: session.trunk ?? undefined,
+      systemPrompt: SKILL_CATALOG,
+      toolsJson: toolkit.toolsJson,
+    },
     function* (queryRoot) {
       return yield* agentPool({
         orchestrate: dagWithEvents(nodes, emit),

@@ -10,9 +10,8 @@
     "test": "npm run build && npx tsx test/sdk.ts && npx tsx test/agents.ts",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "smoke": "npx tsx examples/shared/tui-ink/__bus-smoke.ts && npx tsx examples/shared/tui-ink/__reducer-smoke.ts && npx tsx examples/shared/tui-ink/__config-smoke.ts && npx tsx examples/deep-research/__download-smoke.ts && npx tsx examples/compare/tui/__reducer-smoke.ts",
+    "smoke": "npx tsx examples/shared/tui-ink/__bus-smoke.ts && npx tsx examples/shared/tui-ink/__reducer-smoke.ts && npx tsx examples/shared/tui-ink/__config-smoke.ts && npx tsx examples/compare/tui/__reducer-smoke.ts",
     "smoke:visual": "npx tsx examples/shared/tui-ink/__visual-smoke.tsx",
-    "examples:deep-research": "npx tsx examples/deep-research/main.ts",
     "examples:compare": "npx tsx examples/compare/main.ts",
     "examples:react": "npx tsx examples/react-agent/main.ts",
     "examples:reflect": "npx tsx examples/reflection/main.ts"

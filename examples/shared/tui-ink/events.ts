@@ -1,10 +1,8 @@
 /**
  * Event union consumed by the Ink reducer.
  *
- * These mirror the StepEvent variants emitted by examples/deep-research/harness.ts
- * (formerly in examples/deep-research/tui.ts) plus the AgentEvent stream coming
- * from @lloyal-labs/lloyal-agents. The harness continues to emit the same events
- * — only the rendering layer is replaced.
+ * These mirror the StepEvent variants emitted by example harness files plus the
+ * AgentEvent stream coming from @lloyal-labs/lloyal-agents.
  */
 
 import type { AgentEvent } from '@lloyal-labs/lloyal-agents';

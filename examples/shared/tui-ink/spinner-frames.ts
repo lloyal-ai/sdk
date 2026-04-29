@@ -1,7 +1,7 @@
 /**
  * Braille spinner frames used by every waiting indicator in the examples —
- * Ink's <PlanningSpinner>, <Verify>, and the pre-Ink stderr spinners in
- * examples/deep-research/models.ts. One array, one look.
+ * Ink's <PlanningSpinner>, <Verify>, and any pre-Ink stderr spinners. One
+ * array, one look.
  *
  * Plain TypeScript (no Ink, no Effection) so CJS and ESM callers can both
  * import it without dragging heavy deps into the wrong module graph.

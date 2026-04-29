@@ -154,17 +154,7 @@ That is essentially the framework.
 
 # Examples
 
-The repo ships four examples demonstrating canonical agent patterns. All examples share corpus tools, resources, and a reranker via [`examples/shared/`](examples/shared/). Each defines its own `WorkflowEvent = AgentEvent | StepEvent` union — `AgentEvent` is the stable runtime contract, `StepEvent` is example-specific.
-
-## Deep Research (reference architecture)
-
-[`examples/deep-research`](examples/deep-research) — Plan, Research, Synthesize, Evaluate, Promote. Grounded synthesis (1 tool-using agent) separated from entropy sampling (N cheap text-only diverge attempts). Demonstrates shared-root parallelism, grammar-constrained planning, recursive sub-agents via `ResearchTool`, agreement analysis, and session accumulation.
-
-```bash
-npx tsx examples/deep-research/main.ts \
-  --corpus /path/to/docs \
-  --query "How does the KV cache eviction policy work?"
-```
+The examples in this repo demonstrate canonical agent patterns. All examples share corpus tools, resources, and a reranker via [`examples/shared/`](examples/shared/). Each defines its own `WorkflowEvent = AgentEvent | StepEvent` union — `AgentEvent` is the stable runtime contract, `StepEvent` is example-specific.
 
 ## ReAct Agent
 

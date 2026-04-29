@@ -5,20 +5,11 @@ import { Tool } from './Tool';
 import type { AgentPoolResult } from './types';
 import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
+import type { Orchestrator } from './orchestrators';
 import { Events } from './context';
 import { createToolkit } from './toolkit';
 import { withSharedRoot } from './shared-root';
 import { useAgentPool } from './agent-pool';
-
-/** Task input for agentPool */
-export interface PoolTaskSpec {
-  /** User message content — the agent's specific sub-question or task */
-  content: string;
-  /** Per-task system prompt. Falls back to pool-level systemPrompt when absent. */
-  systemPrompt?: string;
-  /** PRNG seed for sampler diversity */
-  seed?: number;
-}
 
 // ── CreateAgentPool opts ────────────────────────────────────
 
@@ -28,12 +19,14 @@ export interface PoolTaskSpec {
  * @category Agents
  */
 export interface CreateAgentPoolOpts {
-  /** Agent task specifications — one per concurrent agent. systemPrompt applied from pool opts. */
-  tasks: PoolTaskSpec[];
+  /**
+   * Orchestrator callback — declares the execution pattern (parallel, chain,
+   * fanout, dag, or a custom inline generator). Drives task spawning,
+   * waiting, and spine extension through {@link PoolContext}.
+   */
+  orchestrate: Orchestrator;
   /** Data access tools (array, createToolkit called internally). Optional — pool degenerates cleanly without tools. */
   tools?: Tool[];
-  /** System prompt for all agents. */
-  systemPrompt: string;
   /** Terminal tool name — tool must be in the tools array. Pool intercepts and extracts result. */
   terminalTool?: string;
   /** Max tool-use turns per agent before hard cut. @default 100 */
@@ -61,6 +54,31 @@ export interface CreateAgentPoolOpts {
   echoThreshold?: number;
   /** Check ancestor tasks for echo. @default false */
   checkAncestorEcho?: boolean;
+  /**
+   * Whether the chat template delimits `<think>` blocks for this pool's agents.
+   * See {@link AgentPoolOptions.enableThinking}.
+   * @default false
+   */
+  enableThinking?: boolean;
+  /**
+   * Pool-shared system prompt. When set, the chat-format `[system + tools]`
+   * header is prefilled onto the inner queryRoot once at setup; every agent
+   * forking from queryRoot inherits the role+tools header via fork prefix-
+   * sharing instead of re-emitting them in its own suffix. Use when every
+   * spawn in the pool shares the same role (chain mode, single-role parallel/
+   * fanout pools); leave unset for mixed-role workflows.
+   *
+   * Spawned agents may pass an empty string as their per-spec `systemPrompt`
+   * to fully share the pool's system. A non-empty per-spec systemPrompt
+   * layers as a second system message in the agent's KV (multi-system in
+   * lineage — Qwen3 handles this; recovery has shipped on the same pattern).
+   *
+   * In shared mode, `extendRoot` writes onto the inner queryRoot rather than
+   * the warm parent. Findings are visible to subsequent agents in the pool
+   * and to nested `useAgent` calls within the same `withSharedRoot` scope,
+   * but do NOT persist on the session trunk after the pool closes.
+   */
+  systemPrompt?: string;
 }
 
 // ── agentPool ───────────────────────────────────────────────
@@ -77,8 +95,7 @@ export interface CreateAgentPoolOpts {
  * ```typescript
  * const pool = yield* agentPool({
  *   tools: [delegateTool, ...source.tools, reportTool],
- *   systemPrompt: RESEARCH_PROMPT,
- *   tasks: questions.map(q => ({ content: q })),
+ *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: RESEARCH_PROMPT }))),
  *   terminalTool: 'report',
  * });
  * ```
@@ -93,17 +110,42 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
   // Warm path priority: explicit parent > session trunk > cold
   const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
 
+  const sharedMode = opts.systemPrompt !== undefined;
+
   return yield* withSharedRoot(
-    { systemPrompt: opts.systemPrompt, tools: toolkit.toolsJson, parent: warmParent },
+    {
+      parent: warmParent,
+      systemPrompt: opts.systemPrompt,
+      // Only emit toolsJson into the root header in shared mode; the rest
+      // of the system uses the toolkit toolMap for actual dispatch.
+      toolsJson: sharedMode ? toolkit.toolsJson : undefined,
+      // Thread enableThinking so the root header chat-format and the
+      // RootFmt FormatConfig (parser/grammar/triggers) match what the
+      // per-agent suffixes get further down. Otherwise a caller passing
+      // enableThinking:true gets divergent grammar between root + suffix.
+      enableThinking: opts.enableThinking,
+    },
     function* (root) {
+      // SHARED mode (systemPrompt set): the inner `root` carries the
+      // [system + tools] header and IS the spine. extendRoot writes onto
+      // it, agents fork from it, nested useAgent calls fork from it. Inner
+      // root is pruned at withSharedRoot exit; that's fine because pool
+      // findings flow to the session via session.commitTurn (post-pool),
+      // not via root mutation.
+      //
+      // NON-SHARED mode (existing behavior): on warm path, use the caller-
+      // provided parent AS the logical spine so `ctx.extendRoot` mutations
+      // persist across the pool's lifetime and are visible to sibling pools
+      // that fork from the same parent. The inner `root` is just a
+      // separator-prefilled fork of parent — its extensions would be
+      // discarded at pool close, breaking the multi-task spine pattern
+      // (research → synth over shared queryRoot). On cold path, the inner
+      // root IS the spine.
+      const spineRoot = sharedMode ? root : (warmParent ?? root);
       const sub = yield* useAgentPool({
-        tasks: opts.tasks.map((t) => ({
-          systemPrompt: t.systemPrompt ?? opts.systemPrompt,
-          content: t.content,
-          tools: toolkit.toolsJson,
-          parent: root,
-          seed: t.seed,
-        })),
+        root: spineRoot,
+        orchestrate: opts.orchestrate,
+        toolsJson: toolkit.toolsJson,
         tools: toolkit.toolMap,
         terminalTool: opts.terminalTool,
         pruneOnReport: opts.pruneOnReport,
@@ -111,6 +153,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         trace: opts.trace,
         policy: opts.policy,
         scorer: opts.scorer,
+        enableThinking: opts.enableThinking,
       });
 
       // Drain Subscription inside body — before withSharedRoot's finally fires

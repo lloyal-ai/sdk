@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/sdk",
-  "version": "1.7.0",
+  "version": "2.0.0",
   "description": "Backend-agnostic TypeScript SDK for the lloyal inference platform",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,12 +9,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lloyal-ai/sdk.git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
     "directory": "packages/sdk"
   },
-  "homepage": "https://github.com/lloyal-ai/sdk#readme",
+  "homepage": "https://github.com/lloyal-ai/hdk#readme",
   "bugs": {
-    "url": "https://github.com/lloyal-ai/sdk/issues"
+    "url": "https://github.com/lloyal-ai/hdk/issues"
   },
   "keywords": [
     "llm",

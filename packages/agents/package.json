@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/lloyal-agents",
-  "version": "1.7.0",
+  "version": "2.0.0",
   "description": "Multi-agent inference inside the decode loop — structured concurrency over shared KV state",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,12 +9,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lloyal-ai/sdk.git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
     "directory": "packages/agents"
   },
-  "homepage": "https://github.com/lloyal-ai/sdk/tree/main/packages/agents#readme",
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/agents#readme",
   "bugs": {
-    "url": "https://github.com/lloyal-ai/sdk/issues"
+    "url": "https://github.com/lloyal-ai/hdk/issues"
   },
   "keywords": [
     "llm",
@@ -31,7 +31,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/sdk": "^1.7.0",
+    "@lloyal-labs/sdk": "^2.0.0",
     "effection": "^4.0.2",
     "eta": "^4.5.1"
   },

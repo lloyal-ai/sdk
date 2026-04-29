@@ -21,7 +21,7 @@ export {
 export type {
   DelegateToolOpts,
   PlanToolOpts,
-  PlanResult, PlanQuestion, ResearchTask,
+  PlanResult, PlanIntent, ResearchTask,
   SearchProvider, SearchResult,
   Reranker, ScoredChunk, ScoredResult,
 } from './tools';

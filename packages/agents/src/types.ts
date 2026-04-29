@@ -1,3 +1,4 @@
+import type { Operation } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from './AgentPolicy';
@@ -197,9 +198,11 @@ export interface PressureThresholds {
   softLimit?: number;
   /**
    * Crash-prevention floor (tokens). When remaining drops below this,
-   * agents are killed immediately before `produceSync()`. Prevents
-   * `llama_decode` "no memory slot for batch" failures.
-   * Default: 128
+   * `pressure.critical` is true and agents are killed before the next
+   * decode. Must be >= the context's `nBatch` — otherwise native decode
+   * can't allocate the next batch when the kill fires, and recovery's
+   * prefill will OOM. The pool validates this at startup.
+   * Default: 512 (matches llama.cpp's default `n_batch`).
    */
   hardLimit?: number;
 }
@@ -210,8 +213,19 @@ export interface PressureThresholds {
  * @category Agents
  */
 export interface AgentPoolOptions {
-  /** Agent task specifications — one per concurrent agent */
-  tasks: AgentTaskSpec[];
+  /**
+   * Shared root branch. Orchestrator-spawned agents fork from this by default.
+   * Produced by {@link withSharedRoot} in the {@link agentPool} wrapper.
+   */
+  root: Branch;
+  /**
+   * Orchestrator callback — declares the execution pattern (parallel, chain,
+   * fanout, dag, or a custom shape). Drives task spawning, waiting, and
+   * spine extension through the provided {@link PoolContext}.
+   */
+  orchestrate: (ctx: import('./orchestrators').PoolContext) => Operation<void>;
+  /** JSON-serialized tool schemas for chat formatting. Derived from tool map. */
+  toolsJson: string;
   /**
    * Tool registry mapping tool names to {@link Tool} instances.
    *
@@ -246,6 +260,20 @@ export interface AgentPoolOptions {
    *  time limits, explore/exploit threshold, and tool guards via
    *  {@link DefaultAgentPolicyOpts}. @default DefaultAgentPolicy with default opts */
   policy?: AgentPolicy;
+  /**
+   * Whether the chat template delimits `<think>` blocks for this pool's
+   * agents. Captured once at pool creation, stored on each agent's
+   * `fmt.enableThinking`, and threaded through every `buildToolResultDelta`
+   * call so the parser's `generation_prompt` stays consistent with the
+   * actual KV state. Setting `true` gives the template's generation prompt
+   * the `<think>\n` prefix that thinking-capable models (Qwen3 family)
+   * expect — thoughts are correctly delimited and `parseChatOutput`
+   * extracts them into `reasoning_content`. Setting `false` omits think
+   * tokens; if the model emits them anyway (as Qwen3.5 does) they leak
+   * into visible content.
+   * @default false
+   */
+  enableThinking?: boolean;
   /** Entailment scorer for semantic coherence across recursive depths.
    *  Passed to every tool via {@link ToolContext.scorer}. */
   scorer?: EntailmentScorer;

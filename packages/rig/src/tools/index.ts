@@ -14,7 +14,7 @@ export { DelegateTool } from './delegate';
 export type { DelegateToolOpts } from './delegate';
 export type { SearchProvider, SearchResult, Reranker, ScoredChunk, ScoredResult } from './types';
 export { PlanTool, taskToContent } from './plan';
-export type { PlanResult, PlanQuestion, PlanToolOpts, ResearchTask } from './plan';
+export type { PlanResult, PlanIntent, PlanToolOpts, ResearchTask } from './plan';
 
 /**
  * Shared singleton {@link ReportTool} instance.

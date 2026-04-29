@@ -259,3 +259,4 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
     }
   };
 }
+

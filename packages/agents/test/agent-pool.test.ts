@@ -14,10 +14,11 @@ import type { Operation, Channel } from 'effection';
 import { MockSessionContext, createMockSdk } from '../../sdk/test/MockSessionContext';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../src/agent-pool';
+import { parallel } from '../src/orchestrators';
 import { Ctx, Store, Events, Trace } from '../src/context';
 import { Tool } from '../src/Tool';
 import type { AgentPolicy } from '../src/AgentPolicy';
-import type { AgentPoolResult, AgentEvent, ToolContext, AgentTaskSpec } from '../src/types';
+import type { AgentPoolResult, AgentEvent, ToolContext } from '../src/types';
 import type { Agent } from '../src/Agent';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 import { MockTool } from './helpers/mock-tool';
@@ -101,19 +102,20 @@ async function runPool(opts: {
     yield* Trace.set(traceWriter);
 
     const taskCount = opts.taskCount ?? 1;
-    const tasks: AgentTaskSpec[] = Array.from({ length: taskCount }, (_, i) => ({
-      systemPrompt: 'You are an agent.',
+    const toolsJson = opts.tools && opts.tools.size > 0
+      ? JSON.stringify([...opts.tools.values()].map(t => t.schema))
+      : '';
+    const taskSpecs = Array.from({ length: taskCount }, (_, i) => ({
       content: `Task ${i}`,
-      tools: opts.tools && opts.tools.size > 0
-        ? JSON.stringify([...opts.tools.values()].map(t => t.schema))
-        : '',
-      parent: root,
+      systemPrompt: 'You are an agent.',
       seed: i,
     }));
 
     return yield* scoped(function* () {
       const sub = yield* useAgentPool({
-        tasks,
+        root,
+        orchestrate: parallel(taskSpecs),
+        toolsJson,
         tools: opts.tools ?? new Map(),
         policy: opts.policy,
         maxTurns: opts.maxTurns ?? 100,
@@ -608,13 +610,13 @@ describe('pressure thresholds propagation', () => {
   it('6a: custom thresholds → agent survives when default would kill', async () => {
     const { result, trace } = await runPool({
       nCtx: 16384,
-      cellsUsed: 15800, // remaining=584, custom softLimit=512 → headroom=72
+      cellsUsed: 15700, // remaining=684, custom softLimit=256 → headroom=428
       forkTokenQueues: [[1, 2, STOP]],
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
         onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
-        pressureThresholds: { softLimit: 512, hardLimit: 64 },
+        pressureThresholds: { softLimit: 256, hardLimit: 512 },
       }),
     });
 
@@ -773,7 +775,7 @@ describe('multi-agent interactions', () => {
     let killCount = 0;
     const { trace } = await runPool({
       nCtx: 16384,
-      cellsUsed: 16300,  // remaining=84, critical (< hardLimit 128)
+      cellsUsed: 15900,  // remaining=484, critical (< hardLimit 512)
       forkTokenQueues: [[1, 1, STOP], [1, 1, STOP]],
       taskCount: 2,
       parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
@@ -786,7 +788,7 @@ describe('multi-agent interactions', () => {
         },
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
         onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
-        pressureThresholds: { softLimit: 64, hardLimit: 128 },
+        pressureThresholds: { softLimit: 64, hardLimit: 512 },
       }),
     });
 
@@ -883,7 +885,7 @@ describe('recovery edge cases', () => {
           // Very long prompt that won't fit in remaining KV
           prompt: { system: 'X'.repeat(5000), user: 'Y'.repeat(5000) },
         }),
-        pressureThresholds: { softLimit: 128, hardLimit: 64 },
+        pressureThresholds: { softLimit: 128, hardLimit: 512 },
       }),
     });
 
@@ -1008,7 +1010,9 @@ describe('tool probe lifecycle hook', () => {
 
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
-          tasks: [{ systemPrompt: 'Agent', content: 'Task', tools: JSON.stringify([probeTool.schema]), parent: root, seed: 0 }],
+          root,
+          orchestrate: parallel([{ content: 'Task', systemPrompt: 'Agent', seed: 0 }]),
+          toolsJson: JSON.stringify([probeTool.schema]),
           tools: toolMap,
           policy: toolCallPolicy(),
           maxTurns: 100,
@@ -1073,7 +1077,9 @@ describe('tool probe lifecycle hook', () => {
 
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
-          tasks: [{ systemPrompt: 'Agent', content: 'Task', tools: JSON.stringify([noProbeTool.schema]), parent: root, seed: 0 }],
+          root,
+          orchestrate: parallel([{ content: 'Task', systemPrompt: 'Agent', seed: 0 }]),
+          toolsJson: JSON.stringify([noProbeTool.schema]),
           tools: toolMap,
           policy: toolCallPolicy(),
           maxTurns: 100,
@@ -1241,10 +1247,12 @@ describe('tool probe lifecycle hook', () => {
 
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
-          tasks: [
-            { systemPrompt: 'Agent 0', content: 'Task 0', tools: JSON.stringify([tool.schema]), parent: root, seed: 0 },
-            { systemPrompt: 'Agent 1', content: 'Task 1', tools: JSON.stringify([tool.schema]), parent: root, seed: 1 },
-          ],
+          root,
+          orchestrate: parallel([
+            { content: 'Task 0', systemPrompt: 'Agent', seed: 0 },
+            { content: 'Task 1', systemPrompt: 'Agent', seed: 1 },
+          ]),
+          toolsJson: JSON.stringify([tool.schema]),
           tools: toolMap,
           policy: (() => {
             return stubPolicy({

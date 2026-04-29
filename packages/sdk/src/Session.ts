@@ -1,7 +1,7 @@
 import { Branch } from './Branch';
 import type { BranchStore } from './BranchStore';
 import type { SessionContext } from './types';
-import { buildUserDelta, buildToolResultDelta } from './deltas';
+import { buildUserDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
 
 /**
  * Session - Trunk lifecycle + conversation delta helpers
@@ -108,20 +108,20 @@ export class Session {
    * @param response - Assistant response
    */
   async commitTurn(query: string, response: string): Promise<void> {
-    const messages = [
-      { role: 'user', content: query },
-      { role: 'assistant', content: response },
-    ];
     if (this._trunk) {
-      const sep = this._ctx.getTurnSeparator();
-      const { prompt } = this._ctx.formatChatSync(
-        JSON.stringify(messages), { enableThinking: false },
-      );
-      const tokens = this._ctx.tokenizeSync(prompt, false);
-      await this._trunk.prefill([...sep, ...tokens]);
+      // Warm path: append turn delta (with separator) to existing trunk.
+      // Explicit enableThinking:false — session trunk serializes completed
+      // conversations; no thinking blocks should be embedded.
+      await this._trunk.prefill(buildTurnDelta(this._ctx, query, response, { enableThinking: false }));
     } else {
+      // Cold path: create trunk at position 0, prefill without separator
+      // (fresh branch — no prior turn to separate from), then promote.
       const { prompt } = this._ctx.formatChatSync(
-        JSON.stringify(messages), { enableThinking: false },
+        JSON.stringify([
+          { role: 'user', content: query },
+          { role: 'assistant', content: response },
+        ]),
+        { enableThinking: false },
       );
       const tokens = this._ctx.tokenizeSync(prompt, false);
       const trunk = Branch.create(this._ctx, 0, {});

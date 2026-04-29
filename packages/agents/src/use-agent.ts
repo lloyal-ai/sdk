@@ -7,6 +7,7 @@ import { Ctx, Events, Trace } from './context';
 import { useAgentPool } from './agent-pool';
 import { createToolkit } from './toolkit';
 import { traceScope } from './trace-scope';
+import { parallel } from './orchestrators';
 import type { Tool } from './Tool';
 import type { AgentPolicy } from './AgentPolicy';
 import type { JsonSchema, SamplingParams, AgentEvent } from './types';
@@ -86,21 +87,19 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       hasParent: !!warmParent,
     });
 
-    // Format shared prefix
-    const messages = [{ role: 'system', content: opts.systemPrompt }];
-    const fmtOpts: Record<string, unknown> = { addGenerationPrompt: false, enableThinking: false };
-    if (opts.tools?.length) fmtOpts.tools = toolkit.toolsJson;
-    const fmt = ctx.formatChatSync(JSON.stringify(messages), fmtOpts);
-    const sharedTokens = ctx.tokenizeSync(fmt.prompt);
-
-    // Create root — ensure() for resource lifetime (not withSharedRoot's try/finally)
+    // Create root — ensure() for resource lifetime (not withSharedRoot's try/finally).
+    // The root carries no chat context; the agent's suffix (formatted fresh in
+    // setupAgent) is the agent's full chat. Warm path prefills a turn separator
+    // so the suffix lands on a clean turn boundary.
     const root = warmParent
       ? warmParent.forkSync()
       : Branch.create(ctx, 0, opts.params ?? { temperature: 0.5 });
     yield* ensure(() => { if (!root.disposed) root.pruneSubtreeSync(); });
 
-    const prefillTokens = warmParent ? ctx.getTurnSeparator() : sharedTokens;
-    yield* call(() => root.prefill(prefillTokens));
+    const prefillTokens = warmParent ? ctx.getTurnSeparator() : [];
+    if (prefillTokens.length > 0) {
+      yield* call(() => root.prefill(prefillTokens));
+    }
 
     // Eager grammar from schema — set on root before fork.
     // Fork inherits grammar state. formatChatSync returns no grammar for
@@ -111,15 +110,12 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       root.setGrammar(grammar);
     }
 
-    // Delegate to useAgentPool N=1
+    // Delegate to useAgentPool N=1 via a trivial parallel orchestrator
     const hasTools = !!(opts.tools?.length);
     const sub = yield* useAgentPool({
-      tasks: [{
-        systemPrompt: opts.systemPrompt,
-        content: opts.task,
-        tools: hasTools ? toolkit.toolsJson : undefined,
-        parent: root,
-      }],
+      root,
+      orchestrate: parallel([{ content: opts.task, systemPrompt: opts.systemPrompt }]),
+      toolsJson: hasTools ? toolkit.toolsJson : '',
       tools: toolkit.toolMap,
       terminalTool: opts.terminalTool,
       maxTurns: opts.maxTurns,

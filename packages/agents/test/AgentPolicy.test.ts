@@ -297,7 +297,8 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 3 });
       // Need tokenCount >= 100 — manually set via accumulating tokens
       for (let i = 0; i < 101; i++) a.accumulateToken('x');
-      expect(p.onRecovery(a)).toEqual({ type: 'extract', prompt });
+      // Prompt strings contain no eta tags → render returns them unchanged.
+      expect(p.onRecovery(a, pressure() as any)).toEqual({ type: 'extract', prompt });
     });
 
     it('custom minTokens/minToolCalls respected', () => {
@@ -305,7 +306,7 @@ describe('DefaultAgentPolicy', () => {
       const p = new DefaultAgentPolicy({ recovery: { prompt, minTokens: 10, minToolCalls: 1 } });
       const a = makeAgent({ toolCallCount: 1 });
       for (let i = 0; i < 11; i++) a.accumulateToken('x');
-      expect(p.onRecovery(a)).toEqual({ type: 'extract', prompt });
+      expect(p.onRecovery(a, pressure() as any)).toEqual({ type: 'extract', prompt });
     });
 
     it('defaults: minTokens=100, minToolCalls=2', () => {
@@ -314,7 +315,23 @@ describe('DefaultAgentPolicy', () => {
       // toolCallCount=1 < default 2 → skip
       const a = makeAgent({ toolCallCount: 1 });
       for (let i = 0; i < 101; i++) a.accumulateToken('x');
-      expect(p.onRecovery(a)).toEqual({ type: 'skip' });
+      expect(p.onRecovery(a, pressure() as any)).toEqual({ type: 'skip' });
+    });
+
+    it('renders <%= it.budget %> with the computed word budget', () => {
+      const prompt = {
+        system: 'Budget: <%= it.budget %> words.',
+        user: 'Report within <%= it.budget %>.',
+      };
+      const p = new DefaultAgentPolicy({ recovery: { prompt } });
+      const a = makeAgent({ toolCallCount: 3 });
+      for (let i = 0; i < 101; i++) a.accumulateToken('x');
+      // pressure(remaining=5000) → budgetTokens = max(50, 5000-150-512) = 4338
+      // → words = floor(4338 * 0.7 / 10) * 10 = 3030
+      const result = p.onRecovery(a, pressure() as any) as { type: 'extract'; prompt: { system: string; user: string } };
+      expect(result.type).toBe('extract');
+      expect(result.prompt.system).toBe('Budget: 3030 words.');
+      expect(result.prompt.user).toBe('Report within 3030.');
     });
   });
 
@@ -339,36 +356,40 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('idle');
     });
 
-    it('nudge message matches expected string', () => {
+    it('nudge message matches expected string (includes budget in words)', () => {
       const a = makeAgent({ toolCallCount: 2 });
+      // pressure(remaining=5000, hardLimit=128) → budgetTokens = 4872
+      // budgetTokens → words: floor(4872 * 0.7 / 10) * 10 = floor(341.04) * 10 = 3410
       const action = policy.onSettleReject(a, 5000, pressure(), BASE_CONFIG);
       expect(action).toEqual({
         type: 'nudge',
-        message: 'Tool result too large for remaining KV. Report your findings now.',
+        message: 'Tool result too large for remaining KV. Report your findings now within 3410 words.',
       });
     });
   });
 
   describe('budget + pressureThresholds', () => {
     it('no budget → pressureThresholds returns defaults', () => {
-      expect(policy.pressureThresholds).toEqual({ softLimit: 1024, hardLimit: 128 });
+      // hardLimit default is 512 (matches llama.cpp's default nBatch —
+      // enforced at pool startup via the hardLimit >= nBatch invariant).
+      expect(policy.pressureThresholds).toEqual({ softLimit: 1024, hardLimit: 512 });
     });
 
     it('budget.context.softLimit overrides default', () => {
       const p = new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } });
       expect(p.pressureThresholds.softLimit).toBe(2048);
-      expect(p.pressureThresholds.hardLimit).toBe(128); // default
+      expect(p.pressureThresholds.hardLimit).toBe(512); // default
     });
 
     it('budget.context.hardLimit overrides default', () => {
-      const p = new DefaultAgentPolicy({ budget: { context: { hardLimit: 256 } } });
-      expect(p.pressureThresholds.hardLimit).toBe(256);
+      const p = new DefaultAgentPolicy({ budget: { context: { hardLimit: 1024 } } });
+      expect(p.pressureThresholds.hardLimit).toBe(1024);
       expect(p.pressureThresholds.softLimit).toBe(1024); // default
     });
 
     it('partial budget → other uses default', () => {
-      const p = new DefaultAgentPolicy({ budget: { context: { softLimit: 512 } } });
-      expect(p.pressureThresholds).toEqual({ softLimit: 512, hardLimit: 128 });
+      const p = new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } });
+      expect(p.pressureThresholds).toEqual({ softLimit: 2048, hardLimit: 512 });
     });
 
     it('pressureThresholds getter returns correct shape', () => {
@@ -377,6 +398,43 @@ describe('DefaultAgentPolicy', () => {
       expect(pt).toHaveProperty('hardLimit');
       expect(typeof pt.softLimit).toBe('number');
       expect(typeof pt.hardLimit).toBe('number');
+    });
+  });
+
+  describe('onProduced: guard-check before budget-check ordering', () => {
+    // Regression for trace-1776819196054 agent 65539: over-budget agent
+    // repeatedly emitting a duplicate query only saw turn-limit nudges
+    // because `_isOverBudget` was checked before `_checkGuards`. Post-fix,
+    // the guard's specific message (e.g. "already searched") wins — giving
+    // the model actionable feedback instead of generic "report now".
+    it('duplicate query + over maxTurns → guard message wins, not budget nudge', () => {
+      const p = new DefaultAgentPolicy({
+        terminalTool: 'report',
+        extraGuards: [{
+          tools: ['web_search'],
+          reject: () => true,  // always reject — simulates duplicate-query match
+          message: 'This query was already searched. Refine your search or report findings.',
+        }],
+      });
+      // Agent is PAST maxTurns (20 >= 10) — _isOverBudget would fire.
+      const a = makeAgent({ toolCallCount: 5, turns: 20 });
+      const tc = { name: 'web_search', arguments: '{"query":"same"}', id: 'c1' };
+      const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('nudge');
+      expect((action as any).message).toBe('This query was already searched. Refine your search or report findings.');
+      // Specifically NOT the turn-limit message
+      expect((action as any).message).not.toContain('Turn limit');
+      expect((action as any).message).not.toContain('within');
+    });
+
+    it('no guard rejection + over maxTurns → budget nudge fires as before', () => {
+      // Sanity: when guards don't reject, the budget path still fires.
+      const p = new DefaultAgentPolicy({ terminalTool: 'report' });
+      const a = makeAgent({ toolCallCount: 5, turns: 20 });
+      const tc = { name: 'web_search', arguments: '{"query":"unique"}', id: 'c1' };
+      const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action.type).toBe('nudge');
+      expect((action as any).message).toContain('Turn limit');
     });
   });
 
@@ -407,12 +465,14 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('tool_call');
     });
 
-    it('time nudge message distinct from pressure/turns', () => {
+    it('time nudge message distinct from pressure/turns (includes budget in words)', () => {
       const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 0 } } });
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+      // pressure(remaining=5000, hardLimit=128) → budgetTokens = 4872
+      // → words = floor(4872 * 0.7 / 10) * 10 = 3410
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect((action as any).message).toBe('Time limit reached — report your findings now.');
+      expect((action as any).message).toBe('Time limit reached — report your findings now within 3410 words.');
     });
   });
 

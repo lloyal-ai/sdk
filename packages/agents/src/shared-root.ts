@@ -2,9 +2,10 @@ import { call } from "effection";
 import type { Operation } from "effection";
 import { Branch } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
-import { Ctx, Trace, TraceParent, ScratchpadParent } from "./context";
+import { Ctx, Trace, TraceParent, ScratchpadParent, RootFmt } from "./context";
 import { traceScope } from "./trace-scope";
 import type { SamplingParams } from "./types";
+import type { FormatConfig } from "./Agent";
 
 /**
  * Configuration for {@link withSharedRoot}
@@ -12,10 +13,6 @@ import type { SamplingParams } from "./types";
  * @category Agents
  */
 export interface SharedRootOptions {
-  /** System prompt to tokenize and prefill into the shared root */
-  systemPrompt: string;
-  /** JSON-serialized tool schemas for tool-aware prompt formatting */
-  tools?: string;
   /** Sampling parameters for the root branch */
   params?: SamplingParams;
   /**
@@ -29,33 +26,75 @@ export interface SharedRootOptions {
    *
    * When provided, the root inherits the parent's full KV state —
    * every tool call, tool result, and generated token the parent
-   * accumulated. The system prompt is prefilled as a delta on top.
-   * Sub-agents forking from this root attend over the parent's
-   * complete attention state (Continuous Context).
+   * accumulated. Sub-agents forking from this root attend over the
+   * parent's complete attention state (Continuous Context).
    *
    * When omitted, creates a fresh root at position 0 (cold start).
    */
   parent?: Branch;
+  /**
+   * When set, prefill the chat-format `[system + tools]` header onto the
+   * root once at setup. Every agent forking from the root inherits these
+   * tokens via `forkSync`'s metadata-only KV prefix-share — the role and
+   * tool schemas appear ONCE in physical KV regardless of how many agents
+   * the pool spawns.
+   *
+   * The resulting `FormatConfig` (parser/grammar/format/triggers) is set
+   * on the {@link RootFmt} context so `setupAgent` can detect shared mode,
+   * skip its own system+tools formatting, and inherit the dispatch-side
+   * fmt from the root.
+   *
+   * Use this for orchestrators where every agent shares the same role —
+   * chain-mode research pools, fanout-style same-role pools, etc. Mixed-
+   * role workflows (research → compare → synthesize) keep using per-spec
+   * `SpawnSpec.systemPrompt` and don't pass this option.
+   */
+  systemPrompt?: string;
+  /**
+   * JSON-serialized tool schemas to embed in the chat-format header
+   * prefilled at setup. Format matches `FormatChatOptions.tools` — output
+   * of `createToolkit(...).toolsJson`. Only applied when `systemPrompt` is
+   * also set; ignored otherwise.
+   */
+  toolsJson?: string;
+  /**
+   * Whether to enable thinking-mode tokens (e.g. `<think>` blocks) when
+   * formatting the shared root header. Threaded through to the chat-format
+   * call AND stored on the `RootFmt` FormatConfig so `setupAgent`'s
+   * shared-mode shortcut copies a parser/grammar/triggers configuration
+   * consistent with the per-agent suffix formatting.
+   *
+   * Should match the `enableThinking` value the caller passes to the agent
+   * pool — divergent values produce inconsistent grammar between the
+   * prefilled root and per-agent suffixes.
+   *
+   * @default false
+   */
+  enableThinking?: boolean;
 }
 
 /**
  * Scoped shared root branch with guaranteed cleanup
  *
- * Creates (or forks) a root branch, prefills the system prompt, and passes
- * it to the body function. The root is pruned via try/finally when the body
- * returns or throws, regardless of whether children still exist.
+ * Creates (or forks) a root branch for the pool's agents to fork from.
+ * The root is pruned via try/finally when the body returns or throws,
+ * regardless of whether children still exist.
  *
- * **Cold path** (no `parent`): creates root at position 0, prefills system
- * prompt. Use for top-level research where no prior context exists.
+ * Each agent's chat format (system + user + generation prompt) is rendered
+ * fresh inside `setupAgent`, so this root carries no chat context itself —
+ * it exists as the pool's branching point and as the spine that
+ * `ctx.extendRoot` writes onto between tasks.
  *
- * **Warm path** (`parent` provided): forks from parent branch, prefills
- * system prompt as a delta. Sub-agents inherit the parent's full KV state.
- * Use for recursive tools (web_research, research) where sub-agents should
- * attend over the calling agent's accumulated evidence.
+ * **Cold path** (no `parent`): creates a root at position 0 with no prefill.
+ * Agents fork at position 0; their full chat context lives in their own suffix.
  *
- * @param opts - System prompt, tools, sampling parameters, and optional parent branch
+ * **Warm path** (`parent` provided): forks from parent and prefills a turn
+ * separator so subsequent agent suffixes land on a clean turn boundary.
+ * Sub-agents inherit the parent's full KV state via the fork.
+ *
+ * @param opts - Sampling parameters and optional parent branch
  * @param body - Operation that receives the root branch and prefix length.
- *   Typically calls {@link runAgents} or {@link useAgentPool} inside.
+ *   Typically calls {@link useAgentPool} inside.
  * @returns The body's return value
  *
  * @category Agents
@@ -77,48 +116,22 @@ export function* withSharedRoot<T>(
   }
 
   const scope = traceScope(tw, parentTraceId, "withSharedRoot", {
-    hasTools: !!opts.tools,
-    systemPromptLength: opts.systemPrompt.length,
     hasParent: !!opts.parent,
   });
 
-  const messages = [{ role: "system", content: opts.systemPrompt }];
-  const fmtOpts: Record<string, unknown> = {
-    addGenerationPrompt: false,
-    enableThinking: false,
-  };
-  if (opts.tools) fmtOpts.tools = opts.tools;
-  const fmt = ctx.formatChatSync(JSON.stringify(messages), fmtOpts);
-  const sharedTokens = ctx.tokenizeSync(fmt.prompt);
-
-  tw.write({
-    traceId: tw.nextId(),
-    parentTraceId: scope.traceId,
-    ts: performance.now(),
-    type: "prompt:format",
-    promptText: fmt.prompt,
-    tokenCount: sharedTokens.length,
-    messages: JSON.stringify(messages),
-    tools: opts.tools,
-    grammar: fmt.grammar || undefined,
-    role: "sharedRoot",
-  });
-
-  // Warm path: fork from parent branch (inherits full KV state)
-  // Cold path: create fresh root at position 0
+  // Warm path: fork from parent branch (inherits full KV state), prefill a
+  // turn separator so the next agent's suffix lands on a clean boundary.
+  // Cold path: create fresh root at position 0 with no prefill — agents
+  // fork at 0 and carry their full chat context in their own suffix.
   let root: Branch;
   let prefillTokens: number[];
 
   if (opts.parent) {
     root = opts.parent.forkSync();
-    // Warm path: parent already has system prompt + tools in KV.
-    // Only prefill turn separator — the prompt is inherited via fork.
-    // This saves ~760 tokens per recursive fork.
-    const sep = ctx.getTurnSeparator();
-    prefillTokens = sep;
+    prefillTokens = ctx.getTurnSeparator();
   } else {
     root = Branch.create(ctx, 0, opts.params ?? { temperature: 0.5 });
-    prefillTokens = sharedTokens;
+    prefillTokens = [];
   }
 
   tw.write({
@@ -132,20 +145,66 @@ export function* withSharedRoot<T>(
     role: "sharedRoot",
   });
 
-  yield* call(() => root.prefill(prefillTokens));
+  if (prefillTokens.length > 0) {
+    yield* call(() => root.prefill(prefillTokens));
+    tw.write({
+      traceId: tw.nextId(),
+      parentTraceId: scope.traceId,
+      ts: performance.now(),
+      type: "branch:prefill",
+      branchHandle: root.handle,
+      tokenCount: prefillTokens.length,
+      role: "sharedPrefix",
+    });
+  }
 
-  tw.write({
-    traceId: tw.nextId(),
-    parentTraceId: scope.traceId,
-    ts: performance.now(),
-    type: "branch:prefill",
-    branchHandle: root.handle,
-    tokenCount: prefillTokens.length,
-    role: "sharedPrefix",
-  });
+  // Shared role+tools mode: format the chat header once and prefill onto
+  // the root. Agents forking from this root inherit system+tools tokens
+  // via metadata-only prefix-share (no per-spawn re-prefill). The resulting
+  // FormatConfig is stashed on RootFmt so setupAgent can detect shared
+  // mode and copy parser/grammar/format/triggers without re-emitting the
+  // tool schemas in each agent's suffix.
+  let rootFmt: FormatConfig | null = null;
+  if (opts.systemPrompt !== undefined) {
+    const enableThinking = opts.enableThinking ?? false;
+    const messages = JSON.stringify([{ role: "system", content: opts.systemPrompt }]);
+    const fmtOpts: Record<string, unknown> = {
+      enableThinking,
+      // Header ends at <|im_end|>; agents append <|im_start|>user…assistant
+      // markers as their suffix. Without this, the template would emit a
+      // trailing assistant generation prompt and corrupt the boundary.
+      addGenerationPrompt: false,
+    };
+    if (opts.toolsJson) fmtOpts.tools = opts.toolsJson;
+    const formatted = ctx.formatChatSync(messages, fmtOpts);
+    const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
+    if (headerTokens.length > 0) {
+      yield* call(() => root.prefill(headerTokens));
+      tw.write({
+        traceId: tw.nextId(),
+        parentTraceId: scope.traceId,
+        ts: performance.now(),
+        type: "branch:prefill",
+        branchHandle: root.handle,
+        tokenCount: headerTokens.length,
+        role: "sharedPrefix",
+      });
+    }
+    rootFmt = {
+      format: formatted.format,
+      reasoningFormat: formatted.reasoningFormat,
+      generationPrompt: formatted.generationPrompt,
+      parser: formatted.parser,
+      grammar: formatted.grammar,
+      grammarLazy: formatted.grammarLazy,
+      grammarTriggers: formatted.grammarTriggers,
+      enableThinking,
+    };
+  }
 
   try {
     if (opts.enableScratchpad) yield* ScratchpadParent.set(root);
+    if (rootFmt) yield* RootFmt.set(rootFmt);
     return yield* body(root, prefillTokens.length);
   } finally {
     if (!root.disposed) {

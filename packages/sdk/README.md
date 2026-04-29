@@ -1,6 +1,6 @@
 # @lloyal-labs/sdk
 
-Backend-agnostic TypeScript SDK for the lloyal inference platform.
+Backend-agnostic inference primitives for the [lloyal HDK](https://github.com/lloyal-ai/hdk).
 
 Composable inference primitives for forkable decode state, shared-prefix KV branching, and continuous tree batching. Branches share a KV prefix while keeping independent machinery — sampler chain, grammar, logits snapshot, perplexity tracker — for controlled divergence at decode time. `BranchStore` packs tokens from N branches (each at a different position, different seq_id, each needing independent logits captured) into a single `llama_batch` and dispatches once.
 
@@ -8,7 +8,7 @@ Composable inference primitives for forkable decode state, shared-prefix KV bran
 npm i @lloyal-labs/sdk
 ```
 
-The SDK exports the `SessionContext` contract and the primitives that operate on it. Backend bindings ([lloyal.node](https://github.com/lloyal-ai/lloyal.node), [nitro-llama](https://github.com/lloyal-ai/nitro-llama)) provide `createContext()` — the SDK takes it from there.
+The SDK exports the `SessionContext` contract and the primitives that operate on it. A backend binding (e.g. [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal-node) for Node) provides `createContext()` — the SDK takes it from there. Underneath, [liblloyal](https://github.com/lloyal-ai/liblloyal) is the C++ core; the Node binding is one front-end on top of it.
 
 ## The Branch API
 
@@ -123,15 +123,18 @@ branch.samplingPerplexity;    // sampling-level PPL (from filtered distribution)
 ```typescript
 const session = new Session({ ctx, store });
 
-// Prefill a user turn into the trunk
-await session.prefillUser('What is quantum entanglement?');
+// High-level: extend the trunk with a new query–answer pair
+await session.commitTurn('What is quantum entanglement?', answer);
 
-// After generation + verification, promote a branch to become the new trunk
+// Lower-level building blocks (for harnesses that orchestrate trunk lifecycle directly)
+await session.prefillUser('What is quantum entanglement?');
 await session.promote(verifiedBranch);
 
 // Next query starts from the promoted trunk's KV state
 session.trunk;  // the live branch
 ```
+
+`commitTurn` is the recommended high-level helper. Future queries fork from `session.trunk` and read prior conversation through KV attention — no prompt-history injection.
 
 ## Rerank
 

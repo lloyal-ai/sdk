@@ -19,12 +19,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lloyal-ai/sdk.git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
     "directory": "packages/rig"
   },
-  "homepage": "https://github.com/lloyal-ai/sdk/tree/main/packages/rig#readme",
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/rig#readme",
   "bugs": {
-    "url": "https://github.com/lloyal-ai/sdk/issues"
+    "url": "https://github.com/lloyal-ai/hdk/issues"
   },
   "keywords": [
     "llm",

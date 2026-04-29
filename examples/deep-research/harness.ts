@@ -65,7 +65,7 @@ function createResearchPolicy(): DefaultAgentPolicy {
   return new DefaultAgentPolicy({
     budget: {
       context: { softLimit: 2048, hardLimit: 1024 },
-      time: { softLimit: 120_000, hardLimit: 180_000 },
+      time: { softLimit: 240_000, hardLimit: 360_000 },
     },
     recovery: { prompt: RECOVERY },
     terminalTool: "report",
@@ -193,7 +193,11 @@ export function* runPlanner(
 
   const currentDate = today();
   const planPrompt = opts.reasoningMode === "flat" ? PLAN_FLAT : PLAN_DEEP;
-  const planTool = new PlanTool({ prompt: planPrompt, session, maxQuestions: 10 });
+  const planTool = new PlanTool({
+    prompt: planPrompt,
+    session,
+    maxQuestions: 10,
+  });
   const planContext = opts.context
     ? `Today's date: ${currentDate}\n\n${opts.context}`
     : `Today's date: ${currentDate}`;
@@ -237,8 +241,18 @@ export function* runPassthroughBranch(
   yield* send({
     type: "stats",
     timings: [
-      { label: "Plan", tokens: plan.tokenCount, detail: plan.intent, timeMs: plan.timeMs },
-      { label: "Passthrough", tokens: pt.tokenCount, detail: "trunk stream", timeMs: pt.timeMs },
+      {
+        label: "Plan",
+        tokens: plan.tokenCount,
+        detail: plan.intent,
+        timeMs: plan.timeMs,
+      },
+      {
+        label: "Passthrough",
+        tokens: pt.tokenCount,
+        detail: "trunk stream",
+        timeMs: pt.timeMs,
+      },
     ],
     ctxPct: Math.round((100 * p.cellsUsed) / ctxTotal),
     ctxPos: p.cellsUsed,
@@ -358,59 +372,64 @@ export function* runResearchBranch(
         trace: opts.trace,
         scorer: primaryScorer,
         enableThinking: true,
-        orchestrate: opts.reasoningMode === "flat"
-          // Flat: pure parallel — agents run concurrently and independently.
-          // No spine extension (findings reach synth via prompt injection,
-          // not KV attention). `taskIndex: 0` keeps web-worker.eta's
-          // BUILD_ON_PRIOR block off (no priors in parallel); `siblingTasks`
-          // + `agentCount > 1` activates sibling awareness so each agent
-          // stays in its lane.
-          ? parallel(tasks.map((task, i) => ({
-              content: taskToContent(task),
-              systemPrompt: renderWorkerPrompt(primarySource, {
-                maxTurns: opts.maxTurns,
-                agentCount: tasks.length,
-                siblingTasks: tasks.filter((_, j) => j !== i).map(t => t.description),
-                date: currentDate,
-                taskIndex: 0,
-              }),
-              seed: 1000 + i,
-            })))
-          // Deep: chain-shaped spine that extends between each task.
-          : chain(tasks, (task, i) => ({
-              task: {
-                content: taskToContent(task),
-                systemPrompt: renderWorkerPrompt(primarySource, {
-                  maxTurns: opts.maxTurns,
-                  agentCount: 1,
-                  siblingTasks: [],
-                  date: currentDate,
-                  taskIndex: i,
-                }),
-              },
-              userContent: `Research task: ${task.description}`,
-              beforeSpawn: function* () {
-                yield* send({
-                  type: "spine:task",
-                  taskIndex: i,
-                  taskCount: tasks.length,
-                  description: task.description,
-                });
-                yield* send({
-                  type: "spine:source",
-                  taskIndex: i,
-                  source: primarySource.name,
-                });
-              },
-              afterExtend: function* (delta, position) {
-                yield* send({
-                  type: "spine:task:done",
-                  taskIndex: i,
-                  stageFindings: delta,
-                  accumulated: position,
-                });
-              },
-            })),
+        orchestrate:
+          opts.reasoningMode === "flat"
+            ? // Flat: pure parallel — agents run concurrently and independently.
+              // No spine extension (findings reach synth via prompt injection,
+              // not KV attention). `taskIndex: 0` keeps web-worker.eta's
+              // BUILD_ON_PRIOR block off (no priors in parallel); `siblingTasks`
+              // + `agentCount > 1` activates sibling awareness so each agent
+              // stays in its lane.
+              parallel(
+                tasks.map((task, i) => ({
+                  content: taskToContent(task),
+                  systemPrompt: renderWorkerPrompt(primarySource, {
+                    maxTurns: opts.maxTurns,
+                    agentCount: tasks.length,
+                    siblingTasks: tasks
+                      .filter((_, j) => j !== i)
+                      .map((t) => t.description),
+                    date: currentDate,
+                    taskIndex: 0,
+                  }),
+                  seed: 1000 + i,
+                })),
+              )
+            : // Deep: chain-shaped spine that extends between each task.
+              chain(tasks, (task, i) => ({
+                task: {
+                  content: taskToContent(task),
+                  systemPrompt: renderWorkerPrompt(primarySource, {
+                    maxTurns: opts.maxTurns,
+                    agentCount: 1,
+                    siblingTasks: [],
+                    date: currentDate,
+                    taskIndex: i,
+                  }),
+                },
+                userContent: `Research task: ${task.description}`,
+                beforeSpawn: function* () {
+                  yield* send({
+                    type: "spine:task",
+                    taskIndex: i,
+                    taskCount: tasks.length,
+                    description: task.description,
+                  });
+                  yield* send({
+                    type: "spine:source",
+                    taskIndex: i,
+                    source: primarySource.name,
+                  });
+                },
+                afterExtend: function* (delta, position) {
+                  yield* send({
+                    type: "spine:task:done",
+                    taskIndex: i,
+                    stageFindings: delta,
+                    accumulated: position,
+                  });
+                },
+              })),
       });
 
       // Emit research:done HERE — before synth starts — so the flat-mode
@@ -439,16 +458,18 @@ export function* runResearchBranch(
       yield* send({ type: "synthesize:start" });
       const synthT = startTimer();
 
-      const synthPrompt = opts.reasoningMode === "flat" ? SYNTHESIZE_FLAT : SYNTHESIZE_DEEP;
-      const findings = opts.reasoningMode === "flat"
-        ? research.agents
-            .map((a, i) => {
-              const desc = tasks[i]?.description ?? `task ${i + 1}`;
-              const body = a.result?.trim() || "(no findings)";
-              return `### Agent ${i + 1}: ${desc}\n\n${body}`;
-            })
-            .join("\n\n")
-        : undefined;
+      const synthPrompt =
+        opts.reasoningMode === "flat" ? SYNTHESIZE_FLAT : SYNTHESIZE_DEEP;
+      const findings =
+        opts.reasoningMode === "flat"
+          ? research.agents
+              .map((a, i) => {
+                const desc = tasks[i]?.description ?? `task ${i + 1}`;
+                const body = a.result?.trim() || "(no findings)";
+                return `### Agent ${i + 1}: ${desc}\n\n${body}`;
+              })
+              .join("\n\n")
+          : undefined;
       const synthCtx = {
         query,
         findings,
@@ -500,7 +521,11 @@ export function* runResearchBranch(
   });
 
   const verifyTimer = startTimer();
-  yield* send({ type: "verify:start", count: opts.verifyCount, mode: opts.reasoningMode });
+  yield* send({
+    type: "verify:start",
+    count: opts.verifyCount,
+    mode: opts.reasoningMode,
+  });
   const verifyPool = yield* agentPool({
     orchestrate: parallel(
       Array.from({ length: opts.verifyCount }, (_, i) => ({
@@ -510,7 +535,11 @@ export function* runResearchBranch(
       })),
     ),
   });
-  yield* send({ type: "verify:done", count: opts.verifyCount, timeMs: verifyTimer() });
+  yield* send({
+    type: "verify:done",
+    count: opts.verifyCount,
+    timeMs: verifyTimer(),
+  });
   const verifyOutputs = verifyPool.agents.map((a) => a.agent.rawOutput);
 
   const responsesText = verifyOutputs
@@ -632,6 +661,14 @@ export function* handleQuery(
     yield* runPassthroughBranch(query, session, plan, wallStartMs);
     return { type: "done" };
   }
-  yield* runResearchBranch(query, plan, session, sources, reranker, opts, wallStartMs);
+  yield* runResearchBranch(
+    query,
+    plan,
+    session,
+    sources,
+    reranker,
+    opts,
+    wallStartMs,
+  );
   return { type: "done" };
 }

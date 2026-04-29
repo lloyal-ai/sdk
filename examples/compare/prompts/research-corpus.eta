@@ -7,6 +7,8 @@ Available files:
 
 You have <%= it.maxTurns %> tool calls.
 
+If a tool returns an error about time limit, KV limit, or word limit, stop and call report() with your findings so far.
+
 PROCESS:
 1. grep or search for terms directly tied to **<%= it.subject %>**. If grep returns zero matches, the exact pattern is absent — try broader keywords or use search.
 2. read_file on every line that matches a relevant entity. Do not rely on grep/search summaries; they are truncated.

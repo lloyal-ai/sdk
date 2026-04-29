@@ -4,7 +4,7 @@ Continuous Context agent runtime for the [lloyal HDK](https://github.com/lloyal-
 
 `lloyal-agents` runs multi-agent inference inside the decode loop. Instead of N independent model calls rebuilding the prompt each step, all agents advance inside one continuous decode process — forked from shared KV cache state, driven through a single GPU forward pass per tick, spawning sub-agents from their own live branches at arbitrary depth.
 
-Built on [lloyal.node](https://github.com/lloyal-ai/lloyal-node), which provides forkable decode state and continuous tree batching over llama.cpp. `lloyal-agents` adds structured concurrency, tool dispatch, and a five-phase tick loop. Orchestration is not a layer above inference — it is inference.
+Built on [lloyal.node](https://github.com/lloyal-ai/lloyal.node), which provides forkable decode state and continuous tree batching over llama.cpp. `lloyal-agents` adds structured concurrency, tool dispatch, and a five-phase tick loop. Orchestration is not a layer above inference — it is inference.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lloyal-ai/hdk/main/assets/continuous-context-dark.svg">
@@ -15,7 +15,7 @@ Built on [lloyal.node](https://github.com/lloyal-ai/lloyal-node), which provides
 npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node
 ```
 
-`lloyal-agents` provides the agent runtime. [`lloyal.node`](https://github.com/lloyal-ai/lloyal-node) provides the native inference backend — prebuilt binaries for macOS (Metal, CPU), Linux (CPU, CUDA, Vulkan), and Windows (CPU, CUDA, Vulkan). Both are required. GPU selection at runtime.
+`lloyal-agents` provides the agent runtime. [`lloyal.node`](https://github.com/lloyal-ai/lloyal.node) provides the native inference backend — prebuilt binaries for macOS (Metal, CPU), Linux (CPU, CUDA, Vulkan), and Windows (CPU, CUDA, Vulkan). Both are required. GPU selection at runtime.
 
 ## Public API
 

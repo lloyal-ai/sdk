@@ -1,7 +1,7 @@
 # lloyal HDK
 
 [![CI](https://github.com/lloyal-ai/hdk/actions/workflows/ci.yml/badge.svg)](https://github.com/lloyal-ai/hdk/actions/workflows/ci.yml)
-[![GPU Tests](https://github.com/lloyal-ai/lloyal-node/actions/workflows/gpu-test.yml/badge.svg)](https://github.com/lloyal-ai/lloyal-node/actions/workflows/gpu-test.yml)
+[![GPU Tests](https://github.com/lloyal-ai/lloyal.node/actions/workflows/gpu-test.yml/badge.svg)](https://github.com/lloyal-ai/lloyal.node/actions/workflows/gpu-test.yml)
 [![npm agents](https://img.shields.io/npm/v/@lloyal-labs/lloyal-agents.svg?label=lloyal-agents)](https://www.npmjs.com/package/@lloyal-labs/lloyal-agents)
 [![npm sdk](https://img.shields.io/npm/v/@lloyal-labs/sdk.svg?label=sdk)](https://www.npmjs.com/package/@lloyal-labs/sdk)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -32,7 +32,7 @@ Full positioning, mechanics, and receipts in the [docs site](https://docs.lloyal
 npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node
 ```
 
-`lloyal-agents` is the runtime. [`lloyal.node`](https://github.com/lloyal-ai/lloyal-node) is the native binding — prebuilt for macOS, Linux, and Windows with CPU and GPU support. Both required.
+`lloyal-agents` is the runtime. [`lloyal.node`](https://github.com/lloyal-ai/lloyal.node) is the native binding — prebuilt for macOS, Linux, and Windows with CPU and GPU support. Both required.
 
 ## Quickstart
 
@@ -122,7 +122,7 @@ When an agent needs to go deeper, `DelegateTool` spawns sub-agents that fork fro
 | [`@lloyal-labs/lloyal-agents`](packages/agents) | Continuous Context agent runtime — five-phase tick loop, tools, orchestrators |
 | [`@lloyal-labs/sdk`](packages/sdk) | Inference primitives — `Branch`, `BranchStore`, `Session`, `Rerank` |
 | [`@lloyal-labs/rig`](packages/rig) | Retrieval-Interleaved Generation — sources, reranker, delegation |
-| [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal-node) | Native Node binding for liblloyal (separate repo) |
+| [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) | Native Node binding for liblloyal (separate repo) |
 
 Underneath: **[liblloyal](https://github.com/lloyal-ai/liblloyal)** — the C++ core. Goes wherever C++ runs (desktop OSes, mobile, browser via WASM, game engines, edge).
 
@@ -147,7 +147,7 @@ Every PR passes:
 - Unit tests
 - **GPU integration** against real models on NVIDIA L4 hardware
 
-The GPU gate runs cross-repo: HDK PRs trigger [`lloyal-node`](https://github.com/lloyal-ai/lloyal-node)'s GPU workflow, which builds the PR packages against the native runtime and runs the full agent integration suite before merge.
+The GPU gate runs cross-repo: HDK PRs trigger [`lloyal-node`](https://github.com/lloyal-ai/lloyal.node)'s GPU workflow, which builds the PR packages against the native runtime and runs the full agent integration suite before merge.
 
 ### Model matrix
 

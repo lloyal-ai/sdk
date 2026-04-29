@@ -25,6 +25,8 @@ jobs:
           test -f packages/sdk/dist/index.d.ts
           test -f packages/agents/dist/index.js
           test -f packages/agents/dist/index.d.ts
+          test -f packages/rig/dist/index.js
+          test -f packages/rig/dist/index.d.ts
 
   unit-tests:
     runs-on: ubuntu-latest
@@ -49,7 +51,7 @@ jobs:
           node-version: 24
 
       - run: npm install
-      - run: npx tsc -b packages/sdk packages/agents
+      - run: npx tsc -b packages/sdk packages/agents packages/rig
 
   gpu-tests:
     name: GPU Integration Tests
@@ -69,11 +71,11 @@ jobs:
             await github.rest.repos.createDispatchEvent({
               owner: 'lloyal-ai',
               repo: 'lloyal.node',
-              event_type: 'sdk-gpu-test',
+              event_type: 'hdk-gpu-test',
               client_payload: {
-                sdk_ref: '${{ github.head_ref }}',
-                sdk_sha: '${{ github.event.pull_request.head.sha }}',
-                sdk_repo: '${{ github.repository }}',
+                hdk_ref: '${{ github.head_ref }}',
+                hdk_sha: '${{ github.event.pull_request.head.sha }}',
+                hdk_repo: '${{ github.repository }}',
                 pr_number: '${{ github.event.pull_request.number }}'
               }
             });

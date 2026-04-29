@@ -8,7 +8,7 @@ Composable inference primitives for forkable decode state, shared-prefix KV bran
 npm i @lloyal-labs/sdk
 ```
 
-The SDK exports the `SessionContext` contract and the primitives that operate on it. A backend binding (e.g. [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal-node) for Node) provides `createContext()` — the SDK takes it from there. Underneath, [liblloyal](https://github.com/lloyal-ai/liblloyal) is the C++ core; the Node binding is one front-end on top of it.
+The SDK exports the `SessionContext` contract and the primitives that operate on it. A backend binding (e.g. [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) for Node) provides `createContext()` — the SDK takes it from there. Underneath, [liblloyal](https://github.com/lloyal-ai/liblloyal) is the C++ core; the Node binding is one front-end on top of it.
 
 ## The Branch API
 

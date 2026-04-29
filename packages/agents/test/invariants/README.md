@@ -62,8 +62,9 @@ learn the framework's contract.
 
 ## Invariant catalog
 
-The full catalog lives in `/Users/zuhairnaqvi/.claude/plans/mutable-waddling-bentley.md`.
-This directory implements them incrementally. Implemented so far:
+The full I1–I40 invariant catalog is tracked in the framework's planning
+notes (outside this repo). This directory implements them incrementally.
+Implemented so far:
 
 - I24 (SETTLE-policy-consulted) — `pressure.prop.test.ts` +
   `scenarios/pressure-exit-via-settle-policy-nudge.scenario.test.ts`

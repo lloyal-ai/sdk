@@ -119,6 +119,11 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
       // Only emit toolsJson into the root header in shared mode; the rest
       // of the system uses the toolkit toolMap for actual dispatch.
       toolsJson: sharedMode ? toolkit.toolsJson : undefined,
+      // Thread enableThinking so the root header chat-format and the
+      // RootFmt FormatConfig (parser/grammar/triggers) match what the
+      // per-agent suffixes get further down. Otherwise a caller passing
+      // enableThinking:true gets divergent grammar between root + suffix.
+      enableThinking: opts.enableThinking,
     },
     function* (root) {
       // SHARED mode (systemPrompt set): the inner `root` carries the

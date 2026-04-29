@@ -57,6 +57,20 @@ export interface SharedRootOptions {
    * also set; ignored otherwise.
    */
   toolsJson?: string;
+  /**
+   * Whether to enable thinking-mode tokens (e.g. `<think>` blocks) when
+   * formatting the shared root header. Threaded through to the chat-format
+   * call AND stored on the `RootFmt` FormatConfig so `setupAgent`'s
+   * shared-mode shortcut copies a parser/grammar/triggers configuration
+   * consistent with the per-agent suffix formatting.
+   *
+   * Should match the `enableThinking` value the caller passes to the agent
+   * pool — divergent values produce inconsistent grammar between the
+   * prefilled root and per-agent suffixes.
+   *
+   * @default false
+   */
+  enableThinking?: boolean;
 }
 
 /**
@@ -152,9 +166,10 @@ export function* withSharedRoot<T>(
   // tool schemas in each agent's suffix.
   let rootFmt: FormatConfig | null = null;
   if (opts.systemPrompt !== undefined) {
+    const enableThinking = opts.enableThinking ?? false;
     const messages = JSON.stringify([{ role: "system", content: opts.systemPrompt }]);
     const fmtOpts: Record<string, unknown> = {
-      enableThinking: false,
+      enableThinking,
       // Header ends at <|im_end|>; agents append <|im_start|>user…assistant
       // markers as their suffix. Without this, the template would emit a
       // trailing assistant generation prompt and corrupt the boundary.
@@ -183,7 +198,7 @@ export function* withSharedRoot<T>(
       grammar: formatted.grammar,
       grammarLazy: formatted.grammarLazy,
       grammarTriggers: formatted.grammarTriggers,
-      enableThinking: false,
+      enableThinking,
     };
   }
 

@@ -77,7 +77,7 @@ const FixedRow: React.FC<{
     padded = children + ' '.repeat(width - children.length);
   }
   // Replace ASCII spaces with NBSP so Ink preserves them.
-  const protectedRow = padded.replace(/ /g, ' ');
+  const protectedRow = padded.replace(/ /g, ' ');
   return (
     <Box width={width} flexShrink={0}>
       <Text color={color} bold={bold} dimColor={dim} wrap="truncate-end">

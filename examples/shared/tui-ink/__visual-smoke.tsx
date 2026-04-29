@@ -6,14 +6,15 @@
  *   npx tsx examples/shared/tui-ink/__visual-smoke.tsx
  */
 
-import { main, createChannel, createSignal, sleep, spawn, call } from 'effection';
+import { main, createSignal, sleep, spawn, call, each } from 'effection';
+import { createBus } from './event-bus';
 import { render } from './render';
 import type { WorkflowEvent } from './events';
 import type { Command } from './commands';
 import type { ConfigOrigin } from './config';
 
 main(function* () {
-  const channel = createChannel<WorkflowEvent, void>();
+  const bus = createBus<WorkflowEvent>();
   const commands = createSignal<Command, void>();
 
   // Drain commands (a real main.ts would dispatch real work here).
@@ -24,7 +25,7 @@ main(function* () {
     }
   });
 
-  const instance = render(channel, (cmd) => commands.send(cmd));
+  const instance = render(bus, (cmd) => commands.send(cmd));
 
   const origin: ConfigOrigin = {
     tavilyKey: 'file',
@@ -38,7 +39,7 @@ main(function* () {
     yield* sleep(100);
 
     // ── Boot → composer ──
-    yield* channel.send({
+    bus.send({
       type: 'config:loaded',
       config: {
         version: 1,
@@ -53,7 +54,7 @@ main(function* () {
     yield* sleep(600);
 
     // ── Submit query ──
-    yield* channel.send({
+    bus.send({
       type: 'plan:start',
       query: 'How do modern voice agents achieve sub-800ms latency on-device?',
       mode: 'deep',
@@ -62,7 +63,7 @@ main(function* () {
     yield* sleep(400);
 
     // ── Plan arrives ──
-    yield* channel.send({
+    bus.send({
       type: 'plan',
       intent: 'research',
       tasks: [
@@ -74,16 +75,16 @@ main(function* () {
       tokenCount: 412,
       timeMs: 1450,
     });
-    yield* channel.send({ type: 'ui:plan_review' } as WorkflowEvent);
+    bus.send({ type: 'ui:plan_review' } as WorkflowEvent);
 
     yield* sleep(1200);
 
     // ── User accepts → research starts ──
-    yield* channel.send({ type: 'research:start', agentCount: 3, mode: 'flat' });
-    yield* channel.send({ type: 'fanout:tasks', tasks: [] as never });
-    yield* channel.send({ type: 'agent:spawn', agentId: 1, parentAgentId: 0 } as WorkflowEvent);
-    yield* channel.send({ type: 'agent:spawn', agentId: 2, parentAgentId: 0 } as WorkflowEvent);
-    yield* channel.send({ type: 'agent:spawn', agentId: 3, parentAgentId: 0 } as WorkflowEvent);
+    bus.send({ type: 'research:start', agentCount: 3, mode: 'flat' });
+    bus.send({ type: 'fanout:tasks', tasks: [] as never });
+    bus.send({ type: 'agent:spawn', agentId: 1, parentAgentId: 0 } as WorkflowEvent);
+    bus.send({ type: 'agent:spawn', agentId: 2, parentAgentId: 0 } as WorkflowEvent);
+    bus.send({ type: 'agent:spawn', agentId: 3, parentAgentId: 0 } as WorkflowEvent);
 
     // Stream brief content into each column
     const streams: [number, string][] = [
@@ -93,7 +94,7 @@ main(function* () {
     ];
     for (const [id, text] of streams) {
       for (const word of text.split(' ')) {
-        yield* channel.send({
+        bus.send({
           type: 'agent:produce',
           agentId: id,
           text: word + ' ',
@@ -101,26 +102,26 @@ main(function* () {
         } as WorkflowEvent);
         yield* sleep(12);
       }
-      yield* channel.send({
+      bus.send({
         type: 'agent:produce',
         agentId: id,
         text: '</think>',
         tokenCount: 30,
       } as WorkflowEvent);
-      yield* channel.send({
+      bus.send({
         type: 'agent:report',
         agentId: id,
         result: `Findings for agent ${id}: short report.`,
       } as WorkflowEvent);
     }
 
-    yield* channel.send({ type: 'research:done', totalTokens: 400, totalToolCalls: 0, timeMs: 1800 });
+    bus.send({ type: 'research:done', totalTokens: 400, totalToolCalls: 0, timeMs: 1800 });
 
     // Synth
-    yield* channel.send({ type: 'synthesize:start' });
-    yield* channel.send({ type: 'agent:spawn', agentId: 10, parentAgentId: 0 } as WorkflowEvent);
+    bus.send({ type: 'synthesize:start' });
+    bus.send({ type: 'agent:spawn', agentId: 10, parentAgentId: 0 } as WorkflowEvent);
     for (const word of 'Voice agents stream STT, LLM, TTS overlapping for sub-800ms round-trip.'.split(' ')) {
-      yield* channel.send({
+      bus.send({
         type: 'agent:produce',
         agentId: 10,
         text: word + ' ',
@@ -128,7 +129,7 @@ main(function* () {
       } as WorkflowEvent);
       yield* sleep(14);
     }
-    yield* channel.send({
+    bus.send({
       type: 'synthesize:done',
       agentId: 10,
       ppl: 2.6,
@@ -137,28 +138,28 @@ main(function* () {
       timeMs: 900,
     });
 
-    yield* channel.send({ type: 'verify:start', count: 3, mode: 'flat' });
+    bus.send({ type: 'verify:start', count: 3, mode: 'flat' });
     yield* sleep(300);
-    yield* channel.send({ type: 'verify:done', count: 3, timeMs: 800 });
-    yield* channel.send({
+    bus.send({ type: 'verify:done', count: 3, timeMs: 800 });
+    bus.send({
       type: 'eval:done',
       converged: true,
       tokenCount: 18,
       sampleCount: 3,
       timeMs: 400,
     });
-    yield* channel.send({
+    bus.send({
       type: 'stats',
       timings: [],
       ctxPct: 52,
       ctxPos: 8500,
       ctxTotal: 16384,
     });
-    yield* channel.send({ type: 'complete', data: {} });
+    bus.send({ type: 'complete', data: {} });
 
     // ── Back to composer for follow-up ──
     yield* sleep(800);
-    yield* channel.send({ type: 'ui:composer' } as WorkflowEvent);
+    bus.send({ type: 'ui:composer' } as WorkflowEvent);
     yield* sleep(800);
   });
 
@@ -166,6 +167,3 @@ main(function* () {
   instance.unmount();
   yield* call(() => instance.waitUntilExit());
 });
-
-// Helper local to the smoke — `each` imported via main's generator context.
-import { each } from 'effection';

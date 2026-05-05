@@ -18,4 +18,4 @@ export * from './index';
 export { createReranker } from './reranker';
 
 // Node-only: Resource loading (requires node:fs)
-export { loadResources, chunkResources } from './resources';
+export { loadResources, chunkResources, resolveCorpusInput } from './resources';

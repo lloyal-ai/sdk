@@ -4,5 +4,5 @@
  * @packageDocumentation
  * @category Rig
  */
-export { loadResources, chunkResources } from './files';
+export { loadResources, chunkResources, resolveCorpusInput } from './files';
 export type { Resource, Chunk } from './types';

@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import ignoreFactory = require("ignore");
 import { loadBinary } from "@lloyal-labs/lloyal.node";
 import type { Resource, Chunk } from "./types";
 
@@ -13,39 +14,107 @@ const { parseMarkdown } = loadBinary() as unknown as {
   parseMarkdown(text: string): Section[];
 };
 
+/** Pattern accepted in glob inputs — tail must be `.md`, `.mdx`, or
+ *  `.{md,mdx}` (with optional ordering / overlap variants). Anything else
+ *  is rejected — the corpus only handles markdown. */
+const ACCEPTED_GLOB_TAIL = /\.(md|mdx|\{(?:md|mdx)(?:,(?:md|mdx))*\})$/;
+
+const GLOB_CHARS = /[*?[\]{}]/;
+
+/** Split a path-with-glob into a `cwd` (everything up to the first glob
+ *  character's nearest preceding `/`) + a `pattern` (the rest). Plain
+ *  paths return `{ cwd: input, pattern: null }`. */
+export function resolveCorpusInput(input: string): {
+  cwd: string;
+  pattern: string | null;
+} {
+  const m = input.match(GLOB_CHARS);
+  if (!m) return { cwd: input, pattern: null };
+  const idx = m.index ?? 0;
+  const lastSep = input.lastIndexOf("/", idx);
+  const cwd = lastSep > 0 ? input.slice(0, lastSep) : "/";
+  const pattern = input.slice(lastSep + 1);
+  return { cwd, pattern };
+}
+
 /**
- * Load documents from a directory (or single file) into {@link Resource} objects
+ * Load documents into {@link Resource} objects.
  *
- * If `dir` is a file path, returns a single-element array. If it is a
- * directory, reads all `.md` files within it. Exits the process with an
- * error message if the path does not exist or contains no Markdown files.
+ * Accepts three input shapes:
  *
- * @param dir - Absolute path to a directory of `.md` files or a single file
- * @returns Array of loaded resources with file name and content
+ * 1. **Single file** (`/path/to/foo.md`) — wrapped as one resource.
+ * 2. **Directory** (`/path/to/docs`) — recursive `**\/*.{md,mdx}`. The
+ *    `.gitignore` at the corpus root (if present) filters out vendored
+ *    markdown (e.g. `node_modules`) the user already declared as
+ *    ignored. To restrict to top-level only, pass `dir/*.md` explicitly.
+ * 3. **Glob pattern** (`/path/to/docs/*.md`, `/path/to/docs/sub/**\/*.md`,
+ *    etc.) — the user controls scope. The pattern's tail must end in
+ *    `.md`, `.mdx`, or `.{md,mdx}` — other extensions are rejected
+ *    because the corpus only handles markdown. Quote the pattern in
+ *    your shell to prevent shell expansion.
+ *
+ * Honors `.gitignore` at the corpus root if present. No HDK-side opinions
+ * about which directories to skip; just respect what's already declared.
+ *
+ * Resource names preserve the relative path from the corpus root so
+ * nested files with the same basename don't collide.
  *
  * @category Rig
  */
-export function loadResources(dir: string): Resource[] {
-  if (!fs.existsSync(dir)) {
-    process.stdout.write(`Error: corpus not found: ${dir}\n`);
-    process.exit(1);
+export function loadResources(input: string): Resource[] {
+  const { cwd, pattern: rawPattern } = resolveCorpusInput(input);
+  let pattern: string;
+
+  if (rawPattern) {
+    // Glob input — validate extension, then use as-is.
+    if (!ACCEPTED_GLOB_TAIL.test(rawPattern)) {
+      process.stdout.write(
+        `Error: only .md/.mdx files are supported. Got pattern: ${rawPattern}\n`,
+      );
+      process.exit(1);
+    }
+    pattern = rawPattern;
+  } else {
+    // Plain path — file or directory.
+    if (!fs.existsSync(cwd)) {
+      process.stdout.write(`Error: corpus not found: ${cwd}\n`);
+      process.exit(1);
+    }
+    const stat = fs.statSync(cwd);
+    if (stat.isFile()) {
+      if (!/\.(md|mdx)$/.test(cwd)) {
+        process.stdout.write(
+          `Error: only .md/.mdx files are supported. Got: ${cwd}\n`,
+        );
+        process.exit(1);
+      }
+      return [
+        { name: path.basename(cwd), content: fs.readFileSync(cwd, "utf8") },
+      ];
+    }
+    // Directory: recursive walk. `.gitignore` is the user's declared
+    // exclusion list (no HDK opinion baked in) — vendored markdown
+    // already on the ignore list stays out. To restrict to top-level
+    // only, the user passes `dir/*.md` explicitly.
+    pattern = "**/*.{md,mdx}";
   }
-  const stat = fs.statSync(dir);
-  if (stat.isFile()) {
-    return [
-      { name: path.basename(dir), content: fs.readFileSync(dir, "utf8") },
-    ];
-  }
-  const files = fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith(".md") || f.endsWith(".mdx"));
+
+  const gitignorePath = path.join(cwd, ".gitignore");
+  const ig = fs.existsSync(gitignorePath)
+    ? ignoreFactory().add(fs.readFileSync(gitignorePath, "utf8"))
+    : null;
+
+  const all = fs.globSync(pattern, { cwd }) as string[];
+  const files = (ig ? all.filter((f) => !ig.ignores(f)) : all).sort();
   if (!files.length) {
-    process.stdout.write(`Error: no .md(x) files in: ${dir}\n`);
+    process.stdout.write(
+      `Error: no .md(x) files matched: ${cwd}/${pattern}\n`,
+    );
     process.exit(1);
   }
-  return files.map((f) => ({
-    name: f,
-    content: fs.readFileSync(path.join(dir, f), "utf8"),
+  return files.map((rel) => ({
+    name: rel,
+    content: fs.readFileSync(path.join(cwd, rel), "utf8"),
   }));
 }
 

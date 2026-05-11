@@ -13,10 +13,12 @@ Most agent stacks are infrastructure: an inference server, an agent runtime, a v
 The unit you build isn't an agent — it's a _harness_: an orchestrated system of agents that share live attention state. You treat it as code, not as infrastructure.
 
 <p>
-  <img src="assets/demo.gif" alt="Deep Research: 5 agents researching concurrently inside a shared 32K-token context window, plan → research with tool calls → synthesize" width="100%">
+  <img src="assets/demo-readme.gif" alt="Deep Research: 5 agents researching concurrently inside a shared 32K-token context window, plan → research with tool calls → synthesize" width="100%">
   <br>
   <em>Qwen3.5 4B + Qwen3 0.6B reranker · 5 parallel agents · shared 32K context · fully offline on M2 MacBook Pro 16 GB</em>
 </p>
+
+> The demo above is [**reasoning.run**](https://www.npmjs.com/package/reasoning.run), a deep-research CLI built with HDK. Try it in 30 seconds: `npx reasoning.run`.
 
 ## Three pillars
 
@@ -151,11 +153,11 @@ Underneath: **[liblloyal](https://github.com/lloyal-ai/liblloyal)** — the C++ 
 
 ## Examples
 
-| Example                                        | What it shows                                                                                                     |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| [`examples/react-agent`](examples/react-agent) | Single agent with corpus tools — `useAgent` baseline                                                              |
-| [`examples/reflection`](examples/reflection)   | Research → draft → critique → revise via manual branch lifecycle and `diverge`                                    |
-| [`examples/compare`](examples/compare)         | DAG primer: research two subjects in parallel, compare across axes, synthesize. Playbooks convention applied.     |
+| Example                                        | What it shows                                                                                                 |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| [`examples/react-agent`](examples/react-agent) | Single agent with corpus tools — `useAgent` baseline                                                          |
+| [`examples/reflection`](examples/reflection)   | Research → draft → critique → revise via manual branch lifecycle and `diverge`                                |
+| [`examples/compare`](examples/compare)         | DAG primer: research two subjects in parallel, compare across axes, synthesize. Playbooks convention applied. |
 
 ## Documentation
 

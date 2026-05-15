@@ -45,7 +45,7 @@ export type TraceEvent =
       messages: string;
       tools?: string;
       grammar?: string;
-      role: 'sharedRoot' | 'agentSuffix' | 'generate' | 'diverge' | 'toolResultDelta';
+      role: 'spine' | 'agentSuffix' | 'generate' | 'diverge' | 'toolResultDelta';
     }
 
   // ── Branch events ───────────────────────────
@@ -54,13 +54,13 @@ export type TraceEvent =
       branchHandle: number;
       parentHandle: number | null;
       position: number;
-      role: 'root' | 'sharedRoot' | 'agentFork' | 'scratchpad' | 'divergeAttempt';
+      role: 'root' | 'spine' | 'agentFork' | 'scratchpad' | 'divergeAttempt';
     }
   | TraceEventBase & {
       type: 'branch:prefill';
       branchHandle: number;
       tokenCount: number;
-      role: 'sharedPrefix' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'scratchpad' | 'probe' | 'recovery';
+      role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'scratchpad' | 'probe' | 'recovery';
       probeText?: string;
     }
   | TraceEventBase & { type: 'branch:prune'; branchHandle: number; position: number }
@@ -163,8 +163,8 @@ export type TraceEvent =
     }
 
   // ── Spine extension ──────────────────────────
-  // Emitted by PoolContext.extendRoot whenever an orchestrator prefills
-  // a user/assistant turn into the pool's root. Carries enough to replay
+  // Emitted by PoolContext.extendSpine whenever an orchestrator prefills
+  // a user/assistant turn into the pool's spine. Carries enough to replay
   // the extension without cross-referencing other events.
   | TraceEventBase & {
       type: 'spine:extend';

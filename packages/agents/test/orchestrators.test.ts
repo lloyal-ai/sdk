@@ -3,7 +3,7 @@
  *
  * The orchestrators (parallel/chain/fanout/dag) are pure generator
  * factories — they take node specs and return a generator that drives
- * `ctx.spawn` / `ctx.waitFor` / `ctx.extendRoot`. We can test them
+ * `ctx.spawn` / `ctx.waitFor` / `ctx.extendSpine`. We can test them
  * against a mock PoolContext that records calls without spinning up the
  * real pool.
  *
@@ -47,10 +47,10 @@ function createMockHarness(delays: Map<string, number>): MockHarness {
   let nextAgentId = 1;
   const spawnedIds: string[] = [];
   const agents = new Map<string, MockAgent>();
-  const root = {} as Branch;
+  const spine = {} as Branch;
 
   const ctx: PoolContext = {
-    root,
+    spine,
 
     *spawn(spec: SpawnSpec): Operation<Agent> {
       const id = nextAgentId++;
@@ -84,7 +84,7 @@ function createMockHarness(delays: Map<string, number>): MockHarness {
       return agent;
     },
 
-    *extendRoot(_userContent: string, _assistantContent: string): Operation<number> {
+    *extendSpine(_userContent: string, _assistantContent: string): Operation<number> {
       return 0;
     },
 

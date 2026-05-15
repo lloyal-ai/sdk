@@ -8,7 +8,7 @@ import type { EntailmentScorer } from './source';
 import type { Orchestrator } from './orchestrators';
 import { Events } from './context';
 import { createToolkit } from './toolkit';
-import { withSharedRoot } from './shared-root';
+import { withSpine } from './spine';
 import { useAgentPool } from './agent-pool';
 
 // ── CreateAgentPool opts ────────────────────────────────────
@@ -62,8 +62,8 @@ export interface CreateAgentPoolOpts {
   enableThinking?: boolean;
   /**
    * Pool-shared system prompt. When set, the chat-format `[system + tools]`
-   * header is prefilled onto the inner queryRoot once at setup; every agent
-   * forking from queryRoot inherits the role+tools header via fork prefix-
+   * header is prefilled onto the inner spine once at setup; every agent
+   * forking from the spine inherits the role+tools header via fork prefix-
    * sharing instead of re-emitting them in its own suffix. Use when every
    * spawn in the pool shares the same role (chain mode, single-role parallel/
    * fanout pools); leave unset for mixed-role workflows.
@@ -73,9 +73,9 @@ export interface CreateAgentPoolOpts {
    * layers as a second system message in the agent's KV (multi-system in
    * lineage — Qwen3 handles this; recovery has shipped on the same pattern).
    *
-   * In shared mode, `extendRoot` writes onto the inner queryRoot rather than
+   * In shared mode, `extendSpine` writes onto the inner spine rather than
    * the warm parent. Findings are visible to subsequent agents in the pool
-   * and to nested `useAgent` calls within the same `withSharedRoot` scope,
+   * and to nested `useAgent` calls within the same `withSpine` scope,
    * but do NOT persist on the session trunk after the pool closes.
    */
   systemPrompt?: string;
@@ -86,8 +86,8 @@ export interface CreateAgentPoolOpts {
 /**
  * Run a parallel agent pool with tools.
  *
- * Composes `withSharedRoot` + `createToolkit` + `useAgentPool` internally.
- * Drains the Subscription inside `withSharedRoot`'s body and forwards
+ * Composes `withSpine` + `createToolkit` + `useAgentPool` internally.
+ * Drains the Subscription inside `withSpine`'s body and forwards
  * events to the broadcast Channel. Returns `AgentPoolResult` with
  * branches pruned.
  *
@@ -112,38 +112,37 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
 
   const sharedMode = opts.systemPrompt !== undefined;
 
-  return yield* withSharedRoot(
+  return yield* withSpine(
     {
       parent: warmParent,
       systemPrompt: opts.systemPrompt,
-      // Only emit toolsJson into the root header in shared mode; the rest
+      // Only emit toolsJson into the spine header in shared mode; the rest
       // of the system uses the toolkit toolMap for actual dispatch.
       toolsJson: sharedMode ? toolkit.toolsJson : undefined,
-      // Thread enableThinking so the root header chat-format and the
-      // RootFmt FormatConfig (parser/grammar/triggers) match what the
+      // Thread enableThinking so the spine header chat-format and the
+      // SpineFmt FormatConfig (parser/grammar/triggers) match what the
       // per-agent suffixes get further down. Otherwise a caller passing
-      // enableThinking:true gets divergent grammar between root + suffix.
+      // enableThinking:true gets divergent grammar between spine + suffix.
       enableThinking: opts.enableThinking,
     },
-    function* (root) {
-      // SHARED mode (systemPrompt set): the inner `root` carries the
-      // [system + tools] header and IS the spine. extendRoot writes onto
-      // it, agents fork from it, nested useAgent calls fork from it. Inner
-      // root is pruned at withSharedRoot exit; that's fine because pool
-      // findings flow to the session via session.commitTurn (post-pool),
-      // not via root mutation.
+    function* (innerSpine) {
+      // SHARED mode (systemPrompt set): the inner spine carries the
+      // [system + tools] header. extendSpine writes onto it, agents fork
+      // from it, nested useAgent calls fork from it. Inner spine is pruned
+      // at withSpine exit; that's fine because pool findings flow to the
+      // session via session.commitTurn (post-pool), not via spine mutation.
       //
       // NON-SHARED mode (existing behavior): on warm path, use the caller-
-      // provided parent AS the logical spine so `ctx.extendRoot` mutations
+      // provided parent AS the logical spine so `ctx.extendSpine` mutations
       // persist across the pool's lifetime and are visible to sibling pools
-      // that fork from the same parent. The inner `root` is just a
+      // that fork from the same parent. The inner spine is just a
       // separator-prefilled fork of parent — its extensions would be
       // discarded at pool close, breaking the multi-task spine pattern
-      // (research → synth over shared queryRoot). On cold path, the inner
-      // root IS the spine.
-      const spineRoot = sharedMode ? root : (warmParent ?? root);
+      // (research → synth over shared spine). On cold path, the inner
+      // spine IS the persistent spine.
+      const spine = sharedMode ? innerSpine : (warmParent ?? innerSpine);
       const sub = yield* useAgentPool({
-        root: spineRoot,
+        spine,
         orchestrate: opts.orchestrate,
         toolsJson: toolkit.toolsJson,
         tools: toolkit.toolMap,
@@ -156,7 +155,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         enableThinking: opts.enableThinking,
       });
 
-      // Drain Subscription inside body — before withSharedRoot's finally fires
+      // Drain Subscription inside body — before withSpine's finally fires
       let next = yield* sub.next();
       while (!next.done) {
         yield* broadcast.send(next.value);

@@ -2,47 +2,47 @@ import { call } from "effection";
 import type { Operation } from "effection";
 import { Branch } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
-import { Ctx, Trace, TraceParent, ScratchpadParent, RootFmt } from "./context";
+import { Ctx, Trace, TraceParent, ScratchpadParent, SpineFmt } from "./context";
 import { traceScope } from "./trace-scope";
 import type { SamplingParams } from "./types";
 import type { FormatConfig } from "./Agent";
 
 /**
- * Configuration for {@link withSharedRoot}
+ * Configuration for {@link withSpine}
  *
  * @category Agents
  */
-export interface SharedRootOptions {
-  /** Sampling parameters for the root branch */
+export interface SpineOptions {
+  /** Sampling parameters for the spine branch */
   params?: SamplingParams;
   /**
-   * Set ScratchpadParent context so tools can fork from the shared root
+   * Set ScratchpadParent context so tools can fork from the spine
    * for scratchpad extraction (fork-attend-extract-prune pattern).
    * @default false
    */
   enableScratchpad?: boolean;
   /**
-   * Fork root from this branch instead of creating at position 0.
+   * Fork the spine from this branch instead of creating at position 0.
    *
-   * When provided, the root inherits the parent's full KV state —
+   * When provided, the spine inherits the parent's full KV state —
    * every tool call, tool result, and generated token the parent
-   * accumulated. Sub-agents forking from this root attend over the
+   * accumulated. Sub-agents forking from this spine attend over the
    * parent's complete attention state (Continuous Context).
    *
-   * When omitted, creates a fresh root at position 0 (cold start).
+   * When omitted, creates a fresh spine at position 0 (cold start).
    */
   parent?: Branch;
   /**
    * When set, prefill the chat-format `[system + tools]` header onto the
-   * root once at setup. Every agent forking from the root inherits these
+   * spine once at setup. Every agent forking from the spine inherits these
    * tokens via `forkSync`'s metadata-only KV prefix-share — the role and
    * tool schemas appear ONCE in physical KV regardless of how many agents
    * the pool spawns.
    *
    * The resulting `FormatConfig` (parser/grammar/format/triggers) is set
-   * on the {@link RootFmt} context so `setupAgent` can detect shared mode,
+   * on the {@link SpineFmt} context so `setupAgent` can detect shared mode,
    * skip its own system+tools formatting, and inherit the dispatch-side
-   * fmt from the root.
+   * fmt from the spine.
    *
    * Use this for orchestrators where every agent shares the same role —
    * chain-mode research pools, fanout-style same-role pools, etc. Mixed-
@@ -59,14 +59,14 @@ export interface SharedRootOptions {
   toolsJson?: string;
   /**
    * Whether to enable thinking-mode tokens (e.g. `<think>` blocks) when
-   * formatting the shared root header. Threaded through to the chat-format
-   * call AND stored on the `RootFmt` FormatConfig so `setupAgent`'s
-   * shared-mode shortcut copies a parser/grammar/triggers configuration
-   * consistent with the per-agent suffix formatting.
+   * formatting the spine's chat-format header. Threaded through to the
+   * chat-format call AND stored on the `SpineFmt` FormatConfig so
+   * `setupAgent`'s shared-mode shortcut copies a parser/grammar/triggers
+   * configuration consistent with the per-agent suffix formatting.
    *
    * Should match the `enableThinking` value the caller passes to the agent
    * pool — divergent values produce inconsistent grammar between the
-   * prefilled root and per-agent suffixes.
+   * prefilled spine and per-agent suffixes.
    *
    * @default false
    */
@@ -74,18 +74,19 @@ export interface SharedRootOptions {
 }
 
 /**
- * Scoped shared root branch with guaranteed cleanup
+ * Scoped spine branch with guaranteed cleanup
  *
- * Creates (or forks) a root branch for the pool's agents to fork from.
- * The root is pruned via try/finally when the body returns or throws,
+ * Creates (or forks) the pool's spine — the shared KV line that agents
+ * fork from and that `ctx.extendSpine` writes onto between tasks. The
+ * spine is pruned via try/finally when the body returns or throws,
  * regardless of whether children still exist.
  *
  * Each agent's chat format (system + user + generation prompt) is rendered
- * fresh inside `setupAgent`, so this root carries no chat context itself —
- * it exists as the pool's branching point and as the spine that
- * `ctx.extendRoot` writes onto between tasks.
+ * fresh inside `setupAgent`, so this spine carries no chat context itself —
+ * it exists as the pool's branching point and as the line that
+ * `ctx.extendSpine` writes onto between tasks.
  *
- * **Cold path** (no `parent`): creates a root at position 0 with no prefill.
+ * **Cold path** (no `parent`): creates a spine at position 0 with no prefill.
  * Agents fork at position 0; their full chat context lives in their own suffix.
  *
  * **Warm path** (`parent` provided): forks from parent and prefills a turn
@@ -93,15 +94,15 @@ export interface SharedRootOptions {
  * Sub-agents inherit the parent's full KV state via the fork.
  *
  * @param opts - Sampling parameters and optional parent branch
- * @param body - Operation that receives the root branch and prefix length.
+ * @param body - Operation that receives the spine branch and prefix length.
  *   Typically calls {@link useAgentPool} inside.
  * @returns The body's return value
  *
  * @category Agents
  */
-export function* withSharedRoot<T>(
-  opts: SharedRootOptions,
-  body: (root: Branch, sharedPrefixLength: number) => Operation<T>,
+export function* withSpine<T>(
+  opts: SpineOptions,
+  body: (spine: Branch, prefixLength: number) => Operation<T>,
 ): Operation<T> {
   const ctx: SessionContext = yield* Ctx.expect();
   const tw = yield* Trace.expect();
@@ -115,22 +116,22 @@ export function* withSharedRoot<T>(
     /* no parent — top level */
   }
 
-  const scope = traceScope(tw, parentTraceId, "withSharedRoot", {
+  const scope = traceScope(tw, parentTraceId, "withSpine", {
     hasParent: !!opts.parent,
   });
 
   // Warm path: fork from parent branch (inherits full KV state), prefill a
   // turn separator so the next agent's suffix lands on a clean boundary.
-  // Cold path: create fresh root at position 0 with no prefill — agents
+  // Cold path: create fresh spine at position 0 with no prefill — agents
   // fork at 0 and carry their full chat context in their own suffix.
-  let root: Branch;
+  let spine: Branch;
   let prefillTokens: number[];
 
   if (opts.parent) {
-    root = opts.parent.forkSync();
+    spine = opts.parent.forkSync();
     prefillTokens = ctx.getTurnSeparator();
   } else {
-    root = Branch.create(ctx, 0, opts.params ?? { temperature: 0.5 });
+    spine = Branch.create(ctx, 0, opts.params ?? { temperature: 0.5 });
     prefillTokens = [];
   }
 
@@ -139,32 +140,32 @@ export function* withSharedRoot<T>(
     parentTraceId: scope.traceId,
     ts: performance.now(),
     type: "branch:create",
-    branchHandle: root.handle,
+    branchHandle: spine.handle,
     parentHandle: opts.parent?.handle ?? null,
     position: opts.parent ? opts.parent.position : 0,
-    role: "sharedRoot",
+    role: "spine",
   });
 
   if (prefillTokens.length > 0) {
-    yield* call(() => root.prefill(prefillTokens));
+    yield* call(() => spine.prefill(prefillTokens));
     tw.write({
       traceId: tw.nextId(),
       parentTraceId: scope.traceId,
       ts: performance.now(),
       type: "branch:prefill",
-      branchHandle: root.handle,
+      branchHandle: spine.handle,
       tokenCount: prefillTokens.length,
-      role: "sharedPrefix",
+      role: "spineHeader",
     });
   }
 
   // Shared role+tools mode: format the chat header once and prefill onto
-  // the root. Agents forking from this root inherit system+tools tokens
+  // the spine. Agents forking from this spine inherit system+tools tokens
   // via metadata-only prefix-share (no per-spawn re-prefill). The resulting
-  // FormatConfig is stashed on RootFmt so setupAgent can detect shared
+  // FormatConfig is stashed on SpineFmt so setupAgent can detect shared
   // mode and copy parser/grammar/format/triggers without re-emitting the
   // tool schemas in each agent's suffix.
-  let rootFmt: FormatConfig | null = null;
+  let spineFmt: FormatConfig | null = null;
   if (opts.systemPrompt !== undefined) {
     const enableThinking = opts.enableThinking ?? false;
     const messages = JSON.stringify([{ role: "system", content: opts.systemPrompt }]);
@@ -179,18 +180,18 @@ export function* withSharedRoot<T>(
     const formatted = ctx.formatChatSync(messages, fmtOpts);
     const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
     if (headerTokens.length > 0) {
-      yield* call(() => root.prefill(headerTokens));
+      yield* call(() => spine.prefill(headerTokens));
       tw.write({
         traceId: tw.nextId(),
         parentTraceId: scope.traceId,
         ts: performance.now(),
         type: "branch:prefill",
-        branchHandle: root.handle,
+        branchHandle: spine.handle,
         tokenCount: headerTokens.length,
-        role: "sharedPrefix",
+        role: "spineHeader",
       });
     }
-    rootFmt = {
+    spineFmt = {
       format: formatted.format,
       reasoningFormat: formatted.reasoningFormat,
       generationPrompt: formatted.generationPrompt,
@@ -203,20 +204,20 @@ export function* withSharedRoot<T>(
   }
 
   try {
-    if (opts.enableScratchpad) yield* ScratchpadParent.set(root);
-    if (rootFmt) yield* RootFmt.set(rootFmt);
-    return yield* body(root, prefillTokens.length);
+    if (opts.enableScratchpad) yield* ScratchpadParent.set(spine);
+    if (spineFmt) yield* SpineFmt.set(spineFmt);
+    return yield* body(spine, prefillTokens.length);
   } finally {
-    if (!root.disposed) {
+    if (!spine.disposed) {
       tw.write({
         traceId: tw.nextId(),
         parentTraceId: scope.traceId,
         ts: performance.now(),
         type: "branch:prune",
-        branchHandle: root.handle,
+        branchHandle: spine.handle,
         position: 0,
       });
-      root.pruneSubtreeSync();
+      spine.pruneSubtreeSync();
     }
     scope.close();
   }

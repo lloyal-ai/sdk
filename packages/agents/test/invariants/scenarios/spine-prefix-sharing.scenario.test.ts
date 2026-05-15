@@ -1,21 +1,21 @@
 /**
- * Scenario: shared root [system + tools] header prefix-shared across all
- * agents in a pool when `agentPool({ systemPrompt })` is set.
+ * Scenario: spine [system + tools] header prefix-shared across all agents
+ * in a pool when `agentPool({ systemPrompt })` is set.
  *
  * The point of this primitive: tool schemas appear in physical KV ONCE
- * (at queryRoot), regardless of how many agents the pool spawns. Every
+ * (at the spine), regardless of how many agents the pool spawns. Every
  * spawn inherits the role+tools header via `forkSync`'s metadata-only
  * prefix-sharing, and `setupAgent` formats only the user turn for the
  * agent's suffix — saving ~700 tok per spawn vs. re-emitting the schema
  * with each agent.
  *
  * What this locks:
- *   - `withSharedRoot({ systemPrompt, toolsJson })` calls `formatChatSync`
- *     EXACTLY ONCE with a `tools` option (the root setup).
+ *   - `withSpine({ systemPrompt, toolsJson })` calls `formatChatSync`
+ *     EXACTLY ONCE with a `tools` option (the spine setup).
  *   - Subsequent per-spawn `formatChatSync` calls inside `setupAgent`
  *     receive NO `tools` option — they format only the agent's user turn
  *     (or system+user when per-spec systemPrompt is non-empty).
- *   - The new agent's `fmt.parser` matches what the root setup produced
+ *   - The new agent's `fmt.parser` matches what the spine setup produced
  *     (so tool dispatch keeps working on inherited tools).
  */
 
@@ -54,8 +54,8 @@ class WebSearchTool extends Tool<{ query: string }> {
   *execute(): Operation<unknown> { return { results: [] }; }
 }
 
-describe('scenario: shared root [system + tools] prefix-sharing', () => {
-  it('formatChatSync is called once with tools (at root setup) and tools-free for each agent spawn', async () => {
+describe('scenario: spine [system + tools] prefix-sharing', () => {
+  it('formatChatSync is called once with tools (at spine setup) and tools-free for each agent spawn', async () => {
     const ctx = new MockSessionContext({ nCtx: 16384, cellsUsed: 1000 });
     const store = new BranchStore(ctx);
     const root = Branch.create(ctx, 0);
@@ -98,26 +98,26 @@ describe('scenario: shared root [system + tools] prefix-sharing', () => {
       });
     });
 
-    // Exactly one formatChatSync call carried tools — that's the root setup.
+    // Exactly one formatChatSync call carried tools — that's the spine setup.
     const withTools = formatToolsArgs.filter((t) => t !== undefined);
     expect(withTools.length).toBe(1);
 
     // The remaining calls (one per spawn) had NO tools — agents inherited
     // the schemas via fork prefix-share rather than re-emitting them.
     const withoutTools = formatToolsArgs.filter((t) => t === undefined);
-    // Three spawns + at least one root-related setup call without tools is fine;
+    // Three spawns + at least one spine-related setup call without tools is fine;
     // the load-bearing assertion is that NO per-spawn call carried tools.
     expect(withoutTools.length).toBeGreaterThanOrEqual(3);
 
     // Role-string assertions — these lock the literal role values emitted by
-    // shared-root.ts so emission and any consumer (replay.ts filter, doc-site
+    // spine.ts so emission and any consumer (replay.ts filter, doc-site
     // examples, downstream replay tooling) stay in lockstep. A typo in either
     // emission or consumer would compile cleanly but break production replay;
     // these tests catch that.
-    const rootCreate = trace.ofType('branch:create').find((e) => e.role === 'sharedRoot');
-    expect(rootCreate, 'expected branch:create with role=sharedRoot').toBeDefined();
-    const headerPrefill = trace.ofType('branch:prefill').find((e) => e.role === 'sharedPrefix');
-    expect(headerPrefill, 'expected branch:prefill with role=sharedPrefix').toBeDefined();
+    const spineCreate = trace.ofType('branch:create').find((e) => e.role === 'spine');
+    expect(spineCreate, 'expected branch:create with role=spine').toBeDefined();
+    const headerPrefill = trace.ofType('branch:prefill').find((e) => e.role === 'spineHeader');
+    expect(headerPrefill, 'expected branch:prefill with role=spineHeader').toBeDefined();
   });
 
   it('non-shared mode (no systemPrompt option) preserves per-spawn tools — regression guard', async () => {

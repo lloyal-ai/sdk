@@ -208,7 +208,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
 
     return yield* scoped(function* () {
       const sub = yield* useAgentPool({
-        root,
+        spine: root,
         orchestrate,
         toolsJson,
         tools: spec.tools ?? new Map(),

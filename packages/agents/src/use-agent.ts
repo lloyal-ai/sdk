@@ -52,7 +52,7 @@ export interface UseAgentOpts {
  * root and agent branch alive until the caller's scope exits — caller can
  * fork from the Agent's branch for verification or follow-up.
  *
- * Root managed via `ensure()` (not `withSharedRoot`) because the resource
+ * Root managed via `ensure()` (not `withSpine`) because the resource
  * lifetime requires the root alive until the caller's scope exits.
  *
  * Events stream passively to the broadcast Channel during the inline drain.
@@ -87,7 +87,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       hasParent: !!warmParent,
     });
 
-    // Create root — ensure() for resource lifetime (not withSharedRoot's try/finally).
+    // Create root — ensure() for resource lifetime (not withSpine's try/finally).
     // The root carries no chat context; the agent's suffix (formatted fresh in
     // setupAgent) is the agent's full chat. Warm path prefills a turn separator
     // so the suffix lands on a clean turn boundary.
@@ -113,7 +113,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
     // Delegate to useAgentPool N=1 via a trivial parallel orchestrator
     const hasTools = !!(opts.tools?.length);
     const sub = yield* useAgentPool({
-      root,
+      spine: root,
       orchestrate: parallel([{ content: opts.task, systemPrompt: opts.systemPrompt }]),
       toolsJson: hasTools ? toolkit.toolsJson : '',
       tools: toolkit.toolMap,

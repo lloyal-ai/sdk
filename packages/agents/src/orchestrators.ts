@@ -5,7 +5,7 @@ import type { Agent } from './Agent';
 
 /**
  * Spec for spawning a single agent under a {@link PoolContext}.
- * `parent` defaults to `ctx.root`.
+ * `parent` defaults to `ctx.spine`.
  *
  * @category Agents
  */
@@ -16,7 +16,7 @@ export interface SpawnSpec {
   systemPrompt: string;
   /** PRNG seed for sampler diversity. */
   seed?: number;
-  /** Parent branch to fork from. Falls back to ctx.root. */
+  /** Parent branch to fork from. Falls back to ctx.spine. */
   parent?: Branch;
 }
 
@@ -30,8 +30,8 @@ export interface SpawnSpec {
  * @category Agents
  */
 export interface PoolContext {
-  /** Shared root branch. Orchestrator-provided spawns fork from here by default. */
-  readonly root: Branch;
+  /** The pool's spine branch. Orchestrator-provided spawns fork from here by default. */
+  readonly spine: Branch;
 
   /** Fork an agent branch, prefill its suffix, transition to active. Tick loop picks it up. */
   spawn(spec: SpawnSpec): Operation<Agent>;
@@ -40,10 +40,10 @@ export interface PoolContext {
   waitFor(agent: Agent): Operation<Agent>;
 
   /**
-   * Serialize a user+assistant turn and prefill it into root, advancing root.position.
+   * Serialize a user+assistant turn and prefill it into the spine, advancing spine.position.
    * No-op (returns 0) when assistantContent is empty.
    */
-  extendRoot(userContent: string, assistantContent: string): Operation<number>;
+  extendSpine(userContent: string, assistantContent: string): Operation<number>;
 
   /** Whether another spawn with this suffix size would fit under current pressure. */
   canFit(estimatedSuffixTokens: number): boolean;
@@ -75,7 +75,7 @@ export type Orchestrator = (ctx: PoolContext) => Operation<void>;
  */
 export const parallel = (tasks: SpawnSpec[]): Orchestrator =>
   function* (ctx) {
-    const agents = yield* all(tasks.map(t => ctx.spawn({ ...t, parent: t.parent ?? ctx.root })));
+    const agents = yield* all(tasks.map(t => ctx.spawn({ ...t, parent: t.parent ?? ctx.spine })));
     yield* all(agents.map(a => ctx.waitFor(a)));
   };
 
@@ -98,7 +98,7 @@ export interface ChainStep {
   /** Fires BEFORE `ctx.spawn` for this step. Use for "task starting" events. */
   beforeSpawn?: () => Operation<void>;
   /**
-   * Fires AFTER `ctx.extendRoot` for this step (or immediately after waitFor
+   * Fires AFTER `ctx.extendSpine` for this step (or immediately after waitFor
    * if no extension happened). Receives the number of tokens added to the
    * spine (0 when no extension) and the root's position after any extension.
    * Use for "task done" events with spine telemetry.
@@ -118,7 +118,7 @@ export interface ChainStep {
  * ```ts
  * yield* agentPool({
  *   tools: [...],
- *   parent: queryRoot,
+ *   parent: querySpine,
  *   orchestrate: chain(researchTasks, (task, i) => ({
  *     task: { content: taskToContent(task), systemPrompt: renderWorker({ taskIndex: i }) },
  *     userContent: `Research task: ${task.description}`,
@@ -137,12 +137,12 @@ export const chain = <T>(
       const step = toStep(item, i);
       if (step.beforeSpawn) yield* step.beforeSpawn();
       const agent = yield* ctx.waitFor(
-        yield* ctx.spawn({ ...step.task, parent: step.task.parent ?? ctx.root }),
+        yield* ctx.spawn({ ...step.task, parent: step.task.parent ?? ctx.spine }),
       );
       const delta = agent.result && step.userContent
-        ? yield* ctx.extendRoot(step.userContent, agent.result)
+        ? yield* ctx.extendSpine(step.userContent, agent.result)
         : 0;
-      if (step.afterExtend) yield* step.afterExtend(delta, ctx.root.position);
+      if (step.afterExtend) yield* step.afterExtend(delta, ctx.spine.position);
     }
   };
 
@@ -169,14 +169,14 @@ export const chain = <T>(
 export const fanout = (landscape: ChainStep, domains: SpawnSpec[]): Orchestrator =>
   function* (ctx) {
     const l = yield* ctx.waitFor(
-      yield* ctx.spawn({ ...landscape.task, parent: landscape.task.parent ?? ctx.root }),
+      yield* ctx.spawn({ ...landscape.task, parent: landscape.task.parent ?? ctx.spine }),
     );
     if (l.result && landscape.userContent) {
-      yield* ctx.extendRoot(landscape.userContent, l.result);
+      yield* ctx.extendSpine(landscape.userContent, l.result);
     }
 
     const agents = yield* all(
-      domains.map(d => ctx.spawn({ ...d, parent: d.parent ?? ctx.root })),
+      domains.map(d => ctx.spawn({ ...d, parent: d.parent ?? ctx.spine })),
     );
     yield* all(agents.map(a => ctx.waitFor(a)));
   };
@@ -233,10 +233,10 @@ export const dag = (nodes: DAGNode[]): Orchestrator => {
         yield* tasks.get(depId)!;
       }
       const agent = yield* ctx.waitFor(
-        yield* ctx.spawn({ ...n.task, parent: n.task.parent ?? ctx.root }),
+        yield* ctx.spawn({ ...n.task, parent: n.task.parent ?? ctx.spine }),
       );
       if (agent.result && n.userContent) {
-        yield* ctx.extendRoot(n.userContent, agent.result);
+        yield* ctx.extendSpine(n.userContent, agent.result);
       }
     }
 

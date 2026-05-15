@@ -14,7 +14,7 @@
  *
  * The orchestrator lazily spawns each node when its dependencies clear.
  * Each node's `userContent` is prefilled onto the shared root via
- * `ctx.extendRoot`, so dependent nodes see prior findings as conversation
+ * `ctx.extendSpine`, so dependent nodes see prior findings as conversation
  * turns in their KV attention — that's why the compare nodes can read
  * "Research findings on X" / "Research findings on Y" above their task.
  */
@@ -28,7 +28,7 @@ import {
   agentPool,
   createToolkit,
   renderTemplate,
-  withSharedRoot,
+  withSpine,
 } from "@lloyal-labs/lloyal-agents";
 import type {
   DAGNode,
@@ -152,7 +152,7 @@ function dagWithEvents(
       });
       yield* ctx.waitFor(agent);
       if (agent.result && n.userContent) {
-        yield* ctx.extendRoot(n.userContent, agent.result);
+        yield* ctx.extendSpine(n.userContent, agent.result);
       }
     }
 
@@ -262,26 +262,26 @@ export function* handleCompare(
   ];
 
   // ── Run the pool ──────────────────────────────────────────────
-  // One pool, one shared root. The DAG declares the topology; the pool's
+  // One pool, one shared spine. The DAG declares the topology; the pool's
   // tick loop batches decode across whatever agents are currently active.
   //
-  // The playbooks + tools live on queryRoot (the harness-owned shared
-  // root) — NOT on agentPool's nested withSharedRoot. This keeps the spine
-  // (chain extensions written by extendRoot) on queryRoot too, so any
-  // post-pool useAgent calls forking queryRoot inherit both the playbooks
+  // The playbooks + tools live on querySpine (the harness-owned spine) —
+  // NOT on agentPool's nested withSpine. This keeps the spine extensions
+  // (chain extensions written by extendSpine) on querySpine too, so any
+  // post-pool useAgent calls forking querySpine inherit both the playbooks
   // and the spine extensions via prefix-share.
   const toolkit = createToolkit(tools);
-  const pool = yield* withSharedRoot(
+  const pool = yield* withSpine(
     {
       parent: session.trunk ?? undefined,
       systemPrompt: PLAYBOOKS,
       toolsJson: toolkit.toolsJson,
     },
-    function* (queryRoot) {
+    function* (querySpine) {
       return yield* agentPool({
         orchestrate: dagWithEvents(nodes, emit),
         tools,
-        parent: queryRoot,
+        parent: querySpine,
         terminalTool: "report",
         maxTurns,
         pruneOnReport: true,

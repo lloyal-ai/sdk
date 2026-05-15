@@ -27,7 +27,7 @@ import {
   useAgentPool,      // lower-level Effection resource (advanced)
   diverge,           // multi-branch perplexity selection
   parallel, chain, fanout, dag, reduce,  // orchestrators / combinators
-  withSharedRoot,    // scoped shared KV prefix with guaranteed teardown
+  withSpine,         // scoped spine branch with guaranteed teardown
   createToolkit,     // tool registry from Tool[] → toolMap + toolsJson
   Tool, Source,
   DefaultAgentPolicy,
@@ -66,11 +66,11 @@ When agents fork from a common branch, they inherit its KV cache — the full at
 Everything before the frontier is shared context. Everything after is independent reasoning. The model doesn't need to be told what the other agents know — it already attended over the same prefix. Communication happened at prefill time, through the attention mechanism, with zero serialization overhead.
 
 ```typescript
-yield* withSharedRoot(
+yield* withSpine(
   { systemPrompt: PLAYBOOKS, toolsJson: toolkit.toolsJson },
-  function* (root) {
-    // root is a prefilled branch — system prompt + tool schemas already in KV.
-    // Every agent forked from root shares that prefix.
+  function* (spine) {
+    // spine is a prefilled branch — system prompt + tool schemas already in KV.
+    // Every agent forked from spine shares that prefix.
     return yield* agentPool({
       orchestrate: parallel(
         questions.map((q) => ({
@@ -79,21 +79,21 @@ yield* withSharedRoot(
         })),
       ),
       tools: [...sourceTools, reportTool],
-      parent: root,
+      parent: spine,
       terminalTool: "report",
     });
   },
 );
 ```
 
-`withSharedRoot` creates the prefix, passes it to the body, and guarantees cleanup via `try/finally` — the root branch cannot leak out of the block. Effection enforces the lifetime.
+`withSpine` creates the spine branch, passes it to the body, and guarantees cleanup via `try/finally` — the spine cannot leak out of the block. Effection enforces the lifetime.
 
 ## Orchestrators
 
 `agentPool` accepts an orchestrator that determines how agents are spawned and sequenced:
 
-- **`parallel(specs[])`** — agents run concurrently from the shared root.
-- **`chain(specs[], factory)`** — sequential, with `extendRoot` writing each task's findings onto the spine before the next forks.
+- **`parallel(specs[])`** — agents run concurrently from the shared spine.
+- **`chain(specs[], factory)`** — sequential, with `extendSpine` writing each task's findings onto the spine before the next forks.
 - **`fanout(landscapeSpec, domainSpecs[])`** — landscape pass that informs N parallel domain agents.
 - **`dag(nodes[])`** — arbitrary acyclic graph with multi-parent edges (Task-as-Future pattern).
 
@@ -103,7 +103,7 @@ Same `agentPool` call shape; the orchestrator argument changes the topology.
 
 All active agents advance together in a five-phase tick loop:
 
-**SPAWN+EXTEND.** The rendezvous point with the orchestrator fiber. Pending agent spawns and `extendRoot` calls are queued via Effection `action()` and drained at the start of each tick — batched into a single `store.prefill()`. Single-fiber discipline preserved across concurrent orchestrator extends.
+**SPAWN+EXTEND.** The rendezvous point with the orchestrator fiber. Pending agent spawns and `extendSpine` calls are queued via Effection `action()` and drained at the start of each tick — batched into a single `store.prefill()`. Single-fiber discipline preserved across concurrent orchestrator extends.
 
 **PRODUCE.** Every generating agent calls `produceSync()` — synchronous sampling with no async gap between agents. The entire produce phase is a single uninterrupted pass over the active set.
 
@@ -217,7 +217,7 @@ class SearchTool extends Tool<{ query: string }> {
 }
 ```
 
-`createToolkit(tools)` aggregates tools into a `{ toolMap, toolsJson }` pair — `toolMap` for runtime dispatch, `toolsJson` for prompt formatting. With `withSharedRoot({ systemPrompt, toolsJson })`, the schemas are decoded once at the root and inherited by every fork — see the [playbooks](https://hdk.lloyal.ai/reference/playbooks) convention for mixed-role pools.
+`createToolkit(tools)` aggregates tools into a `{ toolMap, toolsJson }` pair — `toolMap` for runtime dispatch, `toolsJson` for prompt formatting. With `withSpine({ systemPrompt, toolsJson })`, the schemas are decoded once at the spine and inherited by every fork — see the [playbooks](https://hdk.lloyal.ai/reference/playbooks) convention for mixed-role pools.
 
 ## Events
 

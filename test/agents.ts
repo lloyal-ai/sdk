@@ -20,7 +20,7 @@ import type { NativeBinding } from '@lloyal-labs/lloyal.node';
 import { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import {
-  initAgents, runAgents, useAgentPool, withSharedRoot, generate, diverge, Tool, createToolkit,
+  initAgents, runAgents, useAgentPool, withSpine, generate, diverge, Tool, createToolkit,
   DefaultAgentPolicy,
 } from '@lloyal-labs/lloyal-agents';
 import type {
@@ -114,7 +114,7 @@ class SubAgentTool extends Tool<{ question: string }> {
     required: ['question'],
   };
   *execute(args: { question: string }): Operation<unknown> {
-    const result = yield* withSharedRoot(
+    const result = yield* withSpine(
       { systemPrompt: 'You are a sub-agent. Answer the question in one sentence.' },
       function*(root) {
         return yield* runAgents({
@@ -183,7 +183,7 @@ async function testSharedRoot(): Promise<void> {
     const ctx = yield* call(() => createTestContext());
     yield* setupTest(ctx);
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a test agent.' },
       function*(root, prefixLen) {
         assert(prefixLen > 0, `shared prefix has tokens (${prefixLen})`);
@@ -201,7 +201,7 @@ async function testSharedRoot(): Promise<void> {
       },
     );
 
-    ok('withSharedRoot completed');
+    ok('withSpine completed');
   });
 }
 
@@ -218,7 +218,7 @@ async function testToolCalling(): Promise<void> {
 
     const { toolMap, toolsJson } = createToolkit([new CalculatorTool()]);
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a math assistant. You MUST use the calculator tool to compute answers. Never compute mentally.', tools: toolsJson },
       function*(root) {
         const pool = yield* runAgents({
@@ -257,7 +257,7 @@ async function testTerminalToolGating(): Promise<void> {
 
     const { toolMap, toolsJson } = createToolkit([new CalculatorTool(), new ReportTool()]);
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a math assistant. First use the calculator tool to compute the answer, then call the report tool with your findings.', tools: toolsJson },
       function*(root) {
         const pool = yield* runAgents({
@@ -296,7 +296,7 @@ async function testToolErrorResilience(): Promise<void> {
     const { toolMap, toolsJson } = createToolkit([new ThrowingTool()]);
 
     try {
-      yield* withSharedRoot(
+      yield* withSpine(
         { systemPrompt: 'You are a test agent. You MUST call the explode tool immediately.', tools: toolsJson },
         function*(root) {
           const pool = yield* runAgents({
@@ -335,7 +335,7 @@ async function testContextPressureSoftLimit(): Promise<void> {
     const ctx = yield* call(() => createTestContext({ nCtx: 1024, nSeqMax: 4 }));
     yield* setupTest(ctx);
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a test agent. Write a very long response.' },
       function*(root) {
         const pool = yield* runAgents({
@@ -371,7 +371,7 @@ async function testContextPressureAgentDrop(): Promise<void> {
     const ctx = yield* call(() => createTestContext({ nCtx: 512, nSeqMax: 8 }));
     yield* setupTest(ctx);
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a test agent.' },
       function*(root) {
         const tasks = makeTasks(root, 6);
@@ -514,7 +514,7 @@ async function testEventStreamOrdering(): Promise<void> {
       }
     });
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a test agent. Respond with exactly one sentence.' },
       function*(root) {
         yield* runAgents({
@@ -563,11 +563,11 @@ async function testEventStreamOrdering(): Promise<void> {
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// TEST 10: withSharedRoot cleanup on error
+// TEST 10: withSpine cleanup on error
 // ═════════════════════════════════════════════════════════════════════
 
 async function testSharedRootCleanupOnError(): Promise<void> {
-  console.log('\n--- withSharedRoot cleanup on error ---');
+  console.log('\n--- withSpine cleanup on error ---');
 
   await run(function*() {
     const ctx = yield* call(() => createTestContext());
@@ -576,7 +576,7 @@ async function testSharedRootCleanupOnError(): Promise<void> {
     let rootWasPruned = false;
 
     try {
-      yield* withSharedRoot(
+      yield* withSpine(
         { systemPrompt: 'You are a test agent.' },
         function*(root, prefixLen) {
           assert(prefixLen > 0, `prefix has tokens before error (${prefixLen})`);
@@ -588,7 +588,7 @@ async function testSharedRootCleanupOnError(): Promise<void> {
             maxTurns: 1,
           });
 
-          // Now throw — withSharedRoot's finally should still prune root
+          // Now throw — withSpine's finally should still prune root
           throw new Error('intentional_test_error');
         },
       );
@@ -601,7 +601,7 @@ async function testSharedRootCleanupOnError(): Promise<void> {
       }
     }
 
-    assert(rootWasPruned, 'withSharedRoot propagated error and cleaned up');
+    assert(rootWasPruned, 'withSpine propagated error and cleaned up');
 
     // Verify KV cache is usable after error cleanup
     const tokens = yield* call(() => ctx.tokenize('Test'));
@@ -611,7 +611,7 @@ async function testSharedRootCleanupOnError(): Promise<void> {
     assert(sample >= 0, 'context usable after error cleanup');
     yield* call(() => branch.prune());
 
-    ok('withSharedRoot cleanup on error verified');
+    ok('withSpine cleanup on error verified');
   });
 }
 
@@ -636,7 +636,7 @@ async function testNestedConcurrency(): Promise<void> {
 
     const { toolMap, toolsJson } = createToolkit([new SubAgentTool()]);
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a research coordinator. Use the sub_research tool to delegate questions to sub-agents. You MUST use the tool — do not answer directly.', tools: toolsJson },
       function*(root) {
         const pool = yield* runAgents({
@@ -692,7 +692,7 @@ async function testNestedCancellation(): Promise<void> {
         properties: {},
       };
       *execute(): Operation<unknown> {
-        const result = yield* withSharedRoot(
+        const result = yield* withSpine(
           { systemPrompt: 'You are a sub-agent. Write a very long detailed essay about mathematics.' },
           function*(root) {
             return yield* runAgents({
@@ -716,7 +716,7 @@ async function testNestedCancellation(): Promise<void> {
     yield* scoped(function*() {
       // Spawn the pool as a child task — will be halted when scope exits
       yield* spawn(function*() {
-        yield* withSharedRoot(
+        yield* withSpine(
           { systemPrompt: 'You are a test agent. Call the slow_research tool immediately.', tools: toolsJson },
           function*(root) {
             yield* useAgentPool({
@@ -736,8 +736,8 @@ async function testNestedCancellation(): Promise<void> {
       // Wait for pool to start and tool to fire, then exit scope
       yield* sleep(3000);
       // Scope exits here — spawned child halted, inner pool halted,
-      // inner withSharedRoot's finally fires pruneSubtreeSync(),
-      // outer withSharedRoot's finally fires pruneSubtreeSync()
+      // inner withSpine's finally fires pruneSubtreeSync(),
+      // outer withSpine's finally fires pruneSubtreeSync()
     });
 
     // If we reach here, cancellation didn't crash or hang
@@ -769,7 +769,7 @@ async function testCrossLevelPressure(): Promise<void> {
 
     const { toolMap, toolsJson } = createToolkit([new SubAgentTool()]);
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a research coordinator. Use the sub_research tool to delegate questions to sub-agents. You MUST use the tool.', tools: toolsJson },
       function*(root) {
         const pool = yield* runAgents({
@@ -819,7 +819,7 @@ async function testParentAgentId(): Promise<void> {
 
     let outerRootHandle: number | undefined;
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a research coordinator. Use the sub_research tool to delegate questions to sub-agents. You MUST use the tool — do not answer directly.', tools: toolsJson },
       function*(root) {
         outerRootHandle = root.handle;
@@ -852,7 +852,7 @@ async function testParentAgentId(): Promise<void> {
         assert(innerSpawns.length > 0, `inner agents spawned (${innerSpawns.length})`);
 
         // Inner agents' parentAgentId should NOT be the outer root handle —
-        // it should be the inner root created by SubAgentTool's withSharedRoot
+        // it should be the inner root created by SubAgentTool's withSpine
         for (const inner of innerSpawns) {
           assert(inner.parentAgentId !== outerRootHandle,
             `inner agent parentAgentId (${inner.parentAgentId}) !== outer root handle (${outerRootHandle})`);
@@ -896,7 +896,7 @@ async function testInnerPoolWithTools(): Promise<void> {
       *execute(args: { question: string }): Operation<unknown> {
         // Inner pool has its own tool — CalculatorTool
         const inner = createToolkit([new CalculatorTool()]);
-        const result = yield* withSharedRoot(
+        const result = yield* withSpine(
           { systemPrompt: 'You are a math assistant. You MUST use the calculator tool to compute answers. Never compute mentally.', tools: inner.toolsJson },
           function*(root) {
             return yield* runAgents({
@@ -923,7 +923,7 @@ async function testInnerPoolWithTools(): Promise<void> {
     // Different tool schemas at each level
     const outer = createToolkit([new DelegatingTool()]);
 
-    yield* withSharedRoot(
+    yield* withSpine(
       { systemPrompt: 'You are a coordinator. Use the delegate tool to send math questions to a specialist. You MUST use the tool — do not answer directly.', tools: outer.toolsJson },
       function*(root) {
         const pool = yield* runAgents({

@@ -3,7 +3,7 @@ import type { Operation, Subscription } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, CallingAgent, RootFmt } from './context';
+import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt } from './context';
 import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
@@ -343,17 +343,17 @@ function* setupAgent(
   ctx: SessionContext,
   enableThinking: boolean,
 ): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
-  // Probe shared-root mode. When set, the queryRoot already has the
-  // [system + tools] chat header prefilled and we MUST NOT re-emit them
-  // in the agent's suffix — the bytes are already in attention via fork
-  // prefix-share. The new agent inherits parser/grammar/format/triggers
-  // from sharedFmt so tool dispatch keeps working.
+  // Probe shared-mode. When set, the spine already has the [system + tools]
+  // chat header prefilled and we MUST NOT re-emit them in the agent's
+  // suffix — the bytes are already in attention via fork prefix-share. The
+  // new agent inherits parser/grammar/format/triggers from sharedFmt so
+  // tool dispatch keeps working.
   let sharedFmt: FormatConfig | null = null;
-  try { sharedFmt = (yield* RootFmt.get()) ?? null; } catch { /* not in shared mode */ }
+  try { sharedFmt = (yield* SpineFmt.get()) ?? null; } catch { /* not in shared mode */ }
 
   // Compose the messages to format into the suffix. In shared mode with
   // an empty per-spec systemPrompt, drop the system message — the role
-  // lives at the root, the agent only contributes a user turn. With a
+  // lives at the spine, the agent only contributes a user turn. With a
   // non-empty per-spec systemPrompt, include it: the agent's KV will
   // contain TWO system messages in lineage, which Qwen3 handles (recovery
   // ships on the same multi-system pattern).
@@ -365,12 +365,12 @@ function* setupAgent(
       ];
 
   const fmtOpts: Record<string, unknown> = { enableThinking };
-  // Tools belong at the root in shared mode; emitting them again here
+  // Tools belong at the spine in shared mode; emitting them again here
   // would re-prefill the same schema bytes for nothing.
   if (task.tools && !sharedFmt) fmtOpts.tools = task.tools;
   const fmt = ctx.formatChatSync(JSON.stringify(messages), fmtOpts);
   // Tool-support guard runs only on the non-shared path. Shared mode's
-  // root already passed the equivalent check at withSharedRoot setup.
+  // spine already passed the equivalent check at withSpine setup.
   if (task.tools && !sharedFmt
       && (fmt.format === CHAT_FORMAT_CONTENT_ONLY || fmt.format === CHAT_FORMAT_GENERIC)) {
     // Error before fork — no branch to clean up
@@ -386,7 +386,7 @@ function* setupAgent(
   try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
 
   // In shared mode the new agent's parser/grammar/format/triggers come
-  // from the root's pre-computed fmt — those fields know about the tool
+  // from the spine's pre-computed fmt — those fields know about the tool
   // palette that's in attention via the inherited prefix. In non-shared
   // mode, fresh fmt drives those fields (existing behavior).
   const fmtConfig: FormatConfig = sharedFmt
@@ -449,17 +449,17 @@ function* setupAgent(
  * @param opts - Pool configuration: tasks, tools, sampling params, max turns
  * @returns Agent pool result with per-agent findings and aggregate statistics
  *
- * @example Shared root with agent pool
+ * @example Spine with agent pool
  * ```typescript
- * const pool = yield* withSharedRoot(
+ * const pool = yield* withSpine(
  *   { systemPrompt: RESEARCH_PROMPT, tools: toolsJson },
- *   function*(root) {
+ *   function*(spine) {
  *     return yield* useAgentPool({
  *       tasks: questions.map(q => ({
  *         systemPrompt: RESEARCH_PROMPT,
  *         content: q,
  *         tools: toolsJson,
- *         parent: root,
+ *         parent: spine,
  *       })),
  *       tools: toolMap,
  *       maxTurns: 6,
@@ -486,7 +486,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
     });
     const tw = yield* Trace.expect();
-    const { root, orchestrate, toolsJson, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false, enableThinking = false } = opts;
+    const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false, enableThinking = false } = opts;
 
     // Tool index map for trace — position in toolkit array
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
@@ -551,12 +551,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     }
     const pendingSpawns: PendingSpawn[] = [];
 
-    // Pending extends — populated by PoolContext.extendRoot, drained in the
-    // same SPAWN phase as pendingSpawns so extend-onto-root and fork-suffix
+    // Pending extends — populated by PoolContext.extendSpine, drained in the
+    // same SPAWN phase as pendingSpawns so extend-onto-spine and fork-suffix
     // prefills batch into one native store.prefill call. Cross-fiber
-    // rendezvous uses action(): each extendRoot call suspends on its own
+    // rendezvous uses action(): each extendSpine call suspends on its own
     // resolve/reject closure, which the drain resolves after prefill lands.
-    // Fixes the pre-fix race where extendRoot called store.prefill directly
+    // Fixes the pre-fix race where extendSpine called store.prefill directly
     // from the orchestrator fiber, concurrently with the tick loop's native
     // work (same class of bug that 50a0baf fixed for spawn).
     interface PendingExtend {
@@ -604,10 +604,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
     // ── PoolContext — orchestrator's API surface ─────────────
     const poolContext: import('./orchestrators').PoolContext = {
-      root,
+      spine,
 
       *spawn(spec) {
-        const parent = spec.parent ?? root;
+        const parent = spec.parent ?? spine;
         const task: AgentTaskSpec = {
           systemPrompt: spec.systemPrompt,
           content: spec.content,
@@ -660,7 +660,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         return agent;
       },
 
-      *extendRoot(userContent, assistantContent) {
+      *extendSpine(userContent, assistantContent) {
         if (!assistantContent) return 0;
         const turnTokens = buildTurnDelta(ctx, userContent, assistantContent);
         // Rendezvous with the tick loop's SPAWN phase — see pendingExtends.
@@ -897,7 +897,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
 
       // -- Phase 0: SPAWN+EXTEND -- drain pending spawns AND pending extends,
-      // batching all fork-suffix prefills and extend-onto-root prefills into
+      // batching all fork-suffix prefills and extend-onto-spine prefills into
       // ONE native store.prefill call. All store-level native calls in this
       // pool are issued from this fiber (the tick loop), never concurrently
       // with the orchestrator's fiber. Piggybacking extend in this phase
@@ -911,7 +911,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
         const prefillPairs: [Branch, number[]][] = [
           ...drainedSpawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
-          ...drainedExtends.map(e => [root, e.tokens] as [Branch, number[]]),
+          ...drainedExtends.map(e => [spine, e.tokens] as [Branch, number[]]),
         ];
 
         try {
@@ -923,7 +923,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           throw err;
         }
 
-        // Resolve extend requests with the delta token count. root.position
+        // Resolve extend requests with the delta token count. spine.position
         // has advanced by the sum of extend token counts at this point.
         for (const e of drainedExtends) {
           tw.write({
@@ -932,7 +932,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             userContent: e.userContent,
             assistantContent: e.assistantContent,
             deltaTokens: e.tokens.length,
-            positionAfter: root.position,
+            positionAfter: spine.position,
           });
           e.resolve(e.tokens.length);
         }

@@ -62,7 +62,7 @@ export interface ToolContext {
   agentId: number;
   /**
    * The calling agent's branch — use for recursive tools that spawn
-   * sub-agents via {@link withSharedRoot} with `parent` option.
+   * sub-agents via {@link withSpine} with `parent` option.
    * Sub-agents forking from this branch inherit the agent's full
    * KV state (Continuous Context).
    */
@@ -214,10 +214,10 @@ export interface PressureThresholds {
  */
 export interface AgentPoolOptions {
   /**
-   * Shared root branch. Orchestrator-spawned agents fork from this by default.
-   * Produced by {@link withSharedRoot} in the {@link agentPool} wrapper.
+   * Spine branch. Orchestrator-spawned agents fork from this by default.
+   * Produced by {@link withSpine} in the {@link agentPool} wrapper.
    */
-  root: Branch;
+  spine: Branch;
   /**
    * Orchestrator callback — declares the execution pattern (parallel, chain,
    * fanout, dag, or a custom shape). Drives task spawning, waiting, and

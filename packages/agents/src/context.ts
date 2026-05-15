@@ -11,7 +11,7 @@ import type { Agent, FormatConfig } from './Agent';
  * Effection context holding the active {@link SessionContext}
  *
  * Set by {@link initAgents} in the caller's scope. All agent operations
- * (`generate`, `diverge`, `useAgentPool`, `withSharedRoot`) read from this
+ * (`useAgent`, `agentPool`, `useAgentPool`, `withSpine`, `diverge`) read from this
  * context via `yield* Ctx.expect()`.
  *
  * @category Agents
@@ -62,10 +62,10 @@ export const TraceParent = createContext<TraceId>('lloyal.traceParent');
 /**
  * Effection context holding the scratchpad fork parent branch
  *
- * Set by {@link withSharedRoot} to the current root branch. Tools that
+ * Set by {@link withSpine} to the current spine branch. Tools that
  * need scratchpad extraction (e.g. BufferingFetchPage, BufferingWebSearch)
  * read this via `yield* ScratchpadParent.expect()` to fork from the
- * innermost active root — never a stale reference from a prior scope.
+ * innermost active spine — never a stale reference from a prior scope.
  *
  * @category Agents
  */
@@ -75,7 +75,7 @@ export const ScratchpadParent = createContext<Branch>('lloyal.scratchpadParent')
  * Effection context holding the calling agent during DISPATCH
  *
  * Set by the pool before each tool execution in `scoped()`. Tools and
- * recursive `withSharedRoot` calls read this to access the calling
+ * recursive `withSpine` calls read this to access the calling
  * agent's branch (for Continuous Context forking) and tool history
  * (for deduplication guards).
  *
@@ -87,19 +87,19 @@ export const ScratchpadParent = createContext<Branch>('lloyal.scratchpadParent')
 export const CallingAgent = createContext<Agent>('lloyal.callingAgent');
 
 /**
- * Effection context holding the queryRoot's pre-computed {@link FormatConfig}
+ * Effection context holding the spine's pre-computed {@link FormatConfig}
  * when shared system+tools mode is active.
  *
- * Set by {@link withSharedRoot} when its `systemPrompt` option is provided.
- * The chat-format header (system + tools) is prefilled onto the root once at
- * setup; agents forking from the root inherit those tokens via prefix-share
+ * Set by {@link withSpine} when its `systemPrompt` option is provided.
+ * The chat-format header (system + tools) is prefilled onto the spine once at
+ * setup; agents forking from the spine inherit those tokens via prefix-share
  * and need the matching parser/grammar/format/triggers to dispatch tool calls
  * correctly. Storing it here lets `setupAgent` detect shared mode and copy
  * the fmt without re-emitting tool schemas in each agent's suffix.
  *
- * Defaults to `null` so non-shared `withSharedRoot` scopes leave it unset and
+ * Defaults to `null` so non-shared `withSpine` scopes leave it unset and
  * `setupAgent` falls back to formatting per-agent system+tools+user as today.
  *
  * @category Agents
  */
-export const RootFmt = createContext<FormatConfig | null>('lloyal.rootFmt', null);
+export const SpineFmt = createContext<FormatConfig | null>('lloyal.spineFmt', null);

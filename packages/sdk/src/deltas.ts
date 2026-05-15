@@ -67,10 +67,10 @@ export function buildUserDelta(
  *
  * Composes `getTurnSeparator()` + `formatChatSync()` + `tokenizeSync()` into a
  * single token array suitable for `branch.prefill()`. The canonical way to
- * extend any branch (trunk, shared root, or spine) with a completed turn.
+ * extend any branch (trunk or spine) with a completed turn.
  *
  * Used by {@link Session.commitTurn} to persist query/response to the trunk,
- * and by `PoolContext.extendRoot` in the agent pool to chain per-task
+ * and by `PoolContext.extendSpine` in the agent pool to chain per-task
  * findings onto the research spine.
  *
  * @param ctx - Active session context

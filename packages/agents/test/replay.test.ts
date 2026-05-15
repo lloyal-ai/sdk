@@ -1,7 +1,7 @@
 /**
  * Replay primitives — unit-level round-trip coverage.
  *
- * `extractRootCheckpoint`, `extractSpineCheckpoint`, `reconstructBranch`
+ * `extractSpineSeed`, `extractSpineCheckpoint`, `reconstructBranch`
  * have no other direct test coverage; their integration path lives in
  * reasoning.run's replay-synth. This test locks the function contracts
  * (role-string filter, BranchCheckpoint field names, reconstructBranch
@@ -18,7 +18,7 @@ import type { Channel } from 'effection';
 import { MockSessionContext } from '../../sdk/test/MockSessionContext';
 import { BranchStore } from '../../sdk/src/BranchStore';
 import {
-  extractRootCheckpoint,
+  extractSpineSeed,
   extractSpineCheckpoint,
   reconstructBranch,
   type BranchCheckpoint,
@@ -39,7 +39,7 @@ function makeTrace(): TraceEvent[] {
       promptText: '<|im_start|>system\nYou are a research assistant.<|im_end|>',
       tokenCount: 12,
       messages: JSON.stringify([{ role: 'system', content: 'You are a research assistant.' }]),
-      role: 'sharedRoot',
+      role: 'spine',
     },
     {
       traceId: 2,
@@ -65,17 +65,17 @@ function makeTrace(): TraceEvent[] {
 }
 
 describe('replay primitives — round-trip', () => {
-  it('extractRootCheckpoint returns the sharedRoot prompt with no turns', () => {
+  it('extractSpineSeed returns the spine prompt with no turns', () => {
     const events = makeTrace();
-    const checkpoint: BranchCheckpoint = extractRootCheckpoint(events);
+    const checkpoint: BranchCheckpoint = extractSpineSeed(events);
 
-    expect(checkpoint.rootPrompt).toBe(
+    expect(checkpoint.seedPrompt).toBe(
       '<|im_start|>system\nYou are a research assistant.<|im_end|>',
     );
     expect(checkpoint.turns).toEqual([]);
   });
 
-  it('extractRootCheckpoint throws when no sharedRoot prompt:format event exists', () => {
+  it('extractSpineSeed throws when no spine prompt:format event exists', () => {
     const events: TraceEvent[] = [
       {
         traceId: 1,
@@ -88,14 +88,14 @@ describe('replay primitives — round-trip', () => {
         positionAfter: 4,
       },
     ];
-    expect(() => extractRootCheckpoint(events)).toThrow(/sharedRoot/);
+    expect(() => extractSpineSeed(events)).toThrow(/spine/);
   });
 
   it('extractSpineCheckpoint includes every spine:extend event in emission order', () => {
     const events = makeTrace();
     const checkpoint = extractSpineCheckpoint(events);
 
-    expect(checkpoint.rootPrompt).toBe(
+    expect(checkpoint.seedPrompt).toBe(
       '<|im_start|>system\nYou are a research assistant.<|im_end|>',
     );
     expect(checkpoint.turns).toHaveLength(2);
@@ -117,10 +117,10 @@ describe('replay primitives — round-trip', () => {
         parentTraceId: null,
         ts: t0,
         type: 'prompt:format',
-        promptText: 'shared root prompt',
+        promptText: 'spine seed prompt',
         tokenCount: 5,
         messages: '[]',
-        role: 'sharedRoot',
+        role: 'spine',
       },
       // Belongs to pool 10
       {
@@ -150,7 +150,7 @@ describe('replay primitives — round-trip', () => {
     expect(checkpoint.turns[0].userContent).toBe('pool 10 task');
   });
 
-  it('reconstructBranch creates a branch with the root prompt prefilled and extends per turn', async () => {
+  it('reconstructBranch creates a branch with the seed prompt prefilled and extends per turn', async () => {
     const checkpoint = extractSpineCheckpoint(makeTrace());
     const ctx = new MockSessionContext({ nCtx: 16384, cellsUsed: 0 });
     const store = new BranchStore(ctx);
@@ -171,7 +171,7 @@ describe('replay primitives — round-trip', () => {
         branchHandle = branch.handle;
         positionInsideScope = branch.position;
         disposedInsideScope = branch.disposed;
-        // After reconstruction the branch should carry the root prompt's
+        // After reconstruction the branch should carry the seed prompt's
         // tokens PLUS each turn's delta tokens. MockSessionContext.tokenize
         // is deterministic (~1 token per 4 chars); the exact count isn't
         // important — only that prefill advanced position past zero.

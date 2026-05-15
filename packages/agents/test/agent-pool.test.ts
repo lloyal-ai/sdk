@@ -90,7 +90,7 @@ async function runPool(opts: {
   const traceWriter = new CapturingTraceWriter();
   const collectedEvents: AgentEvent[] = [];
 
-  // Prefill root to simulate withSharedRoot system prompt
+  // Prefill root to simulate withSpine system prompt
   const rootTokens = ctx.tokenizeSync('system prompt');
   await root.prefill(rootTokens);
 
@@ -113,7 +113,7 @@ async function runPool(opts: {
 
     return yield* scoped(function* () {
       const sub = yield* useAgentPool({
-        root,
+        spine: root,
         orchestrate: parallel(taskSpecs),
         toolsJson,
         tools: opts.tools ?? new Map(),
@@ -1010,7 +1010,7 @@ describe('tool probe lifecycle hook', () => {
 
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
-          root,
+          spine: root,
           orchestrate: parallel([{ content: 'Task', systemPrompt: 'Agent', seed: 0 }]),
           toolsJson: JSON.stringify([probeTool.schema]),
           tools: toolMap,
@@ -1077,7 +1077,7 @@ describe('tool probe lifecycle hook', () => {
 
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
-          root,
+          spine: root,
           orchestrate: parallel([{ content: 'Task', systemPrompt: 'Agent', seed: 0 }]),
           toolsJson: JSON.stringify([noProbeTool.schema]),
           tools: toolMap,
@@ -1247,7 +1247,7 @@ describe('tool probe lifecycle hook', () => {
 
       return yield* scoped(function* () {
         const sub = yield* useAgentPool({
-          root,
+          spine: root,
           orchestrate: parallel([
             { content: 'Task 0', systemPrompt: 'Agent', seed: 0 },
             { content: 'Task 1', systemPrompt: 'Agent', seed: 1 },

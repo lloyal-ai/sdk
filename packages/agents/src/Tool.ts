@@ -14,7 +14,7 @@ import type { JsonSchema, ToolSchema, ToolContext } from './types';
  * {@link runAgents}.
  *
  * `execute()` returns an Effection `Operation`, enabling tools to
- * spawn sub-agents via {@link runAgents} or {@link withSharedRoot}.
+ * spawn sub-agents via {@link agentPool} or {@link withSpine}.
  * For async work, wrap in `call()`. For synchronous tools, return
  * directly from the generator body.
  *

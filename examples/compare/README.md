@@ -18,7 +18,7 @@ Why this DAG matters pedagogically:
 - **Multi-parent dependencies.** Each `compare_axis_*` node depends on TWO research nodes simultaneously — `chain` and `fanout` can't express this.
 - **Sibling parallelism with shared deps.** The three compare nodes fire the moment both research nodes complete, then run concurrently.
 - **Multi-child convergence.** `synthesize` waits on all three siblings before spawning.
-- **Spine extension is causal, not just sequential.** Each node's `userContent` is prefilled onto the shared root via `ctx.extendRoot`. The compare nodes don't merely *follow* the research nodes — they *attend to* them. The edge in the diagram is the spine.
+- **Spine extension is causal, not just sequential.** Each node's `userContent` is prefilled onto the spine via `ctx.extendSpine`. The compare nodes don't merely *follow* the research nodes — they *attend to* them. The edge in the diagram is the spine.
 
 ## Run it
 

@@ -5,10 +5,11 @@ import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 /**
  * Terminal tool for submitting agent results
  *
- * Used as the `terminalTool` in agent pools — when an agent calls
+ * Used as the `terminalToolName` in agent pools — when an agent calls
  * this tool, the pool records the result string and marks the agent
- * as finished. The tool itself is a no-op; the agent pool intercepts
- * the call and extracts the `result` argument.
+ * as finished. The tool's `execute()` code-path is not reached; the
+ * agent pool intercepts the call at the policy layer and extracts the
+ * `result` argument as the agent's return value.
  *
  * @category Rig
  */

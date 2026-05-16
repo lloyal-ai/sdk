@@ -24,11 +24,11 @@ export type AgentStatus = 'idle' | 'active' | 'awaiting_tool' | 'disposed';
  * @category Agents
  */
 export type ResultSource =
-  | 'report_tool'   // agent voluntarily called report()
-  | 'free_text'     // agent emitted prose without tool call
-  | 'scratchpad'    // extracted post-idle via fork+generate
-  | 'nudge'         // agent reported after nudge injection
-  | 'tool_error';   // tool threw, error captured as findings
+  | 'voluntary_return' // agent voluntarily returned via the terminal tool
+  | 'free_text'        // agent emitted prose without tool call
+  | 'scratchpad'       // extracted post-idle via fork+generate (recovery)
+  | 'nudge'            // agent returned after nudge injection
+  | 'tool_error';      // tool threw, error captured as findings
 
 // ── Format config ───────────────────────────────────────────
 
@@ -321,8 +321,8 @@ export class Agent {
   get result(): string | null { return this._result; }
   get resultSource(): ResultSource | null { return this._resultSource; }
 
-  /** Set findings with provenance tracking — single write path */
-  reportResult(content: string, source: ResultSource): void {
+  /** Set the agent's result with provenance tracking — single write path */
+  setResult(content: string, source: ResultSource): void {
     this._result = content;
     this._resultSource = source;
   }

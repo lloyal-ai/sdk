@@ -67,7 +67,7 @@ describe('scenario: pressure exit via stall-break prevention', () => {
       }],
       policy,
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       maxTurns: 5,
     });
 

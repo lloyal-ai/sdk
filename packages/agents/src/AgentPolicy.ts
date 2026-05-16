@@ -75,7 +75,7 @@ export const defaultToolGuards: ToolGuard[] = [
  * @category Agents
  */
 export type IdleReason =
-  | 'reported'
+  | 'returned'
   | 'pressure_critical'
   | 'pressure_softcut'
   | 'pressure_settle_reject'
@@ -90,10 +90,10 @@ export type IdleReason =
  */
 export type ProduceAction =
   | { type: 'tool_call'; tc: ParsedToolCall }
-  | { type: 'report'; result: string }
+  | { type: 'return'; result: string }
   | { type: 'nudge'; message: string }
   | { type: 'idle'; reason: IdleReason }
-  | { type: 'free_text_report'; content: string };
+  | { type: 'free_text_return'; content: string };
 
 /**
  * Action returned by policy.onSettleReject.
@@ -222,7 +222,7 @@ export interface AgentPolicy {
  */
 export interface PolicyConfig {
   maxTurns: number;
-  terminalTool?: string;
+  terminalToolName?: string;
   hasNonTerminalTools: boolean;
 }
 
@@ -242,8 +242,8 @@ export interface PolicyConfig {
  * @category Agents
  */
 export interface DefaultAgentPolicyOpts {
-  /** Min non-terminal tool calls before report is accepted without nudge. @default 2 */
-  minToolCallsBeforeReport?: number;
+  /** Min non-terminal tool calls before a return is accepted without nudge. @default 2 */
+  minToolCallsBeforeReturn?: number;
   /** Replace default tool guards entirely. */
   guards?: ToolGuard[];
   /** Append additional guards to the defaults. */
@@ -286,7 +286,7 @@ export interface DefaultAgentPolicyOpts {
   /** Terminal tool name. When set, agents mid-generation of this tool are
    *  protected from shouldExit — the hard limit is deferred until the tool
    *  call completes naturally or KV pressure forces a kill. */
-  terminalTool?: string;
+  terminalToolName?: string;
 }
 
 export class DefaultAgentPolicy implements AgentPolicy {
@@ -297,11 +297,11 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _forceExploit = false;
   private _recovery: DefaultAgentPolicyOpts['recovery'] | null;
   private _budget: DefaultAgentPolicyOpts['budget'] | null;
-  private _terminalTool: string | null;
+  private _terminalToolName: string | null;
   private _startTime: number;
 
   constructor(opts?: DefaultAgentPolicyOpts) {
-    this._minToolCalls = opts?.minToolCallsBeforeReport ?? 2;
+    this._minToolCalls = opts?.minToolCallsBeforeReturn ?? 2;
     this._exploreContext = opts?.shouldExplore?.context ?? 0.4;
     this._exploreTime = opts?.shouldExplore?.time ?? 0.5;
     this._guards = opts?.guards ?? [
@@ -310,7 +310,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     ];
     this._recovery = opts?.recovery ?? null;
     this._budget = opts?.budget ?? null;
-    this._terminalTool = opts?.terminalTool ?? null;
+    this._terminalToolName = opts?.terminalToolName ?? null;
     this._startTime = performance.now();
   }
 
@@ -369,13 +369,13 @@ export class DefaultAgentPolicy implements AgentPolicy {
     agent: Agent, parsed: { content: string | null },
   ): ProduceAction {
     if (!agent.result && agent.toolCallCount > 0 && parsed.content) {
-      return { type: 'free_text_report', content: parsed.content };
+      return { type: 'free_text_return', content: parsed.content };
     }
     return { type: 'idle', reason: 'free_text_stop' };
   }
 
   private _isTerminalTool(tc: ParsedToolCall, config: PolicyConfig): boolean {
-    return !!(config.terminalTool && tc.name === config.terminalTool);
+    return !!(config.terminalToolName && tc.name === config.terminalToolName);
   }
 
   private _handleTerminalTool(
@@ -387,7 +387,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     }
     let result: string;
     try { result = JSON.parse(tc.arguments).result; } catch { result = tc.arguments; }
-    return { type: 'report', result };
+    return { type: 'return', result };
   }
 
   private _isUnderPressure(agent: Agent, pressure: ContextPressure, config: PolicyConfig): boolean {
@@ -398,7 +398,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
 
   private _isOverBudget(agent: Agent, tc: ParsedToolCall, pressure: ContextPressure, config: PolicyConfig): boolean {
     const underPressure = this._isUnderPressure(agent, pressure, config);
-    return underPressure && (!config.terminalTool || tc.name !== config.terminalTool);
+    return underPressure && (!config.terminalToolName || tc.name !== config.terminalToolName);
   }
 
   private _handleOverBudget(
@@ -407,7 +407,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     const timeSoft = this._budget?.time?.softLimit;
     const timeNudge = timeSoft != null && this._elapsed(agent) >= timeSoft;
 
-    if (config.terminalTool && agent.toolCallCount > 0 && !pressure.critical) {
+    if (config.terminalToolName && agent.toolCallCount > 0 && !pressure.critical) {
       if (!this._nudgedThisTick) {
         this._nudgedThisTick = true;
         // Budget the model can emit before `pressure.critical` kills it.
@@ -447,7 +447,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     config: PolicyConfig,
   ): SettleAction {
     // Nudge if possible — stateless, no escalation tracking
-    if (config.terminalTool && agent.toolCallCount > 0) {
+    if (config.terminalToolName && agent.toolCallCount > 0) {
       const words = tokenBudgetAsWords(pressure.remaining - pressure.hardLimit);
       return { type: 'nudge', message: `Tool result too large for remaining KV. Report your findings now within ${words} words.` };
     }
@@ -466,7 +466,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     // `pressure.critical` fires, the agent must yield so the pool can
     // kill+recover before native OOM. Holding this protection through
     // critical territory was the DOJ runaway cause (trace-1776782401659).
-    if (this._terminalTool && agent.currentTool === this._terminalTool && !pressure.critical) return false;
+    if (this._terminalToolName && agent.currentTool === this._terminalToolName && !pressure.critical) return false;
 
     if (!pressure.critical) {
       const timeHard = this._budget?.time?.hardLimit;

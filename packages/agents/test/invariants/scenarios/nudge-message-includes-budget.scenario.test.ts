@@ -29,7 +29,7 @@ describe('scenario: nudge message includes the remaining token budget', () => {
   it('oversized tool result → settle_reject nudge message has "within N words"', async () => {
     const tools = new Map<string, Tool>([['web_search', new BigResultTool()]]);
     const policy = new DefaultAgentPolicy({
-      terminalTool: 'report',
+      terminalToolName: 'report',
       // hardLimit >= nBatch (512) required.
       budget: { context: { softLimit: 1024, hardLimit: 512 } },
     });
@@ -43,7 +43,7 @@ describe('scenario: nudge message includes the remaining token budget', () => {
       }],
       policy,
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       maxTurns: 5,
     });
 

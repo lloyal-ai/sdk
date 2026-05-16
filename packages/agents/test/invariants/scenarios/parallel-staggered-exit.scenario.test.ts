@@ -63,7 +63,7 @@ describe('scenario: parallel orchestration staggered-exit', () => {
       ],
       policy,
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       maxTurns: 10,
       taskCount: 2,
     });

@@ -219,10 +219,11 @@ main(function* () {
           process.stderr.write(
             `[compare] +${elapsed()} agent#${seq} spawned (parent agent#${seqByAgentId.get(ev.parentAgentId) ?? "root"})\n`,
           );
-        } else if (ev.type === "agent:report") {
+        } else if (ev.type === "agent:return" || ev.type === "agent:recovered") {
           const seq = seqByAgentId.get(ev.agentId) ?? "?";
+          const verb = ev.type === "agent:recovered" ? "recovered" : "returned";
           process.stderr.write(
-            `[compare] +${elapsed()} agent#${seq} reported (${ev.result.length} chars)\n`,
+            `[compare] +${elapsed()} agent#${seq} ${verb} (${ev.result.length} chars)\n`,
           );
         } else if (ev.type === "agent:tool_call") {
           const seq = seqByAgentId.get(ev.agentId) ?? "?";

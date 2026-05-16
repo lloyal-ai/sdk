@@ -97,7 +97,7 @@ export function reduce(state: AppState, ev: WorkflowEvent): AppState {
       return { ...state, nodes: next };
     }
 
-    case 'agent:report': {
+    case 'agent:return': {
       const nodeId = state.agentToNode.get(ev.agentId);
       if (!nodeId) return state;
       const node = state.nodes.get(nodeId);

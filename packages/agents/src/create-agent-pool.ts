@@ -28,11 +28,11 @@ export interface CreateAgentPoolOpts {
   /** Data access tools (array, createToolkit called internally). Optional — pool degenerates cleanly without tools. */
   tools?: Tool[];
   /** Terminal tool name — tool must be in the tools array. Pool intercepts and extracts result. */
-  terminalTool?: string;
+  terminalToolName?: string;
   /** Max tool-use turns per agent before hard cut. @default 100 */
   maxTurns?: number;
-  /** Prune agent branches immediately on report, freeing KV mid-pool. */
-  pruneOnReport?: boolean;
+  /** Prune agent branches immediately when they voluntarily return, freeing KV mid-pool. */
+  pruneOnReturn?: boolean;
   /** Custom agent policy. @default DefaultAgentPolicy */
   policy?: AgentPolicy;
   /** Enable structured trace events. */
@@ -96,7 +96,7 @@ export interface CreateAgentPoolOpts {
  * const pool = yield* agentPool({
  *   tools: [delegateTool, ...source.tools, reportTool],
  *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: RESEARCH_PROMPT }))),
- *   terminalTool: 'report',
+ *   terminalToolName: 'report',
  * });
  * ```
  *
@@ -146,8 +146,8 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         orchestrate: opts.orchestrate,
         toolsJson: toolkit.toolsJson,
         tools: toolkit.toolMap,
-        terminalTool: opts.terminalTool,
-        pruneOnReport: opts.pruneOnReport,
+        terminalToolName: opts.terminalToolName,
+        pruneOnReturn: opts.pruneOnReturn,
         maxTurns: opts.maxTurns,
         trace: opts.trace,
         policy: opts.policy,

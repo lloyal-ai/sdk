@@ -250,7 +250,7 @@ check('re-enter thinking after tool_result opens a new think item', () => {
   assert.equal((thinks[1] as { body: string }).body, 'second');
 });
 
-check('report item pushed at agent:report', () => {
+check('report item pushed at agent:return', () => {
   const s = drive([
     { type: 'query', query: 'q', warm: false },
     {
@@ -264,7 +264,7 @@ check('report item pushed at agent:report', () => {
     { type: 'research:start', agentCount: 1, mode: 'flat' },
     { type: 'agent:spawn', agentId: 1, parentAgentId: 0 } as WorkflowEvent,
     { type: 'agent:produce', agentId: 1, text: 'done thinking</think>', tokenCount: 3 } as WorkflowEvent,
-    { type: 'agent:report', agentId: 1, result: 'Final findings paragraph.' } as WorkflowEvent,
+    { type: 'agent:return', agentId: 1, result: 'Final findings paragraph.' } as WorkflowEvent,
   ]);
   const a = s.agents.get(1)!;
   const last = a.timeline[a.timeline.length - 1];
@@ -370,7 +370,7 @@ check('report path: content streams, then report event clears buffer + pushes st
   assert.match(mid.contentBuffer, /The final/);
 
   const s2 = reduce(s, {
-    type: 'agent:report',
+    type: 'agent:return',
     agentId: 1,
     result: 'The final answer is X.',
   } as WorkflowEvent);

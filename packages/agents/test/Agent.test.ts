@@ -104,15 +104,15 @@ describe('Agent', () => {
   describe('findings', () => {
     it('reports findings with provenance', () => {
       const a = makeAgent();
-      a.reportResult('found something', 'report_tool');
+      a.setResult('found something', 'voluntary_return');
       expect(a.result).toBe('found something');
-      expect(a.resultSource).toBe('report_tool');
+      expect(a.resultSource).toBe('voluntary_return');
     });
 
     it('overwrites on second report', () => {
       const a = makeAgent();
-      a.reportResult('first', 'report_tool');
-      a.reportResult('second', 'scratchpad');
+      a.setResult('first', 'voluntary_return');
+      a.setResult('second', 'scratchpad');
       expect(a.result).toBe('second');
       expect(a.resultSource).toBe('scratchpad');
     });

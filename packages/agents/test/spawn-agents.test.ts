@@ -397,7 +397,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     // And onProduced allows tool_call (headroom positive, not over budget)
     const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
     const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, p,
-      { maxTurns: 20, terminalTool: 'report', hasNonTerminalTools: true });
+      { maxTurns: 20, terminalToolName: 'report', hasNonTerminalTools: true });
     expect(action.type).toBe('tool_call');
     expect(a.status).toBe('active');
   });
@@ -428,7 +428,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     // But onProduced nudges (turns >= maxTurns)
     const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
     const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, p,
-      { maxTurns: 20, terminalTool: 'report', hasNonTerminalTools: true });
+      { maxTurns: 20, terminalToolName: 'report', hasNonTerminalTools: true });
     expect(action.type).toBe('nudge');
 
     // Explore and lifecycle are independent decisions

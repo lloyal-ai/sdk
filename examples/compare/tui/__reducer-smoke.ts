@@ -85,7 +85,7 @@ eq(s.nodes.get('web')!.toolCalls, 1, 'toolCalls increments');
 eq(s.nodes.get('web')!.lastTool, 'web_search', 'lastTool tracked');
 eq(s.totalToolCalls, 1, 'totalToolCalls accumulates');
 
-s = reduce(s, { type: 'agent:report', agentId: 7, result: 'Findings on Rust ownership.' });
+s = reduce(s, { type: 'agent:return', agentId: 7, result: 'Findings on Rust ownership.' });
 assert(s.nodes.get('web')!.status === 'done', 'web flips to done on report');
 eq(s.nodes.get('web')!.reportChars, 'Findings on Rust ownership.'.length, 'reportChars stamped');
 eq(s.finalAnswer, null, 'web is not the sink — finalAnswer stays null');
@@ -98,7 +98,7 @@ const TOPO_2: WorkflowEvent = {
 };
 let s2 = reduce(initialState, TOPO_2);
 s2 = reduce(s2, { type: 'dag:node:spawn', id: 'b', agentId: 99, tMs: 50 });
-s2 = reduce(s2, { type: 'agent:report', agentId: 99, result: 'final.' });
+s2 = reduce(s2, { type: 'agent:return', agentId: 99, result: 'final.' });
 eq(s2.finalAnswer, 'final.', 'sink report populates finalAnswer');
 
 // charsProduced accumulates over agent:produce events.

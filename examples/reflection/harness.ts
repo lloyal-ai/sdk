@@ -47,7 +47,7 @@ function* research(
     systemPrompt: RESEARCH.system,
     task: query,
     tools: [...opts.tools, reportTool],
-    terminalTool: 'report',
+    terminalToolName: 'report',
     maxTurns: opts.maxTurns,
     trace: opts.trace,
     policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } }),

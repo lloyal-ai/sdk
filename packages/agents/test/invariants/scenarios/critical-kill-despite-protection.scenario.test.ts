@@ -24,7 +24,7 @@ describe('scenario: critical kill despite terminal-tool protection', () => {
     // path, not the absolute-floor path.
     // softLimit=20, hardLimit=512 (minimum satisfying hardLimit >= nBatch).
     const policy = new DefaultAgentPolicy({
-      terminalTool: 'report',
+      terminalToolName: 'report',
       budget: { context: { softLimit: 20, hardLimit: 512 } },
     });
 
@@ -46,7 +46,7 @@ describe('scenario: critical kill despite terminal-tool protection', () => {
         toolCall: { name: 'report', arguments: '{"result":"x"}' },
       }],
       policy,
-      terminalTool: 'report',
+      terminalToolName: 'report',
     });
 
     const drops = run.traceEvents.filter(e => e.type === 'pool:agentDrop');

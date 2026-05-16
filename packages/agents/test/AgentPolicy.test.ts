@@ -9,7 +9,7 @@ const FMT = {
   parser: '', grammar: '', grammarLazy: false, grammarTriggers: [],
 };
 
-const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalTool: 'report', hasNonTerminalTools: true };
+const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalToolName: 'report', hasNonTerminalTools: true };
 
 function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHistory?: Array<{ name: string; args: string }> }) {
   const branch = createMockBranch();
@@ -41,10 +41,10 @@ describe('DefaultAgentPolicy', () => {
   const policy = new DefaultAgentPolicy();
 
   describe('onProduced — no tool call', () => {
-    it('returns free_text_report when agent has findings-worthy output', () => {
+    it('returns free_text_return when agent has findings-worthy output', () => {
       const a = makeAgent({ toolCallCount: 2 });
       const action = policy.onProduced(a, { content: 'some text', toolCalls: [] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('free_text_report');
+      expect(action.type).toBe('free_text_return');
     });
 
     it('returns idle when nothing to capture', () => {
@@ -59,7 +59,7 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'report', arguments: JSON.stringify({ result: 'my result' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action).toEqual({ type: 'report', result: 'my result' });
+      expect(action).toEqual({ type: 'return', result: 'my result' });
     });
 
     it('nudges premature report (< 2 tool calls)', () => {
@@ -73,7 +73,7 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 1, turns: 25 });
       const tc = { name: 'report', arguments: JSON.stringify({ result: 'r' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('report');
+      expect(action.type).toBe('return');
     });
   });
 
@@ -82,7 +82,7 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'report', arguments: 'not valid json', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action).toEqual({ type: 'report', result: 'not valid json' });
+      expect(action).toEqual({ type: 'return', result: 'not valid json' });
     });
 
     it('T8: tool guard with malformed JSON args proceeds with empty object', () => {
@@ -149,8 +149,8 @@ describe('DefaultAgentPolicy', () => {
   });
 
   describe('custom opts', () => {
-    it('respects custom minToolCallsBeforeReport', () => {
-      const customPolicy = new DefaultAgentPolicy({ minToolCallsBeforeReport: 5 });
+    it('respects custom minToolCallsBeforeReturn', () => {
+      const customPolicy = new DefaultAgentPolicy({ minToolCallsBeforeReturn: 5 });
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'report', arguments: '{"findings":"f"}', id: 'c1' };
       const action = customPolicy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
@@ -409,7 +409,7 @@ describe('DefaultAgentPolicy', () => {
     // the model actionable feedback instead of generic "report now".
     it('duplicate query + over maxTurns → guard message wins, not budget nudge', () => {
       const p = new DefaultAgentPolicy({
-        terminalTool: 'report',
+        terminalToolName: 'report',
         extraGuards: [{
           tools: ['web_search'],
           reject: () => true,  // always reject — simulates duplicate-query match
@@ -429,7 +429,7 @@ describe('DefaultAgentPolicy', () => {
 
     it('no guard rejection + over maxTurns → budget nudge fires as before', () => {
       // Sanity: when guards don't reject, the budget path still fires.
-      const p = new DefaultAgentPolicy({ terminalTool: 'report' });
+      const p = new DefaultAgentPolicy({ terminalToolName: 'report' });
       const a = makeAgent({ toolCallCount: 5, turns: 20 });
       const tc = { name: 'web_search', arguments: '{"query":"unique"}', id: 'c1' };
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
@@ -481,7 +481,7 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 1, turns: 25 }); // turns >= maxTurns
       const tc = { name: 'report', arguments: JSON.stringify({ result: 'r' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('report');
+      expect(action.type).toBe('return');
     });
 
     it('underPressure (time) + terminal tool → report accepted', () => {
@@ -489,7 +489,7 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 1 });
       const tc = { name: 'report', arguments: JSON.stringify({ result: 'r' }), id: 'c1' };
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('report');
+      expect(action.type).toBe('return');
     });
 
     it('not underPressure + terminal tool + < minToolCalls → premature nudge', () => {

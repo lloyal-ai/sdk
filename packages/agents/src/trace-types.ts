@@ -132,7 +132,7 @@ export type TraceEvent =
   // ── Recovery diagnostics ────────────────────
   // Emitted by recoverInline so silent failures become visible in the
   // trace. A recovery prefill is always followed by exactly one of:
-  // `pool:recoveryReport` (parsed findings captured) or
+  // `pool:recoveryReturn` (parsed findings captured) or
   // `pool:recoveryFailed` (produce completed but output unparseable).
   | TraceEventBase & {
       type: 'pool:recoveryProduce';
@@ -141,7 +141,7 @@ export type TraceEvent =
       outputLength: number;
     }
   | TraceEventBase & {
-      type: 'pool:recoveryReport';
+      type: 'pool:recoveryReturn';
       agentId: number;
       resultLength: number;
     }

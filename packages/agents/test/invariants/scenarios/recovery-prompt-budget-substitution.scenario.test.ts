@@ -29,7 +29,7 @@ function mkPressure(remaining: number): ContextPressure {
 describe('scenario: recovery prompt budget substitution', () => {
   it('renders <%= it.budget %> with the computed word budget', () => {
     const policy = new DefaultAgentPolicy({
-      terminalTool: 'report',
+      terminalToolName: 'report',
       recovery: {
         prompt: {
           system: 'You have <%= it.budget %> words to report.',
@@ -57,7 +57,7 @@ describe('scenario: recovery prompt budget substitution', () => {
 
   it('floors the word budget at 10 for pathologically low remaining', () => {
     const policy = new DefaultAgentPolicy({
-      terminalTool: 'report',
+      terminalToolName: 'report',
       recovery: {
         prompt: {
           system: 'Budget: <%= it.budget %>',

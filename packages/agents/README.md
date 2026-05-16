@@ -230,7 +230,8 @@ The runtime emits structured events for TUI, logging, or telemetry:
 | `agent:tool_call`     | `agentId`, `tool`, `args`                                 |
 | `agent:tool_result`   | `agentId`, `tool`, `result`                               |
 | `agent:tool_progress` | `agentId`, `tool`, `filled`, `total`                      |
-| `agent:report`        | `agentId`, `findings`                                     |
+| `agent:return`        | `agentId`, `result` — voluntary completion via terminal tool |
+| `agent:recovered`     | `agentId`, `result` — recovery extracted findings from killed agent |
 | `agent:done`          | `agentId`                                                 |
 
 ## Documentation

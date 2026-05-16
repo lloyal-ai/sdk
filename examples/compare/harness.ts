@@ -282,9 +282,9 @@ export function* handleCompare(
         orchestrate: dagWithEvents(nodes, emit),
         tools,
         parent: querySpine,
-        terminalTool: "report",
+        terminalToolName: "report",
         maxTurns,
-        pruneOnReport: true,
+        pruneOnReturn: true,
         scorer: primaryScorer,
         trace,
       });

@@ -268,7 +268,7 @@ async function testTerminalToolGating(): Promise<void> {
             parent: root,
           }],
           tools: toolMap,
-          terminalTool: 'report',
+          terminalToolName: 'report',
           maxTurns: 5,
         });
 

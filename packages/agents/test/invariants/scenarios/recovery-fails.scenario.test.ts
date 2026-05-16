@@ -8,7 +8,7 @@
  * What this locks:
  *   - I29: recovery diagnostic completeness. Every recovery attempt that
  *     prefills a recovery prompt must terminate with exactly one of
- *     `pool:recoveryReport` or `pool:recoveryFailed`.
+ *     `pool:recoveryReturn` or `pool:recoveryFailed`.
  *   - Failure reason + output excerpt are captured so ops can diagnose
  *     why a recovery failed without re-running the job.
  */
@@ -56,7 +56,7 @@ describe('scenario: recovery generates unparseable output', () => {
       }],
       policy,
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       maxTurns: 5,
     });
 
@@ -67,7 +67,7 @@ describe('scenario: recovery generates unparseable output', () => {
     expect(recoveryPrefills.length).toBeGreaterThanOrEqual(1);
 
     // Every recovery prefill is followed by exactly one diagnostic event.
-    const reports = run.traceEvents.filter(e => e.type === 'pool:recoveryReport');
+    const reports = run.traceEvents.filter(e => e.type === 'pool:recoveryReturn');
     const failures = run.traceEvents.filter(e => e.type === 'pool:recoveryFailed');
     expect(reports.length + failures.length).toBe(recoveryPrefills.length);
 

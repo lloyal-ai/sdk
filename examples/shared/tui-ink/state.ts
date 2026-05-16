@@ -88,7 +88,7 @@ export interface AgentRuntime {
   /** Id of the most recent tool_call, paired with its tool_result when one lands. */
   pendingToolCallId: number | null;
   /** Live post-</think> token buffer. Tokens stream into this between
-   *  closing a think block and the next agent:tool_call / agent:report
+   *  closing a think block and the next agent:tool_call / agent:return
    *  (the model is writing tool-call JSON — report body lives inside).
    *  Cleared on tool_call / report (those fire structured items instead). */
   contentBuffer: string;

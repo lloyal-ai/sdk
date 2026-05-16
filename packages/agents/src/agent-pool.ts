@@ -234,16 +234,16 @@ function* recoverInline(
         tokenCount: producedTokens, outputLength: output.length,
       });
 
-      // Parse + report
+      // Parse + return (recovery path — emits agent:recovered, NOT agent:return)
       try {
         const parsed = JSON.parse(output) as { result: string };
         if (parsed?.result) {
-          agent.reportResult(parsed.result, 'scratchpad');
-          yield* events.send({ type: 'agent:report', agentId: agent.id, result: agent.result! });
+          agent.setResult(parsed.result, 'scratchpad');
+          yield* events.send({ type: 'agent:recovered', agentId: agent.id, result: agent.result! });
           reported = true;
           tw.write({
             traceId: tw.nextId(), parentTraceId, ts: performance.now(),
-            type: 'pool:recoveryReport', agentId: agent.id,
+            type: 'pool:recoveryReturn', agentId: agent.id,
             resultLength: parsed.result.length,
           });
         } else {
@@ -281,12 +281,12 @@ function* recoverInline(
 // Each handler encapsulates state transitions, events, and trace for one
 // policy action outcome. The PRODUCE switch dispatches to these.
 
-function* handleFreeTextReport(
+function* handleFreeTextReturn(
   a: Agent, content: string, events: EventSender,
 ): Operation<void> {
-  a.reportResult(content, 'free_text');
+  a.setResult(content, 'free_text');
   a.transition('idle');
-  yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
+  yield* events.send({ type: 'agent:return', agentId: a.id, result: a.result! });
   yield* events.send({ type: 'agent:done', agentId: a.id });
 }
 
@@ -317,17 +317,17 @@ function* handleNudge(
   return { agentId: a.id, prefillTokens, toolName: tc?.name || '', callId, args: tc?.arguments || '', probe };
 }
 
-function* handleReport(
-  a: Agent, result: string, tc: ParsedToolCall, terminalTool: string,
-  pruneOnReport: boolean, events: EventSender,
+function* handleReturn(
+  a: Agent, result: string, tc: ParsedToolCall, terminalToolName: string,
+  pruneOnReturn: boolean, events: EventSender,
 ): Operation<void> {
-  a.reportResult(result, 'report_tool');
+  a.setResult(result, 'voluntary_return');
   a.transition('idle');
   a.incrementToolCalls();
-  yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: terminalTool, args: tc.arguments });
-  yield* events.send({ type: 'agent:report', agentId: a.id, result: a.result! });
+  yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: terminalToolName, args: tc.arguments });
+  yield* events.send({ type: 'agent:return', agentId: a.id, result: a.result! });
   yield* events.send({ type: 'agent:done', agentId: a.id });
-  if (pruneOnReport && !a.branch.disposed) a.branch.pruneSync();
+  if (pruneOnReturn && !a.branch.disposed) a.branch.pruneSync();
 }
 
 /**
@@ -486,7 +486,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
     });
     const tw = yield* Trace.expect();
-    const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalTool, trace = false, pruneOnReport = false, enableThinking = false } = opts;
+    const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = false } = opts;
 
     // Tool index map for trace — position in toolkit array
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
@@ -495,7 +495,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const poolT0 = performance.now();
     let poolParentTraceId: number | null = null;
     try { const p = yield* TraceParent.get(); if (p != null) poolParentTraceId = p; } catch { /* top level */ }
-    const poolScope = traceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalTool });
+    const poolScope = traceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalToolName });
 
     // Whether the pool's tool registry contains tools besides the terminal tool.
     // When false, agents are allowed to call the terminal tool as their first
@@ -507,7 +507,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // schemas (`task.tools`). A reporter pool must pass only the terminal tool
     // in its registry — passing the full tool map makes this flag true and
     // traps reporters in an infinite rejection loop.
-    const hasNonTerminalTools = terminalTool ? [...tools.keys()].some(k => k !== terminalTool) : tools.size > 0;
+    const hasNonTerminalTools = terminalToolName ? [...tools.keys()].some(k => k !== terminalToolName) : tools.size > 0;
     const policy = opts.policy ?? new DefaultAgentPolicy();
     const pressureOpts: PressureThresholds = policy.pressureThresholds
       ?? { softLimit: ContextPressure.DEFAULT_SOFT_LIMIT, hardLimit: ContextPressure.DEFAULT_HARD_LIMIT };
@@ -529,7 +529,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       );
     }
 
-    const policyConfig: PolicyConfig = { maxTurns, terminalTool, hasNonTerminalTools };
+    const policyConfig: PolicyConfig = { maxTurns, terminalToolName, hasNonTerminalTools };
 
     // ── Orchestrator-driven setup ────────────────────────────
     // Agents are spawned lazily via `ctx.spawn` from the orchestrator.
@@ -866,7 +866,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             durationMs: performance.now() - toolT0 });
         } catch (err) {
           agent.transition('idle');
-          agent.reportResult(`Tool error: ${(err as Error).message}`, 'tool_error');
+          agent.setResult(`Tool error: ${(err as Error).message}`, 'tool_error');
           tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
             type: 'tool:error', agentId: agent.id, tool: tc.name,
             error: (err as Error).message });
@@ -1009,8 +1009,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const action = policy.onProduced(a, parsed, pressure, policyConfig);
 
           switch (action.type) {
-            case 'free_text_report':
-              yield* handleFreeTextReport(a, action.content, poolChannel);
+            case 'free_text_return':
+              yield* handleFreeTextReturn(a, action.content, poolChannel);
               continue;
             case 'idle':
               yield* handleIdleDrop(a, action.reason, poolChannel, tw, poolScope.traceId);
@@ -1020,8 +1020,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
                 type: 'pool:agentNudge', agentId: a.id, reason: 'nudge', message: action.message });
               continue;
-            case 'report':
-              yield* handleReport(a, action.result, parsed.toolCalls[0], terminalTool!, pruneOnReport, poolChannel);
+            case 'return':
+              yield* handleReturn(a, action.result, parsed.toolCalls[0], terminalToolName!, pruneOnReturn, poolChannel);
               totalToolCalls++;
               continue;
             case 'tool_call':

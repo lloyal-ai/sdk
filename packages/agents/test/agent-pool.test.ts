@@ -45,7 +45,7 @@ async function runPool(opts: {
   terminalTool?: string;
   maxTurns?: number;
   trace?: boolean;
-  pruneOnReport?: boolean;
+  pruneOnReturn?: boolean;
 }): Promise<{
   result: AgentPoolResult;
   events: AgentEvent[];
@@ -119,9 +119,9 @@ async function runPool(opts: {
         tools: opts.tools ?? new Map(),
         policy: opts.policy,
         maxTurns: opts.maxTurns ?? 100,
-        terminalTool: opts.terminalTool,
+        terminalToolName: opts.terminalToolName,
         trace: opts.trace ?? false,
-        pruneOnReport: opts.pruneOnReport ?? false,
+        pruneOnReturn: opts.pruneOnReturn ?? false,
       });
       // Drain Subscription — collect events, return close value
       let next = yield* sub.next();
@@ -554,7 +554,7 @@ describe('recovery loop', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: (_a, parsed) => {
-          if (parsed.content) return { type: 'free_text_report', content: parsed.content };
+          if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
         onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
@@ -583,7 +583,7 @@ describe('recovery loop', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: (_a, parsed) => {
-          if (parsed.content) return { type: 'free_text_report', content: parsed.content };
+          if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
         onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
@@ -599,7 +599,7 @@ describe('recovery loop', () => {
 
     expect(result).toBeDefined();
     expect(result.agents).toHaveLength(1);
-    // Recovery reactivated, free_text_report captured the text
+    // Recovery reactivated, free_text_return captured the text
     expect(result.agents[0].result).toBe('just text');
   });
 });
@@ -749,7 +749,7 @@ describe('multi-agent interactions', () => {
     expect(result.agents[0].result).toContain('boom');
   });
 
-  it('T14: pruneOnReport with free_text_report — branch pruned', async () => {
+  it('T14: pruneOnReturn with free_text_return — branch pruned', async () => {
     const { result, ctx } = await runPool({
       forkTokenQueues: [[1, 2, STOP]],
       parseChatOutputFn: () => ({
@@ -758,16 +758,16 @@ describe('multi-agent interactions', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: (_a, parsed) => {
-          if (parsed.content) return { type: 'free_text_report', content: parsed.content };
+          if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
         onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
       }),
-      pruneOnReport: true,
+      pruneOnReturn: true,
     });
 
     expect(result.agents[0].result).toBe('my findings');
-    // Branch should be disposed after pruneOnReport
+    // Branch should be disposed after pruneOnReturn
     expect(result.agents[0].branch.disposed).toBe(true);
   });
 
@@ -1289,5 +1289,148 @@ describe('tool probe lifecycle hook', () => {
     );
 
     expect(probeWasPrefilled).toBe(true);
+  });
+});
+
+// ── SPLIT-SEMANTICS GATE: agent:return vs agent:recovered ──────────
+//
+// Before the report→return rename, `agent:return` (formerly `agent:report`) fired for BOTH voluntary
+// completion AND recovery extraction. The rename SPLIT these into two
+// distinct events so consumers can tell apart "agent voluntarily produced
+// this value" from "framework salvaged a value from a killed agent."
+//
+// These two tests are the lockstep proof of the split:
+//   - voluntary path → emits `agent:return` ONLY (never `agent:recovered`)
+//   - recovery path  → emits `agent:recovered` ONLY (never `agent:return`)
+//
+// Both paths still fire `agent:done` for lifecycle. Both populate
+// `agent.result`. `ResultSource` distinguishes provenance:
+// `'voluntary_return'` vs `'scratchpad'`.
+
+describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
+  it('voluntary completion (handleReturn path) emits agent:return only', async () => {
+    const { events } = await runPool({
+      forkTokenQueues: [[1, 2, STOP]],
+      parseChatOutputFn: () => ({
+        content: 'voluntary findings',
+        reasoningContent: '',
+        toolCalls: [],
+      }),
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: (_a, parsed) => {
+          if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+          return { type: 'idle', reason: 'free_text_stop' };
+        },
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    const returns = events.filter(e => e.type === 'agent:return');
+    expect(returns.length).toBeGreaterThanOrEqual(1);
+    expect((returns[0] as { type: 'agent:return'; agentId: number; result: string }).result)
+      .toBe('voluntary findings');
+
+    // Voluntary path must NOT emit agent:recovered.
+    const recovered = events.filter(e => e.type === 'agent:recovered');
+    expect(recovered.length).toBe(0);
+  });
+
+  it('recovery extraction (recoverInline path) emits agent:recovered only', async () => {
+    // To trigger recovery's successful-extraction path we need:
+    //   - agent stops without producing a voluntary result (initial STOP)
+    //   - recovery's grammar-constrained generation produces tokens whose
+    //     text concatenation forms valid JSON {"result":"..."}
+    // The MockSessionContext doesn't enforce grammar so we control output
+    // via a tokenToText override on a sentinel token.
+    const { ctx, store, root } = createMockSdk({ nCtx: 16384, cellsUsed: 1000 });
+
+    // Token 100 decodes to the full JSON payload recovery's parser expects.
+    const origTokenToText = ctx.tokenToText.bind(ctx);
+    ctx.tokenToText = (token: number): string => {
+      if (token === 100) return '{"result":"recovered findings"}';
+      return origTokenToText(token);
+    };
+
+    let forkCount = 0;
+    const branchForkIndex = new Map<number, number>();
+    const branchSampleCount = new Map<number, number>();
+    const origFork = ctx._branchFork.bind(ctx);
+    ctx._branchFork = (parentHandle: number): number => {
+      const handle = origFork(parentHandle);
+      branchForkIndex.set(handle, forkCount++);
+      branchSampleCount.set(handle, 0);
+      return handle;
+    };
+
+    // Token sequence for the single agent's branch:
+    //   [STOP, 100, STOP]
+    //   - first STOP: agent's PRODUCE phase hits stop, parser returns no
+    //     content/toolCalls (per parseChatOutput override below), policy
+    //     returns idle → agent killed → recoverInline fires
+    //   - 100, STOP: recovery's produce/commit loop generates token 100
+    //     (text = JSON payload), then STOP → JSON.parse succeeds →
+    //     agent.setResult fires → agent:recovered event emits
+    const queues = [[STOP, 100, STOP]];
+    ctx._branchSample = (handle: number): number => {
+      const fi = branchForkIndex.get(handle) ?? -1;
+      const queue = fi >= 0 ? (queues[fi] ?? [STOP]) : [STOP];
+      const idx = branchSampleCount.get(handle) ?? 0;
+      branchSampleCount.set(handle, idx + 1);
+      return idx < queue.length ? queue[idx] : STOP;
+    };
+    ctx.parseChatOutput = (): ParseChatOutputResult =>
+      ({ content: '', reasoningContent: '', toolCalls: [] });
+
+    const traceWriter = new CapturingTraceWriter();
+    const collectedEvents: AgentEvent[] = [];
+    await root.prefill(ctx.tokenizeSync('system'));
+
+    await run(function* () {
+      yield* Ctx.set(ctx as Parameters<typeof Ctx.set>[0]);
+      yield* Store.set(store);
+      const eventsChannel: Channel<AgentEvent, void> = createChannel();
+      yield* Events.set(eventsChannel as Parameters<typeof Events.set>[0]);
+      yield* Trace.set(traceWriter);
+
+      return yield* scoped(function* () {
+        const sub = yield* useAgentPool({
+          spine: root,
+          orchestrate: parallel([{ content: 'Task', systemPrompt: 'Agent', seed: 0 }]),
+          toolsJson: '',
+          tools: new Map(),
+          policy: stubPolicy({
+            shouldExit: () => false,
+            onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+            onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+            onRecovery: () => ({
+              type: 'extract',
+              prompt: { system: 'Extract findings.', user: 'Report.' },
+            }),
+          }),
+          maxTurns: 10,
+        });
+        let next = yield* sub.next();
+        while (!next.done) {
+          collectedEvents.push(next.value);
+          next = yield* sub.next();
+        }
+        return next.value;
+      });
+    });
+
+    const recovered = collectedEvents.filter(e => e.type === 'agent:recovered');
+    expect(recovered.length).toBeGreaterThanOrEqual(1);
+    expect((recovered[0] as { type: 'agent:recovered'; agentId: number; result: string }).result)
+      .toBe('recovered findings');
+
+    // Recovery path must NOT emit agent:return — that's reserved for
+    // voluntary completion via the terminal tool.
+    const returns = collectedEvents.filter(e => e.type === 'agent:return');
+    expect(returns.length).toBe(0);
+
+    // Recovery diagnostic trace event fires alongside (locks the literal).
+    const recoveryDiagnostic = traceWriter.events.filter(e => e.type === 'pool:recoveryReturn');
+    expect(recoveryDiagnostic.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -109,7 +109,7 @@ main(function* () {
         tokenCount: 30,
       } as WorkflowEvent);
       bus.send({
-        type: 'agent:report',
+        type: 'agent:return',
         agentId: id,
         result: `Findings for agent ${id}: short report.`,
       } as WorkflowEvent);

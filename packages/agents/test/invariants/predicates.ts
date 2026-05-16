@@ -119,7 +119,7 @@ export function I25_stallBreakDistinct(run: PoolRun): PredicateResult {
 
 /**
  * I29 Recovery-diagnostic-complete: every recovery attempt emits exactly
- * one of pool:recoveryReport / pool:recoveryFailed after its
+ * one of pool:recoveryReturn / pool:recoveryFailed after its
  * branch:prefill role=recovery.
  */
 export function I29_recoveryDiagnostic(run: PoolRun): PredicateResult {
@@ -131,13 +131,13 @@ export function I29_recoveryDiagnostic(run: PoolRun): PredicateResult {
     const agentId = (prefill as any).branchHandle;
     const rest = run.traceEvents.slice(run.traceEvents.indexOf(prefill) + 1);
     const report = rest.find(
-      e => (e.type === 'pool:recoveryReport' || e.type === 'pool:recoveryFailed')
+      e => (e.type === 'pool:recoveryReturn' || e.type === 'pool:recoveryFailed')
         && (e as any).agentId === agentId,
     );
     if (!report) {
       return fail(
         'I29',
-        `recovery prefill for agent ${agentId} emitted no pool:recoveryReport or pool:recoveryFailed diagnostic`,
+        `recovery prefill for agent ${agentId} emitted no pool:recoveryReturn or pool:recoveryFailed diagnostic`,
       );
     }
   }

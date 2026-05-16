@@ -690,7 +690,8 @@ export function reduce(state: AppState, ev: WorkflowEvent): AppState {
     case 'agent:tool_progress':
       return state;
 
-    case 'agent:report': {
+    case 'agent:return':
+    case 'agent:recovered': {
       const agent = state.agents.get(ev.agentId);
       if (!agent) return state;
 
@@ -728,10 +729,10 @@ export function reduce(state: AppState, ev: WorkflowEvent): AppState {
     case 'agent:done': {
       // Do NOT mark the agent `done` here. In the stall-break path,
       // agent:done fires BEFORE recoverInline streams recovery tokens via
-      // agent:produce → agent:report. Freezing to `done` would drop those
+      // agent:produce → agent:return. Freezing to `done` would drop those
       // tokens. Force-close any live think (recovery opens a fresh one on
       // its first produce) and step back to `idle` so the produce handler's
-      // re-enter-thinking branch fires. Only agent:report marks `done`.
+      // re-enter-thinking branch fires. Only agent:return marks `done`.
       const agent = state.agents.get(ev.agentId);
       if (!agent) return state;
       let working = state;

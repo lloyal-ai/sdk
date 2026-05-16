@@ -29,7 +29,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
   // ── Cell: PRODUCE top | critical + no protection → pressure_critical ──
   it('[PRODUCE top] pressure.critical + no terminal-tool protection → drop pressure_critical', async () => {
     const policy = new DefaultAgentPolicy({
-      terminalTool: 'report',
+      terminalToolName: 'report',
       budget: { context: { softLimit: 5, hardLimit: 512 } },
     });
     const run = await runPool({
@@ -41,7 +41,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
         toolCall: { name: 'web_search', arguments: '{"query":"q"}' },
       }],
       policy,
-      terminalTool: 'report',
+      terminalToolName: 'report',
     });
     const reasons = run.traceEvents
       .filter(e => e.type === 'pool:agentDrop')
@@ -78,7 +78,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
       }],
       policy,
       tools: new Map([['web_search', new BigResult()]]),
-      terminalTool: 'report',
+      terminalToolName: 'report',
     });
 
     const drops = run.traceEvents.filter(e => e.type === 'pool:agentDrop');
@@ -110,7 +110,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
       }],
       policy,
       tools: new Map([['web_search', new BigResult()]]),
-      terminalTool: 'report',
+      terminalToolName: 'report',
     });
 
     const reasons = run.traceEvents
@@ -147,7 +147,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
       taskCount: 2,
       policy,
       tools: new Map([['web_search', new BigResult()]]),
-      terminalTool: 'report',
+      terminalToolName: 'report',
     });
 
     const drops = run.traceEvents.filter(
@@ -162,7 +162,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
     // loop picks it up and runs recovery. NO `pool:agentDrop` event for
     // this path — agent was already idle via `free_text_stop`.
     const policy = new DefaultAgentPolicy({
-      terminalTool: 'report',
+      terminalToolName: 'report',
       budget: { context: { softLimit: 256, hardLimit: 512 } },
       recovery: {
         prompt: { system: 'recover', user: 'report' },
@@ -178,7 +178,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
         content: 'some prose findings',  // free-text, no tool call
       }],
       policy,
-      terminalTool: 'report',
+      terminalToolName: 'report',
     });
 
     // The pool-close recovery path emits branch:prefill role=recovery
@@ -187,7 +187,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
     const recoveryPrefills = run.traceEvents.filter(
       e => e.type === 'branch:prefill' && (e as any).role === 'recovery',
     );
-    // Could be 0 if onProduced returned free_text_report (which sets result
+    // Could be 0 if onProduced returned free_text_return (which sets result
     // directly and skips recovery). Acceptable — this cell is about
     // "recovery invoked from pool-close when needed". Check either outcome:
     // either result was captured OR recovery ran.

@@ -58,7 +58,7 @@ describe('property: pressure-driven exits', () => {
             }],
             policy,
             tools: new Map<string, Tool>([['web_search', new SizedTool(resultChars)]]),
-            terminalTool: 'report',
+            terminalToolName: 'report',
             maxTurns: 3,
           });
 
@@ -105,7 +105,7 @@ describe('property: pressure-driven exits', () => {
             }],
             policy,
             tools: new Map<string, Tool>([['web_search', new SizedTool(resultChars)]]),
-            terminalTool: 'report',
+            terminalToolName: 'report',
             maxTurns: 3,
           });
 

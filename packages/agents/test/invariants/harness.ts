@@ -106,7 +106,7 @@ export interface PoolSpec {
   taskCount?: number;
   orchestrate?: Orchestrator;
   trace?: boolean;
-  pruneOnReport?: boolean;
+  pruneOnReturn?: boolean;
   /** See `AgentPoolOptions.enableThinking`. @default false */
   enableThinking?: boolean;
 }
@@ -214,9 +214,9 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
         tools: spec.tools ?? new Map(),
         policy: spec.policy,
         maxTurns: spec.maxTurns ?? 100,
-        terminalTool: spec.terminalTool,
+        terminalToolName: spec.terminalToolName,
         trace: spec.trace ?? false,
-        pruneOnReport: spec.pruneOnReport ?? false,
+        pruneOnReturn: spec.pruneOnReturn ?? false,
         enableThinking: spec.enableThinking,
       });
       let next = yield* sub.next();

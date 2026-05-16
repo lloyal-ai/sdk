@@ -245,17 +245,19 @@ export interface AgentPoolOptions {
   /** Maximum tool-call turns per agent before forced termination */
   maxTurns?: number;
   /** Tool name that signals agent completion. When the model calls this tool,
-   *  findings are extracted from arguments and the agent is marked done.
-   *  The tool is intercepted — never dispatched to execute(). If omitted,
-   *  agents complete only via stop token or hard-cut. */
-  terminalTool?: string;
+   *  the result is extracted from its arguments and the agent is marked done.
+   *  The tool's execute() code-path is not reached — the framework intercepts
+   *  the call at the policy layer and treats it as the agent's return. If
+   *  omitted, agents complete only via stop token, free-text return, or
+   *  hard-cut. */
+  terminalToolName?: string;
   /** Enable per-token entropy/surprisal on `agent:produce` events */
   trace?: boolean;
-  /** Prune agent branches immediately when they call the terminal tool.
-   *  Frees KV for remaining agents mid-pool. Only agents that reported
-   *  findings are pruned — hard-cut agents keep their branches for
-   *  reportPass extraction. @default false */
-  pruneOnReport?: boolean;
+  /** Prune agent branches immediately when they voluntarily return via the
+   *  terminal tool. Frees KV for remaining agents mid-pool. Only agents
+   *  that voluntarily returned are pruned — hard-cut agents keep their
+   *  branches for scratchpad recovery. @default false */
+  pruneOnReturn?: boolean;
   /** Custom agent policy. Configure recovery (scratchpad extraction),
    *  time limits, explore/exploit threshold, and tool guards via
    *  {@link DefaultAgentPolicyOpts}. @default DefaultAgentPolicy with default opts */
@@ -449,6 +451,7 @@ export type AgentEvent =
   | { type: 'agent:tool_call'; agentId: number; tool: string; args: string }
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }
   | { type: 'agent:tool_progress'; agentId: number; tool: string; filled: number; total: number }
-  | { type: 'agent:report'; agentId: number; result: string }
+  | { type: 'agent:return'; agentId: number; result: string }
+  | { type: 'agent:recovered'; agentId: number; result: string }
   | { type: 'agent:done'; agentId: number }
   | { type: 'agent:tick'; cellsUsed: number; nCtx: number };

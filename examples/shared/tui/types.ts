@@ -21,7 +21,7 @@ export interface ViewState {
   synthStream: PageStream;
   /** Vertical streaming region for research agents. Open across each
    *  generation window (between tool calls), closed on agent:tool_call
-   *  and agent:report so tree log lines print cleanly between segments. */
+   *  and agent:return so tree log lines print cleanly between segments. */
   agentStream: PageStream;
   /** Set once synth finished streaming — answerHandler skips re-render. */
   synthStreamed: boolean;

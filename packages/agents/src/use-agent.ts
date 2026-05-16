@@ -25,7 +25,7 @@ export interface UseAgentOpts {
   /** Tools available to the agent. Optional — pool degenerates cleanly without tools. */
   tools?: Tool[];
   /** Terminal tool name — tool must be in the tools array. */
-  terminalTool?: string;
+  terminalToolName?: string;
   /** Max tool-use turns before hard cut. @default 100 */
   maxTurns?: number;
   /** JSON Schema for eager grammar constraint (deferred: Zod support). */
@@ -66,7 +66,7 @@ export interface UseAgentOpts {
  *   systemPrompt: "You are a research assistant.",
  *   task: "Find information about X",
  *   tools: [searchTool, reportTool],
- *   terminalTool: 'report',
+ *   terminalToolName: 'report',
  * });
  * // agent.result — findings
  * // agent.branch — alive, can fork from
@@ -117,7 +117,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       orchestrate: parallel([{ content: opts.task, systemPrompt: opts.systemPrompt }]),
       toolsJson: hasTools ? toolkit.toolsJson : '',
       tools: toolkit.toolMap,
-      terminalTool: opts.terminalTool,
+      terminalToolName: opts.terminalToolName,
       maxTurns: opts.maxTurns,
       policy: opts.policy,
       trace: opts.trace,

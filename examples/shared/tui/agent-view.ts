@@ -204,7 +204,8 @@ export function agentHandler(state: ViewState, gauge?: GaugeState): ViewHandler 
         break;
       }
 
-      case 'agent:report': {
+      case 'agent:return':
+      case 'agent:recovered': {
         const streamed = state.agentStream.hadContent;
         state.agentStream.close();
         state.agentStatus.set(ev.agentId, { state: 'done', tokenCount: 0, detail: '' });

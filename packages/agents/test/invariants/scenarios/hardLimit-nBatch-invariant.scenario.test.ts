@@ -22,7 +22,7 @@ import { runPool } from '../harness';
 describe('scenario: hardLimit >= nBatch invariant', () => {
   it('hardLimit=128 < nBatch=512 → pool startup throws with Invariant Violation', async () => {
     const policy = new DefaultAgentPolicy({
-      terminalTool: 'report',
+      terminalToolName: 'report',
       budget: { context: { softLimit: 1024, hardLimit: 128 } },  // TOO LOW
     });
 
@@ -35,7 +35,7 @@ describe('scenario: hardLimit >= nBatch invariant', () => {
 
   it('hardLimit=512 = nBatch=512 → pool starts cleanly', async () => {
     const policy = new DefaultAgentPolicy({
-      terminalTool: 'report',
+      terminalToolName: 'report',
       budget: { context: { softLimit: 1024, hardLimit: 512 } },
     });
 

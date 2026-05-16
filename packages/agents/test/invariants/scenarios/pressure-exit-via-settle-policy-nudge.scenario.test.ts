@@ -70,7 +70,7 @@ describe('scenario: pressure exit via SETTLE-phase policy nudge', () => {
       }],
       policy,
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       maxTurns: 5,
     });
 

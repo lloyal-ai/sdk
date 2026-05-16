@@ -204,7 +204,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
       ...(this._createPolicy ? { policy: this._createPolicy() } : {}),
       orchestrate: parallel(tasks.map(t => ({ systemPrompt: this._systemPrompt, content: t }))),
       parent: context?.branch,
-      pruneOnReport: opts.pruneOnReport ?? true,
+      pruneOnReturn: opts.pruneOnReturn ?? true,
       scorer: context?.scorer,
     });
 

@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/lloyal-agents",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Multi-agent inference inside the decode loop — structured concurrency over shared KV state",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

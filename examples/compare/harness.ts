@@ -26,7 +26,6 @@ import type { Operation, Task } from "effection";
 import type { Session } from "@lloyal-labs/sdk";
 import {
   agentPool,
-  createToolkit,
   renderTemplate,
   withSpine,
 } from "@lloyal-labs/lloyal-agents";
@@ -262,25 +261,20 @@ export function* handleCompare(
   ];
 
   // ── Run the pool ──────────────────────────────────────────────
-  // One pool, one shared spine. The DAG declares the topology; the pool's
-  // tick loop batches decode across whatever agents are currently active.
-  //
-  // The playbooks + tools live on querySpine (the harness-owned spine) —
-  // NOT on agentPool's nested withSpine. This keeps the spine extensions
-  // (chain extensions written by extendSpine) on querySpine too, so any
-  // post-pool useAgent calls forking querySpine inherit both the playbooks
-  // and the spine extensions via prefix-share.
-  const toolkit = createToolkit(tools);
+  // The DAG declares the topology; the pool's tick loop batches decode
+  // across whatever agents are currently active. The spine is harness-owned
+  // (not nested inside agentPool) so spine extensions persist for any
+  // post-pool useAgent calls that fork querySpine.
   const pool = yield* withSpine(
     {
       parent: session.trunk ?? undefined,
       systemPrompt: PLAYBOOKS,
-      toolsJson: toolkit.toolsJson,
+      tools,  // schemas decoded once into querySpine's KV
     },
     function* (querySpine) {
       return yield* agentPool({
         orchestrate: dagWithEvents(nodes, emit),
-        tools,
+        tools,  // same tools, registered for runtime dispatch
         parent: querySpine,
         terminalToolName: "report",
         maxTurns,

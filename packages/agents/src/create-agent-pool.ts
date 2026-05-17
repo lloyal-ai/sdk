@@ -116,9 +116,10 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
     {
       parent: warmParent,
       systemPrompt: opts.systemPrompt,
-      // Only emit toolsJson into the spine header in shared mode; the rest
-      // of the system uses the toolkit toolMap for actual dispatch.
-      toolsJson: sharedMode ? toolkit.toolsJson : undefined,
+      // Only emit tool schemas into the spine header in shared mode; the
+      // dispatcher (toolkit.toolMap) is registered on the useAgentPool
+      // below regardless.
+      tools: sharedMode ? opts.tools : undefined,
       // Thread enableThinking so the spine header chat-format and the
       // SpineFmt FormatConfig (parser/grammar/triggers) match what the
       // per-agent suffixes get further down. Otherwise a caller passing

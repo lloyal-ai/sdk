@@ -4,6 +4,8 @@ import { Branch } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import { Ctx, Trace, TraceParent, ScratchpadParent, SpineFmt } from "./context";
 import { traceScope } from "./trace-scope";
+import { createToolkit } from "./toolkit";
+import type { Tool } from "./Tool";
 import type { SamplingParams } from "./types";
 import type { FormatConfig } from "./Agent";
 
@@ -51,12 +53,20 @@ export interface SpineOptions {
    */
   systemPrompt?: string;
   /**
-   * JSON-serialized tool schemas to embed in the chat-format header
-   * prefilled at setup. Format matches `FormatChatOptions.tools` — output
-   * of `createToolkit(...).toolsJson`. Only applied when `systemPrompt` is
-   * also set; ignored otherwise.
+   * Tools whose schemas embed into the chat-format header prefilled at setup.
+   * Their JSON schemas are decoded into the spine's KV ONCE; every agent
+   * forking from the spine inherits the schema tokens via fork prefix-share
+   * instead of re-emitting them in its own suffix.
+   *
+   * The same `Tool[]` is typically also passed to `agentPool` (where it
+   * becomes the dispatcher registry). Two roles, one input — schemas
+   * decoded once into the spine, instances registered for runtime
+   * `tool.execute()` dispatch.
+   *
+   * Only applied when `systemPrompt` is also set (shared mode); ignored
+   * otherwise.
    */
-  toolsJson?: string;
+  tools?: Tool[];
   /**
    * Whether to enable thinking-mode tokens (e.g. `<think>` blocks) when
    * formatting the spine's chat-format header. Threaded through to the
@@ -176,7 +186,9 @@ export function* withSpine<T>(
       // trailing assistant generation prompt and corrupt the boundary.
       addGenerationPrompt: false,
     };
-    if (opts.toolsJson) fmtOpts.tools = opts.toolsJson;
+    if (opts.tools && opts.tools.length > 0) {
+      fmtOpts.tools = createToolkit(opts.tools).toolsJson;
+    }
     const formatted = ctx.formatChatSync(messages, fmtOpts);
     const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
     if (headerTokens.length > 0) {

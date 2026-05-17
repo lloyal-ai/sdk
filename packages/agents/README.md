@@ -28,7 +28,6 @@ import {
   diverge,           // multi-branch perplexity selection
   parallel, chain, fanout, dag, reduce,  // orchestrators / combinators
   withSpine,         // scoped spine branch with guaranteed teardown
-  createToolkit,     // tool registry from Tool[] → toolMap + toolsJson
   Tool, Source,
   DefaultAgentPolicy,
   Ctx, Store, Events,
@@ -67,7 +66,7 @@ Everything before the frontier is shared context. Everything after is independen
 
 ```typescript
 yield* withSpine(
-  { systemPrompt: PLAYBOOKS, toolsJson: toolkit.toolsJson },
+  { systemPrompt: PLAYBOOKS, tools },
   function* (spine) {
     // spine is a prefilled branch — system prompt + tool schemas already in KV.
     // Every agent forked from spine shares that prefix.
@@ -217,7 +216,7 @@ class SearchTool extends Tool<{ query: string }> {
 }
 ```
 
-`createToolkit(tools)` aggregates tools into a `{ toolMap, toolsJson }` pair — `toolMap` for runtime dispatch, `toolsJson` for prompt formatting. With `withSpine({ systemPrompt, toolsJson })`, the schemas are decoded once at the spine and inherited by every fork — see the [playbooks](https://hdk.lloyal.ai/reference/playbooks) convention for mixed-role pools.
+Pass the same `Tool[]` to `withSpine({ systemPrompt, tools })` and to `agentPool({ tools })`: the spine decodes the tool schemas into KV once at setup, and the pool's dispatcher registers the same instances for runtime `execute()`. Two roles, one input — see the [playbooks](https://hdk.lloyal.ai/reference/playbooks) convention for mixed-role pools. (Advanced: `createToolkit(tools)` is still exported if you need direct access to the `{ toolMap, toolsJson }` pair, e.g. for the low-level `useAgentPool` primitive.)
 
 ## Events
 

@@ -10,7 +10,7 @@
  * with each agent.
  *
  * What this locks:
- *   - `withSpine({ systemPrompt, toolsJson })` calls `formatChatSync`
+ *   - `withSpine({ systemPrompt, tools })` calls `formatChatSync`
  *     EXACTLY ONCE with a `tools` option (the spine setup).
  *   - Subsequent per-spawn `formatChatSync` calls inside `setupAgent`
  *     receive NO `tools` option — they format only the agent's user turn

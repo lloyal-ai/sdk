@@ -49,7 +49,6 @@ import {
   agentPool,
   parallel,
   withSpine,
-  createToolkit,
 } from "@lloyal-labs/lloyal-agents";
 import { reportTool } from "@lloyal-labs/rig";
 
@@ -85,15 +84,15 @@ main(function* () {
     },
     { content: "Summarize the main thesis.", systemPrompt: WORKER_PROMPT },
   ];
-  const toolkit = createToolkit([...corpusTools, reportTool]);
+  const tools = [...corpusTools, reportTool];
   yield* withSpine(
-    { systemPrompt: playbooks, toolsJson: toolkit.toolsJson },
+    { systemPrompt: playbooks, tools },
     function* (spine) {
       return yield* agentPool({
         orchestrate: parallel(tasks), // or chain(...), fanout(...), dag(...)
-        tools: [...corpusTools, reportTool],
+        tools,
         parent: spine,
-        terminalTool: "report",
+        terminalToolName: "report",
       });
     },
   );

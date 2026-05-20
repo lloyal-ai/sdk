@@ -25,18 +25,42 @@ function tokenBudgetAsWords(budgetTokens: number): number {
 // ── Declarative tool guards ─────────────────────────────
 
 /**
- * A declarative guard that rejects tool calls based on agent lineage.
+ * A declarative guard that rejects tool calls based on agent state.
  * Guards are checked in order before any tool is dispatched.
+ *
+ * `tools` selects which tool calls this guard sees: a `string[]` matches
+ * by exact name; the literal `'*'` matches every call (used by the
+ * framework-injected scope-guard from RFC §5.3c — guards that need to
+ * inspect *every* call regardless of tool name).
+ *
+ * `reject` returns `true` to reject the call with `message`. It receives
+ * the parsed args, the full agent lineage's tool history, the agent
+ * itself (whose `allowedTools` / `assignedApp` carry per-spawn scope),
+ * and `toolName` (so `tools: '*'` guards know which tool they're
+ * gating).
+ *
+ * `name` is the optional guard identifier surfaced via
+ * `ProduceAction.nudge.guard` so the pool can emit per-guard trace
+ * events (e.g., `tool:scopeReject` for `name: 'scope_reject'`). Omit it
+ * for guards whose only observable footprint is the resulting
+ * `pool:agentNudge` event.
  *
  * @category Agents
  */
 export interface ToolGuard {
-  /** Tool names this guard applies to */
-  tools: string[];
-  /** Return true to reject the call. Receives parsed args, full lineage history, and the agent itself. */
-  reject: (args: Record<string, unknown>, lineageHistory: ToolHistoryEntry[], agent: Agent) => boolean;
-  /** Error message sent back to the agent as a tool result */
+  /** Tool names this guard applies to; `'*'` matches every call. */
+  tools: string[] | '*';
+  /** Return true to reject the call. */
+  reject: (
+    args: Record<string, unknown>,
+    lineageHistory: ToolHistoryEntry[],
+    agent: Agent,
+    toolName: string,
+  ) => boolean;
+  /** Error message sent back to the agent as a tool result. */
   message: string;
+  /** Optional identifier surfaced via `ProduceAction.nudge.guard`. */
+  name?: string;
 }
 
 /** Default guards for deduplication and recursion discipline */
@@ -45,6 +69,23 @@ function parseHistoryArgs(argsStr: string): Record<string, unknown> {
 }
 
 export const defaultToolGuards: ToolGuard[] = [
+  // Framework-injected scope-guard (RFC §3.2 M2, §5.3c). Runs FIRST so
+  // out-of-scope tool calls reject before any dedup guard fires — the
+  // pool emits a structured `tool:scopeReject` event keyed off
+  // `ProduceAction.nudge.guard === 'scope_reject'` for security
+  // observability. No-op when `agent.allowedTools` is null (the spawn
+  // declared no scope; legacy behavior preserved).
+  {
+    name: 'scope_reject',
+    tools: '*',
+    reject: (_args, _history, agent, toolName) => {
+      if (!agent.allowedTools) return false;
+      return !agent.allowedTools.includes(toolName);
+    },
+    message:
+      'Tool not in scope for this spawn. Use only the tools listed for ' +
+      'the assigned contract (or the harness-provided tool list).',
+  },
   {
     tools: ['fetch_page'],
     reject: (args, history) => {
@@ -91,7 +132,10 @@ export type IdleReason =
 export type ProduceAction =
   | { type: 'tool_call'; tc: ParsedToolCall }
   | { type: 'return'; result: string }
-  | { type: 'nudge'; message: string }
+  /** `guard` carries the identifier of the rejecting `ToolGuard` (RFC §5.3c
+   *  uses this to route `scope_reject` rejections to the `tool:scopeReject`
+   *  trace event). Absent for nudges not produced by a guard. */
+  | { type: 'nudge'; message: string; guard?: string }
   | { type: 'idle'; reason: IdleReason }
   | { type: 'free_text_return'; content: string };
 
@@ -433,8 +477,10 @@ export class DefaultAgentPolicy implements AgentPolicy {
     let toolArgs: Record<string, unknown>;
     try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
     for (const guard of this._guards) {
-      if (guard.tools.includes(tc.name) && guard.reject(toolArgs, lineageHistory, agent)) {
-        return { type: 'nudge', message: guard.message };
+      const applies = guard.tools === '*' || guard.tools.includes(tc.name);
+      if (!applies) continue;
+      if (guard.reject(toolArgs, lineageHistory, agent, tc.name)) {
+        return { type: 'nudge', message: guard.message, guard: guard.name };
       }
     }
     return null;

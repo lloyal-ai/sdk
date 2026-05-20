@@ -18,10 +18,32 @@ interface ScoringRequest {
   push: (progress: RerankProgress) => void;
   finish: () => void;
   error: (err: Error) => void;
+  /**
+   * Set to `true` when the consumer cancels the iterator (via
+   * `for-await break` or explicit `iterator.return()`). The {@link Rerank._drain}
+   * loop sweeps cancelled requests out of `_pending` at the top of each
+   * iteration, so further `_scoreGroup` dispatches for this request's
+   * remaining tokens never fire. The single dispatch already in flight when
+   * cancellation arrives completes naturally — native scoring has no
+   * AbortController equivalent — so the bound is "≤ one extra dispatch
+   * after cancel."
+   */
+  cancelled: boolean;
 }
 
-/** Simple async channel — _drain pushes, consumer pulls via for-await */
-function channel<T>(): {
+/**
+ * Simple async channel — `_drain` pushes, consumer pulls via for-await.
+ *
+ * The returned iterator supports `return()` so `for-await break` and
+ * explicit `iterator.return()` both invoke `onCancel`, letting the owning
+ * {@link ScoringRequest} mark itself cancelled. Without this, the upstream
+ * drain has no way to know the consumer has stopped reading and keeps
+ * issuing GPU dispatches for documents whose scores will be discarded.
+ *
+ * @param onCancel - Invoked when the consumer cancels the iterator.
+ *   Called at most once.
+ */
+function channel<T>(onCancel?: () => void): {
   push: (value: T) => void;
   finish: () => void;
   error: (err: Error) => void;
@@ -31,6 +53,7 @@ function channel<T>(): {
   let done = false;
   let err: Error | null = null;
   let notify: (() => void) | null = null;
+  let cancelFired = false;
 
   const wait = () => new Promise<void>((r) => { notify = r; });
 
@@ -57,6 +80,20 @@ function channel<T>(): {
             while (buffer.length === 0 && !done && !err) await wait();
             if (err) throw err;
             if (buffer.length > 0) return { value: buffer.shift()!, done: false };
+            return { value: undefined as unknown as T, done: true };
+          },
+          async return(): Promise<IteratorResult<T>> {
+            // Mark the iterator finished so any pending `next()` await
+            // resolves with `{done: true}`. Fire onCancel exactly once so
+            // the upstream ScoringRequest can be marked cancelled and the
+            // _drain loop will sweep it out at the next iteration.
+            done = true;
+            if (!cancelFired) {
+              cancelFired = true;
+              onCancel?.();
+            }
+            notify?.();
+            notify = null;
             return { value: undefined as unknown as T, done: true };
           },
         };
@@ -136,7 +173,20 @@ export class Rerank {
     if (this._disposed) throw new Error('Rerank disposed');
 
     const self = this;
-    const ch = channel<RerankProgress>();
+    // Cancellation handshake: the channel calls onCancel when the consumer
+    // calls `iterator.return()` (directly or implicitly via `for-await break`).
+    // Two paths to handle:
+    //   1. `req` is already constructed (the IIFE below has run): mark
+    //      `req.cancelled = true` directly.
+    //   2. Cancel fires before the IIFE's `_enqueue` completes (tokenize
+    //      is async; cancel could land first): record the flag in the
+    //      closure and apply it once `req` is assigned.
+    let cancelled = false;
+    let req: ScoringRequest | null = null;
+    const ch = channel<RerankProgress>(() => {
+      cancelled = true;
+      if (req) req.cancelled = true;
+    });
 
     (async () => {
       try {
@@ -149,7 +199,11 @@ export class Rerank {
           return [...shared, ...trimmed, ...self._suffixTokens];
         });
 
-        self._enqueue(tokenArrays, topK, ch.push, ch.finish, ch.error);
+        req = self._enqueue(tokenArrays, topK, ch.push, ch.finish, ch.error);
+        // Race-resolve: if cancellation fired before _enqueue completed,
+        // propagate the flag now so the first _drain sweep removes the
+        // request before issuing any dispatches for it.
+        if (cancelled) req.cancelled = true;
       } catch (err) {
         ch.error(err instanceof Error ? err : new Error(String(err)));
       }
@@ -217,16 +271,19 @@ export class Rerank {
     push: (progress: RerankProgress) => void,
     finish: () => void,
     error: (err: Error) => void,
-  ): void {
-    this._pending.push({
+  ): ScoringRequest {
+    const req: ScoringRequest = {
       tokenArrays, cursor: 0,
       scores: new Array(tokenArrays.length),
       filled: 0,
       topK,
       total: tokenArrays.length,
       push, finish, error,
-    });
+      cancelled: false,
+    };
+    this._pending.push(req);
     this._drain();
+    return req;
   }
 
   private _fillGroup(): { reqIdx: number; promptIdx: number; tokens: number[] }[] {
@@ -252,6 +309,19 @@ export class Rerank {
 
     try {
       while (this._pending.length > 0) {
+        // Cancellation sweep: drop any requests whose consumer has called
+        // `iterator.return()` (directly or via `for-await break`). This
+        // runs at the top of each iteration so a cancel that fires while
+        // a previous group's `_scoreGroup` was in flight takes effect
+        // before the next dispatch — bounding the post-cancel cost at
+        // most one extra in-flight call per cancelled request.
+        for (let r = this._pending.length - 1; r >= 0; r--) {
+          if (this._pending[r].cancelled) {
+            this._pending.splice(r, 1);
+          }
+        }
+        if (this._pending.length === 0) break;
+
         const group = this._fillGroup();
         if (group.length === 0) break;
 

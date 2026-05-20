@@ -18,6 +18,23 @@ export interface SpawnSpec {
   seed?: number;
   /** Parent branch to fork from. Falls back to ctx.spine. */
   parent?: Branch;
+  /**
+   * Name of the App that owns this spawn's contract (RFC §5.3c, §3.2 M2).
+   * When set, the framework resolves the spawn's allowed-tools list from
+   * `AppRegistryCtx.byName(assignedApp).manifest.contract.tools` and
+   * installs the dispatch-time scope-guard against it. Mutually
+   * exclusive with `allowedTools` (App lookup wins if both are set —
+   * harness misuse).
+   */
+  assignedApp?: string;
+  /**
+   * Explicit allowed-tools list for a harness-internal spawn (plan,
+   * synth, compare-axis, etc. — RFC §5.3c "Harness-internal spawn").
+   * The framework installs the scope-guard against this list so the
+   * harness-internal spawn receives the same M2 dispatch-time
+   * rejection as App-assigned spawns.
+   */
+  allowedTools?: readonly string[];
 }
 
 /**

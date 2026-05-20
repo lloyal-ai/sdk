@@ -46,8 +46,8 @@ function* research(
   const agent = yield* useAgent({
     systemPrompt: RESEARCH.system,
     task: query,
-    tools: [...opts.tools, reportTool],
-    terminalToolName: 'report',
+    tools: [...opts.tools],
+    terminal: reportTool,
     maxTurns: opts.maxTurns,
     trace: opts.trace,
     policy: new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } }),

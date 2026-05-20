@@ -1,4 +1,14 @@
-export { Ctx, Store, Events, Trace, TraceParent, ScratchpadParent } from './context';
+export {
+  Ctx,
+  Store,
+  Events,
+  Trace,
+  TraceParent,
+  ScratchpadParent,
+  RerankerCtx,
+  AppRegistryCtx,
+  AppConfigStoreCtx,
+} from './context';
 export { Tool } from './Tool';
 export { Agent } from './Agent';
 export type { AgentStatus, ResultSource, FormatConfig, ToolHistoryEntry } from './Agent';
@@ -49,3 +59,21 @@ export type {
   DivergeResult,
   AgentEvent,
 } from './types';
+
+export type {
+  App,
+  AppManifest,
+  AppContract,
+  AppHints,
+  AppRegistry,
+  AppFactory,
+  AppState,
+  AgentRenderCtx,
+  ExamplesRenderCtx,
+  AgentTemplateFn,
+  ExamplesTemplateFn,
+  ConfigFlow,
+} from './app-types';
+
+export type { AppConfigStore } from './app-config';
+export type { Resource, Chunk, ScoredChunk, ScoredResult, Reranker } from './chunk';

@@ -40,3 +40,23 @@ export type { FetchedPage } from './sources/chunking';
 
 // Resource types (pure TS — RN-safe)
 export type { Resource, Chunk } from './resources/types';
+
+// HDK 3.0 App Contract surfaces (RFC §5)
+export {
+  BOUNDARY_MARKER,
+  FRAMEWORK_INTRO,
+  TOOL_SELECTION_RULE,
+  CATALOG_ENTRY,
+  VALIDATED_MODELS_3_0,
+  MODEL_CONTRACT_VERSION,
+  SUPPORTED_MODEL_CONTRACT_VERSIONS,
+} from './contract';
+export { defineApp } from './define-app';
+export { cancellableFetch, FetchTimeoutError } from './cancellable-fetch';
+export { createInMemoryConfigStore } from './config-store';
+export { createAppRegistry } from './registry';
+export type { CreateAppRegistryOpts } from './registry';
+export { verifyBundle, loadBundle, BundleVerificationError } from './bundle';
+export type { AppBundleManifest, LoadBundleOptions } from './bundle';
+export { renderSpine, renderAgentPreamble } from './spine-render';
+export type { RenderSpineOptions } from './spine-render';

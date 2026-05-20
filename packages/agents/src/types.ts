@@ -139,6 +139,22 @@ export interface AgentTaskSpec {
   seed?: number;
   /** Parent branch to fork from (required by {@link useAgentPool}) */
   parent?: Branch;
+  /**
+   * Identifier of the App that owns this spawn's contract (RFC §5.3c).
+   * When set, `setupAgent` resolves the spawn's allowed-tools list from
+   * the matching `AppRegistry` entry's `manifest.contract.tools`. Leave
+   * unset for harness-internal spawns — pass `allowedTools` explicitly
+   * instead.
+   */
+  assignedApp?: string;
+  /**
+   * Explicit allowed-tools list for this spawn. Takes precedence over
+   * `assignedApp` resolution. Used by harness-internal spawns (RFC §5.3c
+   * "Harness-internal spawn") that aren't backed by an App — plan /
+   * synth / compare-axis style workers — so they receive the same
+   * dispatch-time scope-guard protection without registering an App.
+   */
+  allowedTools?: readonly string[];
 }
 
 /**

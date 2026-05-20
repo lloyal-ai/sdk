@@ -1,6 +1,6 @@
 import type { Operation } from 'effection';
 import { Tool, agent, renderTemplate } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
+import type { JsonSchema, App } from '@lloyal-labs/lloyal-agents';
 import { Session } from '@lloyal-labs/sdk';
 
 /**
@@ -17,6 +17,19 @@ export interface PlanToolOpts {
   maxQuestions: number;
   /** Sampling temperature for plan generation. @default 0.3 */
   temperature?: number;
+  /**
+   * Apps available to route research tasks to (RFC §5.3c). When provided
+   * and non-empty, the plan grammar constrains each task's `app` field to
+   * an enum of these apps' `manifest.contract.name` values — the names
+   * the planner sees in the spine catalog — so the planner must assign
+   * every task to a real contract. The harness maps each emitted
+   * `task.app` (a contract name) back to its `manifest.name` to set
+   * `SpawnSpec.assignedApp` when spawning research agents.
+   *
+   * Omit for single-app or app-agnostic pipelines: the grammar drops the
+   * `app` field entirely and {@link ResearchTask.app} stays undefined.
+   */
+  availableApps?: readonly App[];
 }
 
 /**
@@ -30,6 +43,15 @@ export interface PlanToolOpts {
 export interface ResearchTask {
   /** What to find out — a specific, actionable research assignment. */
   description: string;
+  /**
+   * Contract name of the app this task is routed to (matches one of the
+   * planner's `availableApps`' `manifest.contract.name`). Present only
+   * when the planner ran with {@link PlanToolOpts.availableApps}; the
+   * harness maps it to the App's `manifest.name` for
+   * `SpawnSpec.assignedApp`. Undefined for single-app / app-agnostic
+   * pipelines.
+   */
+  app?: string;
 }
 
 /**
@@ -100,6 +122,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
   private _session: Session;
   private _maxQuestions: number;
   private _temperature: number;
+  private _appContractNames: string[];
 
   constructor(opts: PlanToolOpts) {
     super();
@@ -107,10 +130,24 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     this._temperature = opts.temperature ?? 0.3;
     this._session = opts.session;
     this._maxQuestions = opts.maxQuestions;
+    this._appContractNames = (opts.availableApps ?? []).map(a => a.manifest.contract.name);
   }
 
   *execute(args: { query: string; context?: string }): Operation<unknown> {
     const t = performance.now();
+
+    // When apps are available, force the planner to route every task to
+    // one of their contract names via a grammar enum (RFC §5.3c). With no
+    // apps the task carries only a description.
+    const hasApps = this._appContractNames.length > 0;
+    const taskProperties: Record<string, JsonSchema> = {
+      description: { type: 'string' },
+    };
+    const taskRequired = ['description'];
+    if (hasApps) {
+      taskProperties.app = { type: 'string', enum: this._appContractNames };
+      taskRequired.push('app');
+    }
 
     const schema: JsonSchema = {
       type: 'object',
@@ -120,10 +157,8 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
           type: 'array',
           items: {
             type: 'object',
-            properties: {
-              description: { type: 'string' },
-            },
-            required: ['description'],
+            properties: taskProperties,
+            required: taskRequired,
           },
           maxItems: this._maxQuestions,
         },
@@ -155,7 +190,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     try {
       const parsed = JSON.parse(planAgent.rawOutput) as {
         intent?: string;
-        tasks?: { description?: string }[];
+        tasks?: { description?: string; app?: string }[];
         clarifyQuestions?: string[];
       };
 
@@ -167,7 +202,9 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
       const tasks: ResearchTask[] = (parsed.tasks ?? [])
         .slice(0, this._maxQuestions)
         .filter(t => typeof t.description === 'string')
-        .map(t => ({ description: t.description! }));
+        .map(t => (typeof t.app === 'string'
+          ? { description: t.description!, app: t.app }
+          : { description: t.description! }));
 
       const clarifyQuestions = (parsed.clarifyQuestions ?? []).filter(q => typeof q === 'string');
 

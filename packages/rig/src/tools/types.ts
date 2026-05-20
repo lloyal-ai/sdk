@@ -1,68 +1,22 @@
-import type { Chunk } from '../resources/types';
-
 /**
- * A single chunk scored by the {@link Reranker} against a query
+ * Rig-resident tool adapter types.
  *
- * Returned as part of {@link ScoredResult} from reranker scoring.
- * Contains the file location, heading, relevance score, and line
- * range so downstream tools (e.g. {@link ReadFileTool}) can fetch
- * the exact content.
+ * The reranker abstraction (`Reranker`, `ScoredResult`, `ScoredChunk`)
+ * moved to `@lloyal-labs/lloyal-agents` in RFC §6.3 alongside `Chunk`
+ * and `Resource` — abstract types live in agents, concrete factories
+ * (`createReranker`) and chunking utilities (`chunkResources`,
+ * `chunkHtml`, `chunkFetchedPages`) stay in rig. Re-exported here for
+ * rig-internal callers; new code should import from
+ * `@lloyal-labs/lloyal-agents`.
  *
+ * `SearchProvider` + `SearchResult` are HTTP-adapter shapes used only
+ * by rig's keyless / Tavily provider; they stay rig-resident.
+ *
+ * @packageDocumentation
  * @category Rig
  */
-export interface ScoredChunk {
-  /** Source filename containing the chunk */
-  file: string;
-  /** Leaf section heading (e.g. "Recovery loop") */
-  heading: string;
-  /** Hierarchical section path (e.g. "Agents > Lifecycle > Recovery loop"). Empty for web chunks. */
-  section: string;
-  /** First ~200 chars of chunk text — gives agents content at search time */
-  snippet: string;
-  /** Relevance score (higher = more relevant) */
-  score: number;
-  /** Start line in the source file (1-indexed) */
-  startLine: number;
-  /** End line in the source file (1-indexed) */
-  endLine: number;
-}
 
-/**
- * Progressive reranker output emitted during scoring
- *
- * Streamed from {@link Reranker.score} as an async iterable,
- * allowing callers to report progress while scoring is in flight.
- *
- * @category Rig
- */
-export interface ScoredResult {
-  /** Scored chunks accumulated so far, ordered by relevance */
-  results: ScoredChunk[];
-  /** Number of chunks scored so far */
-  filled: number;
-  /** Total number of chunks to score */
-  total: number;
-}
-
-/**
- * Embedding-based reranker for scoring corpus chunks against a query
- *
- * Implementations tokenize chunks up front via {@link tokenizeChunks},
- * then stream progressive results from {@link score}. Used by
- * {@link SearchTool} to rank knowledge-base passages.
- *
- * @category Rig
- */
-export interface Reranker {
-  /** Score chunks against a query, streaming progressive results */
-  score(query: string, chunks: Chunk[]): AsyncIterable<ScoredResult>;
-  /** Score raw text strings against a query in one batch. Returns scores (0–1) in input order. */
-  scoreBatch(query: string, texts: string[]): Promise<number[]>;
-  /** Pre-tokenize chunks for subsequent scoring calls */
-  tokenizeChunks(chunks: Chunk[]): Promise<void>;
-  /** Release reranker resources */
-  dispose(): void;
-}
+export type { Reranker, ScoredChunk, ScoredResult } from '@lloyal-labs/lloyal-agents';
 
 // ── Web search adapter ──────────────────────────────────
 

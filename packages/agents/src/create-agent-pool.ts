@@ -27,8 +27,14 @@ export interface CreateAgentPoolOpts {
   orchestrate: Orchestrator;
   /** Data access tools (array, createToolkit called internally). Optional — pool degenerates cleanly without tools. */
   tools?: Tool[];
-  /** Terminal tool name — tool must be in the tools array. Pool intercepts and extracts result. */
-  terminalToolName?: string;
+  /**
+   * The tool that ends an agent's turn — `report`, `email`, whatever the
+   * harness designates. Passed by reference; the framework merges it into
+   * the tool set (so its schema reaches the model) and intercepts its
+   * call at the policy layer to extract the `result` arg as the agent's
+   * return value. Omit for pools that end on free-text/stop.
+   */
+  terminal?: Tool;
   /** Max tool-use turns per agent before hard cut. @default 100 */
   maxTurns?: number;
   /** Prune agent branches immediately when they voluntarily return, freeing KV mid-pool. */
@@ -94,9 +100,9 @@ export interface CreateAgentPoolOpts {
  * @example Research harness
  * ```typescript
  * const pool = yield* agentPool({
- *   tools: [delegateTool, ...source.tools, reportTool],
+ *   tools: [delegateTool, ...source.tools],
  *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: RESEARCH_PROMPT }))),
- *   terminalToolName: 'report',
+ *   terminal: reportTool,
  * });
  * ```
  *
@@ -105,7 +111,7 @@ export interface CreateAgentPoolOpts {
 export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult> {
   const broadcast = yield* Events.expect();
 
-  const toolkit = createToolkit(opts.tools ?? []);
+  const toolkit = createToolkit(opts.tools ?? [], opts.terminal);
 
   // Warm path priority: explicit parent > session trunk > cold
   const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
@@ -118,8 +124,9 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
       systemPrompt: opts.systemPrompt,
       // Only emit tool schemas into the spine header in shared mode; the
       // dispatcher (toolkit.toolMap) is registered on the useAgentPool
-      // below regardless.
-      tools: sharedMode ? opts.tools : undefined,
+      // below regardless. Use the toolkit's merged set so the terminal's
+      // schema rides the spine prefill alongside the capability tools.
+      tools: sharedMode ? toolkit.tools : undefined,
       // Thread enableThinking so the spine header chat-format and the
       // SpineFmt FormatConfig (parser/grammar/triggers) match what the
       // per-agent suffixes get further down. Otherwise a caller passing
@@ -147,7 +154,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         orchestrate: opts.orchestrate,
         toolsJson: toolkit.toolsJson,
         tools: toolkit.toolMap,
-        terminalToolName: opts.terminalToolName,
+        terminalToolName: toolkit.terminalName,
         pruneOnReturn: opts.pruneOnReturn,
         maxTurns: opts.maxTurns,
         trace: opts.trace,

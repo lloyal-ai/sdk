@@ -19,9 +19,11 @@ export { PlanTool, taskToContent } from './plan';
 export type { PlanResult, PlanIntent, PlanToolOpts, ResearchTask } from './plan';
 
 /**
- * Shared singleton {@link ReportTool} instance.
+ * Shared {@link ReportTool} instance — the conventional terminal tool.
  *
- * Re-used across toolkits since ReportTool is stateless.
+ * `ReportTool` is stateless, so one shared instance is reused across
+ * pools. Pass it as the `terminal` of `agentPool` / `useAgent`. For a
+ * custom description, construct your own via `new ReportTool({...})`.
  *
  * @category Rig
  */
@@ -31,8 +33,8 @@ export const reportTool = new ReportTool();
  * Build the standard corpus toolkit.
  *
  * Returns a {@link Toolkit} containing {@link SearchTool},
- * {@link ReadFileTool}, {@link GrepTool}, and {@link ReportTool}
- * wired to the provided resources, chunks, and reranker.
+ * {@link ReadFileTool}, {@link GrepTool} as capability tools, with
+ * {@link reportTool} as the designated terminal.
  *
  * @category Rig
  */
@@ -41,10 +43,12 @@ export function createTools(opts: {
   chunks: Chunk[];
   reranker: Reranker;
 }): Toolkit {
-  return createToolkit([
-    new SearchTool(opts.chunks, opts.reranker),
-    new ReadFileTool(opts.resources),
-    new GrepTool(opts.resources),
+  return createToolkit(
+    [
+      new SearchTool(opts.chunks, opts.reranker),
+      new ReadFileTool(opts.resources),
+      new GrepTool(opts.resources),
+    ],
     reportTool,
-  ]);
+  );
 }

@@ -24,8 +24,13 @@ export interface UseAgentOpts {
   task: string;
   /** Tools available to the agent. Optional — pool degenerates cleanly without tools. */
   tools?: Tool[];
-  /** Terminal tool name — tool must be in the tools array. */
-  terminalToolName?: string;
+  /**
+   * The tool that ends the agent's turn (e.g. `reportTool`), by reference.
+   * Merged into the tool set so its schema reaches the model; the pool
+   * intercepts its call to extract the result. Omit to end on
+   * free-text/stop.
+   */
+  terminal?: Tool;
   /** Max tool-use turns before hard cut. @default 100 */
   maxTurns?: number;
   /** JSON Schema for eager grammar constraint (deferred: Zod support). */
@@ -65,8 +70,8 @@ export interface UseAgentOpts {
  * const agent = yield* useAgent({
  *   systemPrompt: "You are a research assistant.",
  *   task: "Find information about X",
- *   tools: [searchTool, reportTool],
- *   terminalToolName: 'report',
+ *   tools: [searchTool],
+ *   terminal: reportTool,
  * });
  * // agent.result — findings
  * // agent.branch — alive, can fork from
@@ -79,11 +84,11 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
     const ctx: SessionContext = yield* Ctx.expect();
     const broadcast = yield* Events.expect();
     const tw = yield* Trace.expect();
-    const toolkit = createToolkit(opts.tools ?? []);
+    const toolkit = createToolkit(opts.tools ?? [], opts.terminal);
     const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
 
     const scope = traceScope(tw, null, 'useAgent', {
-      hasTools: !!(opts.tools?.length),
+      hasTools: toolkit.tools.length > 0,
       hasParent: !!warmParent,
     });
 
@@ -111,13 +116,13 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
     }
 
     // Delegate to useAgentPool N=1 via a trivial parallel orchestrator
-    const hasTools = !!(opts.tools?.length);
+    const hasTools = toolkit.tools.length > 0;
     const sub = yield* useAgentPool({
       spine: root,
       orchestrate: parallel([{ content: opts.task, systemPrompt: opts.systemPrompt }]),
       toolsJson: hasTools ? toolkit.toolsJson : '',
       tools: toolkit.toolMap,
-      terminalToolName: opts.terminalToolName,
+      terminalToolName: toolkit.terminalName,
       maxTurns: opts.maxTurns,
       policy: opts.policy,
       trace: opts.trace,

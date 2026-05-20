@@ -1,9 +1,10 @@
 import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each, sleep, action } from 'effection';
 import type { Operation, Subscription } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
-import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type GrammarTrigger, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
+import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt } from './context';
+import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, AppRegistryCtx } from './context';
+import type { AppRegistry } from './app-types';
 import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
@@ -385,9 +386,45 @@ function* setupAgent(
   let callingAgent: Agent | null = null;
   try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
 
+  // Resolve the spawn's allowed-tools scope for the framework-injected
+  // scope-guard (RFC §3.2 M2, §5.3c). Two paths, mutually exclusive at
+  // the harness layer:
+  //   • `task.allowedTools` — explicit list (harness-internal spawns).
+  //   • `task.assignedApp`  — look up `manifest.contract.tools` via
+  //                           `AppRegistryCtx`. Throws if no registry
+  //                           is set or the app is unknown — failing
+  //                           closed is safer than silently dropping
+  //                           the M2 enforcement.
+  // When both are unset the spawn is "unscoped" (legacy harnesses);
+  // the scope-guard becomes a no-op (`agent.allowedTools === null`).
+  let allowedTools: readonly string[] | null = null;
+  let assignedApp: string | null = null;
+  if (task.allowedTools !== undefined) {
+    allowedTools = task.allowedTools;
+  } else if (task.assignedApp !== undefined) {
+    assignedApp = task.assignedApp;
+    let registry: AppRegistry | null = null;
+    try { registry = yield* AppRegistryCtx.expect(); } catch {
+      throw new Error(
+        `setupAgent: spawn declared assignedApp="${task.assignedApp}" but no AppRegistry ` +
+        `is set on AppRegistryCtx. Construct one via createAppRegistry({configStore}) before ` +
+        `spawning App-assigned agents.`,
+      );
+    }
+    const app = registry.byName(task.assignedApp);
+    if (!app) {
+      throw new Error(
+        `setupAgent: spawn declared assignedApp="${task.assignedApp}" but no app with that ` +
+        `name is enabled. Register it via createAppRegistry({apps}) or registry.enable(...) ` +
+        `before spawning, and verify the name matches manifest.name.`,
+      );
+    }
+    allowedTools = app.manifest.contract.tools;
+  }
+
   // In shared mode the new agent's parser/grammar/format/triggers come
   // from the spine's pre-computed fmt — those fields know about the tool
-  // palette that's in attention via the inherited prefix. In non-shared
+  // set that's in attention via the inherited prefix. In non-shared
   // mode, fresh fmt drives those fields (existing behavior).
   const fmtConfig: FormatConfig = sharedFmt
     ? {
@@ -418,6 +455,8 @@ function* setupAgent(
     parent: callingAgent,
     task: task.content,
     fmt: fmtConfig,
+    allowedTools,
+    assignedApp,
   });
 
   return { agent, suffixTokens, formattedPrompt: fmt.prompt };
@@ -614,6 +653,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           tools: toolsJson,
           seed: spec.seed,
           parent,
+          assignedApp: spec.assignedApp,
+          allowedTools: spec.allowedTools,
         };
 
         // Synchronous setup — fork, tokenize suffix, pressure check.
@@ -1016,6 +1057,20 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               yield* handleIdleDrop(a, action.reason, poolChannel, tw, poolScope.traceId);
               continue;
             case 'nudge':
+              // Scope-guard rejection (RFC §3.2 M2): emit the structured
+              // tool:scopeReject event BEFORE the generic agentNudge so a
+              // single trace pass captures attribution + rejection context.
+              if (action.guard === 'scope_reject' && a.allowedTools) {
+                tw.write({
+                  traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+                  type: 'tool:scopeReject',
+                  agentId: a.id,
+                  assignedApp: a.assignedApp,
+                  allowedTools: [...a.allowedTools],
+                  attemptedTool: parsed.toolCalls[0].name,
+                  lineageHistory: a.walkAncestors((x) => x.toolHistory),
+                });
+              }
               nudges.push(yield* handleNudge(a, action.message, parsed.toolCalls[0], ctx, tools));
               tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
                 type: 'pool:agentNudge', agentId: a.id, reason: 'nudge', message: action.message });

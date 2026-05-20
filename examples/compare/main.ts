@@ -143,12 +143,10 @@ main(function* () {
     }),
   );
 
-  const reranker = yield* call(() =>
-    createReranker(rerankerPath!, { nSeqMax: 8, nCtx: 16384 }),
-  );
-  yield* ensure(() => {
-    reranker.dispose();
-  });
+  // createReranker is now an Effection resource (RFC §6.1) — it disposes
+  // its SessionContext + Rerank automatically on scope exit, so no manual
+  // ensure() is needed.
+  const reranker = yield* createReranker(rerankerPath!, { nSeqMax: 8, nCtx: 16384 });
 
   const traceWriter = trace
     ? new JsonlTraceWriter(fs.openSync(`trace-${Date.now()}.jsonl`, "w"))

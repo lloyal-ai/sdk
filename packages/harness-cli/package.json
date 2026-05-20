@@ -1,0 +1,39 @@
+{
+  "name": "harness.dev",
+  "version": "0.1.0",
+  "description": "The Harness Development Kit CLI — scaffold HDK harnesses and apps.",
+  "bin": {
+    "harness.dev": "dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
+    "directory": "packages/harness-cli"
+  },
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/harness-cli#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/hdk/issues"
+  },
+  "keywords": [
+    "hdk",
+    "harness",
+    "cli",
+    "scaffold",
+    "agents",
+    "llm"
+  ],
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "files": [
+    "dist/"
+  ]
+}

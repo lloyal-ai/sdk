@@ -14,7 +14,6 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import {
   main,
-  ensure,
   createSignal,
   spawn,
   each,
@@ -120,12 +119,10 @@ main(function* () {
     `  ${c.green}\u25cf${c.reset} Loading ${c.bold}${rerankName}${c.reset} ${c.dim}(${fmtSize(fs.statSync(rerankModelPath).size)}, reranker)${c.reset}`,
   );
 
-  const reranker = yield* call(() =>
-    createReranker(rerankModelPath, { nSeqMax: 8, nCtx: 4096 }),
-  );
-  yield* ensure(() => {
-    reranker.dispose();
-  });
+  // createReranker is now an Effection resource (RFC §6.1) — it disposes
+  // its SessionContext + Rerank automatically on scope exit, so no manual
+  // ensure() is needed.
+  const reranker = yield* createReranker(rerankModelPath, { nSeqMax: 8, nCtx: 4096 });
   yield* call(() => reranker.tokenizeChunks(chunks));
 
   const corpusIsFile =

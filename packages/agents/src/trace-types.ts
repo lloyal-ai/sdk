@@ -1,3 +1,5 @@
+import type { ToolHistoryEntry } from './Agent';
+
 /**
  * Monotonically increasing trace ID
  *
@@ -195,6 +197,28 @@ export type TraceEvent =
       durationMs: number;
     }
   | TraceEventBase & { type: 'tool:error'; agentId: number; tool: string; error: string }
+  // Out-of-scope tool call rejected at DISPATCH time by the framework-
+  // injected scope-guard (RFC §3.2 M2, §5.3c). Emitted alongside the
+  // ordinary `pool:agentNudge` so security tooling can detect cross-app
+  // injection patterns by `assignedApp` × `attemptedTool` correlation
+  // without scanning nudge-message free text.
+  | TraceEventBase & {
+      type: 'tool:scopeReject';
+      agentId: number;
+      /** App-assigned spawn (`SpawnSpec.assignedApp`); null for harness-internal spawns. */
+      assignedApp: string | null;
+      /** Tools the spawn *was* allowed to call. */
+      allowedTools: readonly string[];
+      /** Tool name the model attempted to call. */
+      attemptedTool: string;
+      /**
+       * Flattened tool history across the rejecting agent's lineage
+       * (self → caller → …) — the forensic correlation key for cross-app
+       * injection (RFC §5.3c). Cheap to carry: `tool:scopeReject` is
+       * rare-by-design (it fires only on an out-of-scope attempt).
+       */
+      lineageHistory: readonly ToolHistoryEntry[];
+    }
 
   // ── Diverge events ──────────────────────────
   | TraceEventBase & { type: 'diverge:start'; attempts: number; prefixLength: number }

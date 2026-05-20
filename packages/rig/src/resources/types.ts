@@ -1,41 +1,14 @@
 /**
- * A loaded document available for search, read, and grep operations
+ * @deprecated `Resource` and `Chunk` now live in
+ * `@lloyal-labs/lloyal-agents` (RFC §6.3 — abstract chunking types
+ * moved to agents to mirror the `Source` / `Tool` pattern: abstract
+ * types in agents, concrete chunking factories in rig). This module
+ * re-exports them so existing rig internal callers keep working
+ * during the Phase 3-6 refactor window; new code should import
+ * directly from `@lloyal-labs/lloyal-agents`.
  *
- * Represents a single file (typically Markdown) loaded into memory.
- * Resources are chunked into {@link Chunk} instances for reranking.
- *
+ * @packageDocumentation
  * @category Rig
  */
-export interface Resource {
-  /** File name (basename, not full path) used as the resource identifier */
-  name: string;
-  /** Full text content of the file */
-  content: string;
-}
 
-/**
- * A scored passage within a {@link Resource}, used for reranking and retrieval
- *
- * Chunks are produced by {@link chunkResources} (section-based for Markdown)
- * or {@link chunkFetchedPages} (paragraph-based for web content). The
- * {@link tokens} array is populated lazily by {@link Reranker.tokenizeChunks}
- * before scoring.
- *
- * @category Rig
- */
-export interface Chunk {
-  /** Resource identifier (file name or URL) this chunk belongs to */
-  resource: string;
-  /** Leaf section heading (e.g. "Recovery loop") */
-  heading: string;
-  /** Hierarchical section path (e.g. "Agents > Lifecycle > Recovery loop"). Empty for web chunks. */
-  section: string;
-  /** Raw text content of the chunk */
-  text: string;
-  /** Pre-tokenized representation for the reranker — empty until {@link Reranker.tokenizeChunks} runs */
-  tokens: number[];
-  /** First line number (1-based) in the source resource */
-  startLine: number;
-  /** Last line number (1-based) in the source resource */
-  endLine: number;
-}
+export type { Resource, Chunk } from '@lloyal-labs/lloyal-agents';

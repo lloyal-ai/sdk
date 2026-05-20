@@ -276,7 +276,7 @@ export function* handleCompare(
         orchestrate: dagWithEvents(nodes, emit),
         tools,  // same tools, registered for runtime dispatch
         parent: querySpine,
-        terminalToolName: "report",
+        terminal: reportTool,
         maxTurns,
         pruneOnReturn: true,
         scorer: primaryScorer,

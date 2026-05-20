@@ -6,6 +6,9 @@ import type { AgentEvent } from './types';
 import type { TraceWriter } from './trace-writer';
 import type { TraceId } from './trace-types';
 import type { Agent, FormatConfig } from './Agent';
+import type { Reranker } from './chunk';
+import type { AppRegistry } from './app-types';
+import type { AppConfigStore } from './app-config';
 
 /**
  * Effection context holding the active {@link SessionContext}
@@ -103,3 +106,53 @@ export const CallingAgent = createContext<Agent>('lloyal.callingAgent');
  * @category Agents
  */
 export const SpineFmt = createContext<FormatConfig | null>('lloyal.spineFmt', null);
+
+/**
+ * Effection context holding the harness-wide {@link Reranker}.
+ *
+ * Set by the harness once via `RerankerCtx.set(reranker)` after
+ * `createReranker(...)`. App factories (`createWebApp`, `createCorpusApp`,
+ * third-party apps) read this via `yield* RerankerCtx.expect()` at
+ * construction time and pass it to their `Source` / search tools.
+ *
+ * Replaces the per-source `source.bind({reranker})` pattern — chunks
+ * tokenized by one reranker can't be re-bound to another without
+ * re-tokenization (RFC §6.3, §6.8), so one cross-encoder per harness
+ * is the invariant.
+ *
+ * @category Contract
+ */
+export const RerankerCtx = createContext<Reranker>('lloyal.reranker');
+
+/**
+ * Effection context holding the {@link AppRegistry}.
+ *
+ * Set by `createAppRegistry(...)` (lives in `@lloyal-labs/rig`). The
+ * scope-guard (RFC §5.3c) reads this at tool-dispatch time to resolve
+ * the allowed-tools set for an App-assigned spawn — looking up
+ * `registry.byName(spawn.assignedApp)` and matching the dispatched
+ * `toolName` against `manifest.contract.tools`.
+ *
+ * The spine renderer also reads this to compose the catalog in
+ * registration order.
+ *
+ * @category Contract
+ */
+export const AppRegistryCtx = createContext<AppRegistry>('lloyal.appRegistry');
+
+/**
+ * Effection context holding the harness's {@link AppConfigStore}.
+ *
+ * Set by `createAppRegistry({ configStore })` from its `configStore`
+ * option, and seeded into each app's detached scope so factories can
+ * read it. App factories read their own config via
+ * `(yield* AppConfigStoreCtx.expect()).get(manifest.name)` at
+ * construction time. The framework validates the stored config against
+ * `app.manifest.configSchema` when the app is enabled.
+ *
+ * Whole-replace semantics on `set`; last-write-wins on concurrent
+ * writes (RFC §5.6).
+ *
+ * @category Contract
+ */
+export const AppConfigStoreCtx = createContext<AppConfigStore>('lloyal.appConfigStore');

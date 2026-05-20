@@ -116,6 +116,32 @@ export class Agent {
   /** The task text this agent was assigned — used by echo detection guard */
   readonly task: string;
 
+  /**
+   * Tool names this spawn is allowed to invoke, or `null` when no scope
+   * was declared at spawn time (legacy harness-internal pools).
+   *
+   * The framework-injected scope-guard (RFC §5.3c, `AgentPolicy.ts`
+   * `defaultToolGuards[0]`) consults this on every tool call: a call
+   * whose name is absent from this set produces a `scope_reject` nudge
+   * and a `tool:scopeReject` trace event. `null` means "no scope
+   * declared" and the scope-guard becomes a no-op for this spawn.
+   *
+   * For App-assigned spawns this is `manifest.contract.tools` of the
+   * assigned app (RFC §5.3c — "App-assigned spawn"). For harness-
+   * internal spawns the harness passes an explicit list via
+   * `SpawnSpec.allowedTools` (RFC §5.3c — "Harness-internal spawn").
+   */
+  readonly allowedTools: readonly string[] | null;
+
+  /**
+   * The App that owns this spawn's contract (`SpawnSpec.assignedApp`),
+   * or `null` for harness-internal spawns. Surfaced to trace events
+   * (`tool:scopeReject` includes this for cross-app attribution per
+   * RFC §3.2 M2) and to telemetry so operators can correlate
+   * out-of-contract attempts to the originating App.
+   */
+  readonly assignedApp: string | null;
+
   // ── Mutable state ───────────────────────────────────────
 
   private _status: AgentStatus = 'idle';
@@ -146,6 +172,8 @@ export class Agent {
     fmt: FormatConfig;
     parent?: Agent | null;
     task?: string;
+    allowedTools?: readonly string[] | null;
+    assignedApp?: string | null;
   }) {
     this.id = opts.id;
     this.parentId = opts.parentId;
@@ -153,6 +181,8 @@ export class Agent {
     this.fmt = opts.fmt;
     this.task = opts.task ?? '';
     this.parent = opts.parent ?? null;
+    this.allowedTools = opts.allowedTools ?? null;
+    this.assignedApp = opts.assignedApp ?? null;
   }
 
   // ── Status ──────────────────────────────────────────────
